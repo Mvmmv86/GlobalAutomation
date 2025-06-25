@@ -1,0 +1,23 @@
+{
+    "name": "GlobalAutomations AI Development",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "service-template",
+    "workspaceFolder": "/workspace",
+    "features": {},
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-azuretools.vscode-docker",
+                "GitHub.copilot"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "terminal.integrated.shell.linux": "/bin/bash"
+            }
+        }
+    },
+    "forwardPorts": [8000, 5432, 6379],
+    "postCreateCommand": "pip install -r shared/service-template/requirements.txt",
+    "remoteUser": "root"
+}

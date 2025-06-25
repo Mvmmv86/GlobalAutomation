@@ -1,22 +1,63 @@
 # CLAUDE.md
+Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev — a trabalhar de forma consistente e segura neste repositório.
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+---
 
-## Repository Status
+## 1. Estado do Repositório
+> *Atualize este bloco sempre que a estrutura principal mudar.*
 
-This repository is currently empty. This CLAUDE.md file serves as a placeholder and should be updated once code is added.
+| Data | Descrição |
+|------|-----------|
+| 2025-06-25 | Estrutura inicial (Dev Container + Docker Compose + pipelines CI) criada. |
 
-## Instructions for Future Updates
+---
 
-When code is added to this repository, please update this file to include:
+## 2. Padrões de Linguagem & Frameworks
 
-1. **Essential Commands**: Build, test, lint, and development commands
-2. **Architecture Overview**: High-level code structure and key patterns
-3. **Development Setup**: Any specific setup requirements or dependencies
-4. **Testing Strategy**: How to run tests, both full suite and individual tests
+| Camada          | Stack Oficial                    | Observações |
+|-----------------|----------------------------------|-------------|
+| **Backend**     | **Python 3.11** + FastAPI        | Usar Pydantic e typer. Evitar Flask/Django salvo justificativa. |
+| **Frontend**    | **React 18** (Vite)              | Components em TypeScript. Atomic-design + Tailwind. |
+| **Scripts/CLI** | Python                           | Nada de Bash para lógicas complexas; manter `.py`. |
+| **Infra**       | Docker Compose, Dev Containers   | Manifests K8s via Helm em `/k8s`. |
 
-## Notes
+---
 
-- Remove this placeholder section when actual codebase content is added
-- Focus on information that requires reading multiple files to understand
-- Include project-specific conventions and patterns
+## 3. Fluxo de Planejamento Obrigatório
+
+> **Regra de ouro**
+> *Nenhum código ou comando destrutivo deve ser executado antes de um plano aprovado.*
+
+1. **Análise da Demanda** – resumo em 3-5 frases, entradas/saídas.
+2. **Plano de Ação** – etapas atômicas; marcar riscos (DB, infra).
+3. **Validação de Riscos** – dependências, backup/rollback.
+4. **Confirmação** – aguardar OK com tag `<!-- APPROVED -->`.
+5. **Execução Controlada** – implementar somente o aprovado.
+6. **Relatório Final** – arquivos alterados, comandos executados, SHA/PR.
+
+> **Para Claude Code**
+> Caso o solicitante não aprove explicitamente, **pare** e solicite detalhes.
+
+---
+
+## 4. Segurança de Execução & Dados
+
+| Regra | Detalhe |
+|-------|---------|
+| **Sem comandos automáticos** | Nunca sugerir `python main.py`, `db-reset`, `DROP …` sem pedido explícito. |
+| **Migrations transacionais** | Alembic/Prisma em modo `--sql` primeiro; aplicar após revisão. |
+| **Ambientes isolados** | `.env` define `ENV=dev/test/prod`; prod nunca hard-coded. |
+| **Backups antes de dados críticos** | Ex.: `pg_dump ... > backup_$(date +%F).sql`. |
+| **Permissões mínimas** | Usuários DB: `app_rw`, `app_migrator`; evitar `postgres` root. |
+| **Safe directory Git** | No Dev Container: `git config --global --add safe.directory /workspace`. |
+
+---
+
+## 5. Comandos Essenciais
+
+```bash
+# Dev Container
+docker compose up service-template      # sobe FastAPI + deps
+pre-commit run --all-files              # lint + format + testes rápidos
+pytest -q                               # suíte completa
+make docs                               # gera documentação (se aplicável)

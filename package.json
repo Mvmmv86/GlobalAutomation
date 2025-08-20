@@ -1,0 +1,32 @@
+{
+  "name": "tradingview-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade TradingView webhook to exchange gateway",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check",
+    "clean": "turbo clean && rm -rf node_modules",
+    "db:generate": "turbo db:generate",
+    "db:push": "turbo db:push",
+    "db:migrate": "turbo db:migrate",
+    "seed": "pnpm --filter api seed"
+  },
+  "devDependencies": {
+    "@turbo/gen": "^1.12.4",
+    "turbo": "^1.12.4",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

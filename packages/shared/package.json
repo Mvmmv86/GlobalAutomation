@@ -1,0 +1,29 @@
+{
+  "name": "@tradingview-gateway/shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.22.4",
+    "ccxt": "^4.2.25",
+    "crypto-js": "^4.2.0",
+    "pino": "^8.17.2"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/node": "^20.11.16",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.2",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.1",
+    "@typescript-eslint/parser": "^6.19.1"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@tradingview-gateway/test-suite",
+  "version": "1.0.0",
+  "description": "Comprehensive test suite for TradingView Gateway",
+  "private": true,
+  "scripts": {
+    "test": "./test-runner.sh",
+    "test:quick": "QUICK=true ./test-runner.sh",
+    "test:ci": "CI=true QUICK=true ./test-runner.sh",
+    "test:coverage": "COVERAGE=true ./test-runner.sh",
+    "test:verbose": "VERBOSE=true ./test-runner.sh",
+    "test:integration": "cd integration && npm test",
+    "test:stress": "cd stress && npm test",
+    "test:chaos": "cd chaos && npm test",
+    "test:e2e": "cd e2e && npm test",
+    "install:all": "npm run install:integration && npm run install:stress && npm run install:chaos",
+    "install:integration": "cd integration && npm install",
+    "install:stress": "cd stress && npm install", 
+    "install:chaos": "cd chaos && npm install",
+    "clean": "rm -rf */node_modules */coverage */*.log /tmp/*_test_output.log",
+    "setup": "npm run install:all && npm run test:quick"
+  },
+  "keywords": [
+    "trading",
+    "tradingview",
+    "binance",
+    "testing",
+    "integration",
+    "load-testing",
+    "chaos-engineering",
+    "e2e"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

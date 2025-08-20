@@ -1,0 +1,181 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String?
+  isActive        Boolean   @default(true)
+  totpSecret      String?
+  totpEnabled     Boolean   @default(false)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  accounts ExchangeAccount[]
+  jobs     Job[]
+  pnlRecords PnLRecord[]
+  strategyMappings StrategyMapping[]
+
+  @@map("users")
+}
+
+model ExchangeAccount {
+  id               String  @id @default(cuid())
+  name             String
+  exchange         String  // 'binance' | 'bybit'
+  encryptedApiKey     String
+  encryptedSecretKey  String
+  encryptedPassphrase String?
+  testnet          Boolean @default(true)
+  isActive         Boolean @default(true)
+  userId           String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs   Job[]
+  positions Position[]
+  orders Order[]
+  pnlRecords PnLRecord[]
+  strategyMappings StrategyMapping[]
+
+  @@unique([userId, name])
+  @@map("exchange_accounts")
+}
+
+model Job {
+  id          String   @id @default(cuid())
+  alertId     String   @unique
+  accountId   String
+  webhook     Json
+  status      String   @default("pending") // 'pending' | 'processing' | 'completed' | 'failed'
+  retryCount  Int      @default(0)
+  lastError   String?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  userId      String
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account ExchangeAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([alertId])
+  @@map("jobs")
+}
+
+model Order {
+  id            String   @id @default(cuid())
+  clientOrderId String
+  exchange      String
+  symbol        String
+  side          String   // 'buy' | 'sell'
+  type          String   // 'market' | 'limit' | 'stop' | 'stop_limit'
+  amount        Float
+  price         Float?
+  filled        Float    @default(0)
+  remaining     Float
+  status        String   // 'open' | 'closed' | 'canceled' | 'expired' | 'rejected'
+  reduceOnly    Boolean  @default(false)
+  accountId     String
+  timestamp     DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  account ExchangeAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  trades  Trade[]
+
+  @@unique([exchange, clientOrderId])
+  @@index([accountId, status])
+  @@map("orders")
+}
+
+model Position {
+  id             String  @id @default(cuid())
+  symbol         String
+  exchange       String
+  side           String  // 'long' | 'short'
+  size           Float
+  entryPrice     Float
+  markPrice      Float
+  unrealizedPnl  Float   @default(0)
+  realizedPnl    Float   @default(0)
+  leverage       Float   @default(1)
+  accountId      String
+  timestamp      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  account ExchangeAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, symbol])
+  @@index([accountId])
+  @@map("positions")
+}
+
+model Trade {
+  id          String  @id @default(cuid())
+  tradeId     String
+  orderId     String
+  symbol      String
+  side        String  // 'buy' | 'sell'
+  amount      Float
+  price       Float
+  fee         Float   @default(0)
+  feeCurrency String  @default("USDT")
+  timestamp   DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([tradeId, orderId])
+  @@index([orderId])
+  @@index([timestamp])
+  @@map("trades")
+}
+
+model PnLRecord {
+  id             String   @id @default(cuid())
+  accountId      String
+  symbol         String?
+  realizedPnl    Float    @default(0)
+  unrealizedPnl  Float    @default(0)
+  equity         Float
+  timestamp      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  userId         String
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account ExchangeAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, timestamp])
+  @@index([userId, timestamp])
+  @@map("pnl_records")
+}
+
+model StrategyMapping {
+  id              String    @id @default(cuid())
+  strategyName    String
+  accountId       String
+  userId          String
+  isActive        Boolean   @default(true)
+  priority        Int       @default(0) // Higher priority = preferred account
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account ExchangeAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, strategyName, accountId])
+  @@index([strategyName, isActive])
+  @@index([userId, strategyName])
+  @@map("strategy_mappings")
+}

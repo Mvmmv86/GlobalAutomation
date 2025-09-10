@@ -3,7 +3,7 @@ import { LoginRequest, LoginResponse, RegisterRequest, User } from '@/types/auth
 
 class AuthService {
   async login(credentials: LoginRequest): Promise<LoginResponse> {
-    // Usar proxy do Vite - requisição vai para /api/v1/auth/login que será proxy para port 8000
+    // Usar proxy do Vite para conectar ao backend
     const fullUrl = '/api/v1/auth/login'
     
     console.log('🌐 AuthService: Making request to:', fullUrl)
@@ -15,7 +15,7 @@ class AuthService {
       const timeoutId = setTimeout(() => {
         console.log('⏰ AuthService: Request timeout, aborting...')
         controller.abort()
-      }, 10000) // 10 segundos timeout
+      }, 30000) // 30 segundos timeout
       
       const response = await fetch(fullUrl, {
         method: 'POST',
@@ -56,11 +56,11 @@ class AuthService {
   }
 
   async register(data: RegisterRequest): Promise<LoginResponse> {
-    return apiClient.post<LoginResponse>('/auth/register', data)
+    return apiClient.post<LoginResponse>('/api/v1/auth/register', data)
   }
 
   async logout(): Promise<void> {
-    return apiClient.post('/auth/logout')
+    return apiClient.post('/api/v1/auth/logout')
   }
 
   async getCurrentUser(): Promise<User> {
@@ -90,37 +90,37 @@ class AuthService {
       throw new Error('No refresh token available')
     }
 
-    return apiClient.post('/auth/refresh', { refreshToken })
+    return apiClient.post('/api/v1/auth/refresh', { refreshToken })
   }
 
   async requestPasswordReset(email: string): Promise<void> {
-    return apiClient.post('/auth/password-reset', { email })
+    return apiClient.post('/api/v1/auth/password-reset', { email })
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {
-    return apiClient.post('/auth/password-reset/confirm', {
+    return apiClient.post('/api/v1/auth/password-reset/confirm', {
       token,
       newPassword,
     })
   }
 
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
-    return apiClient.post('/auth/change-password', {
+    return apiClient.post('/api/v1/auth/change-password', {
       currentPassword,
       newPassword,
     })
   }
 
   async enableTwoFactor(): Promise<{ qrCode: string; secret: string }> {
-    return apiClient.post('/auth/2fa/enable')
+    return apiClient.post('/api/v1/auth/2fa/enable')
   }
 
   async confirmTwoFactor(totpCode: string): Promise<void> {
-    return apiClient.post('/auth/2fa/confirm', { totpCode })
+    return apiClient.post('/api/v1/auth/2fa/confirm', { totpCode })
   }
 
   async disableTwoFactor(totpCode: string): Promise<void> {
-    return apiClient.post('/auth/2fa/disable', { totpCode })
+    return apiClient.post('/api/v1/auth/2fa/disable', { totpCode })
   }
 }
 

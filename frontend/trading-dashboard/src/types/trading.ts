@@ -70,7 +70,7 @@ export interface Order {
   filledQuantity: number
   averageFillPrice?: number
   feesPaid: number
-  feeCurrency?: string
+  feeCurrency?: string | null
   source: string
   exchangeAccountId: string
   createdAt: string

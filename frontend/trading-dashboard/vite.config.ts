@@ -2,8 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
-// Backend URL - usa o IP do container para garantir conexão
-const BACKEND_URL = 'http://172.18.0.3:8000'
+// Backend URL - configuração para desenvolvimento local
+const BACKEND_URL = process.env.VITE_API_URL || 'http://localhost:8000'
 
 console.log('🔧 Vite Config: Backend URL =', BACKEND_URL)
 
@@ -16,8 +16,12 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: 3001,
     host: true,
+    strictPort: false,
+    hmr: {
+      clientPort: 3001
+    },
     proxy: {
       '/auth': {
         target: BACKEND_URL,

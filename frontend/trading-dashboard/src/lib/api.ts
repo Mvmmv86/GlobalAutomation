@@ -70,27 +70,27 @@ class ApiClient {
 
   async get<T>(url: string): Promise<T> {
     const response = await this.instance.get<ApiResponse<T>>(url)
-    return response.data
+    return response.data as T
   }
 
   async post<T>(url: string, data?: any): Promise<T> {
     const response = await this.instance.post<ApiResponse<T>>(url, data)
-    return response.data
+    return response.data as T
   }
 
   async put<T>(url: string, data?: any): Promise<T> {
     const response = await this.instance.put<ApiResponse<T>>(url, data)
-    return response.data
+    return response.data as T
   }
 
   async delete<T>(url: string): Promise<T> {
     const response = await this.instance.delete<ApiResponse<T>>(url)
-    return response.data
+    return response.data as T
   }
 
   async patch<T>(url: string, data?: any): Promise<T> {
     const response = await this.instance.patch<ApiResponse<T>>(url, data)
-    return response.data
+    return response.data as T
   }
 }
 

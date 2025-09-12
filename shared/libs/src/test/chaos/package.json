@@ -1,0 +1,30 @@
+{
+  "name": "@tradingview-gateway/chaos-tests",
+  "version": "1.0.0", 
+  "description": "Chaos engineering and failure recovery tests",
+  "private": true,
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:failure": "jest --testNamePattern='failure'",
+    "test:recovery": "jest --testNamePattern='recovery'",
+    "test:chaos": "jest --testNamePattern='chaos'",
+    "test:verbose": "jest --verbose",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/*.test.ts"],
+    "setupFilesAfterEnv": ["../setup.ts"]
+  }
+}

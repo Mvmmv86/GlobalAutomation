@@ -2,8 +2,26 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
-// Backend URL - configuração para desenvolvimento local
-const BACKEND_URL = process.env.VITE_API_URL || 'http://localhost:8000'
+// Configuração inteligente de Backend URL que funciona em todos os ambientes
+function getBackendUrl(): string {
+  // 1. Prioridade: variável de ambiente explícita
+  if (process.env.VITE_API_URL) {
+    return process.env.VITE_API_URL
+  }
+  
+  // 2. Detectar ambiente Docker vs Local
+  const isDocker = process.env.DOCKER_ENV === 'true' || process.env.NODE_ENV === 'docker'
+  
+  if (isDocker) {
+    // Em Docker, usar nome do serviço
+    return 'http://api-service:8000'
+  } else {
+    // Desenvolvimento local, usar localhost
+    return 'http://localhost:8000'
+  }
+}
+
+const BACKEND_URL = getBackendUrl()
 
 console.log('🔧 Vite Config: Backend URL =', BACKEND_URL)
 

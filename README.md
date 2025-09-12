@@ -1,13 +1,62 @@
 # GlobalAutomations AI
 
-A platform for AI-powered automation services and bot management.
+Uma plataforma completa para automação de serviços, incluindo trading de criptomoedas, marketing e suporte.
 
-## Architecture
+## 🏗️ Estrutura do Projeto
 
-- **shared/**: Common services and utilities
-- **platform-services/**: Core platform services  
-- **bots/**: AI bot implementations
-- **reports/**: Reporting and analytics services
+```
+GlobalAutomation/
+├── services/
+│   └── trading/           # Serviços de trading
+│       ├── api-service/   # Backend Python/FastAPI
+│       ├── execution-service/
+│       └── reconciliation-service/
+├── frontend/
+│   └── trading-dashboard/ # Frontend React/TypeScript
+├── shared/
+│   └── templates/         # Templates para novos serviços
+├── infrastructure/        # Docker, K8s, configs
+└── docs/                  # Documentação
+```
+
+## 🚀 Como Executar
+
+### Opção 1: Desenvolvimento Local (Recomendado)
+
+```bash
+# Backend
+cd services/trading/api-service
+pip install -r requirements.txt
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Frontend (em outro terminal)
+cd frontend/trading-dashboard
+npm install
+npm run dev
+```
+
+### Opção 2: Com Docker Compose
+
+```bash
+# Subir todos os serviços
+docker-compose up -d
+
+# Ou apenas alguns serviços
+docker-compose up postgres redis api-service trading-dashboard
+```
+
+## 🔧 Configuração Inteligente
+
+O sistema detecta automaticamente o ambiente:
+
+- **Desenvolvimento Local**: Usa `localhost:8000`
+- **Docker**: Usa `api-service:8000`  
+- **Personalizado**: Define `VITE_API_URL` no `.env`
+
+### Credenciais de Teste
+
+- **Email**: `demo@tradingview.com`
+- **Senha**: `demo123456`
 
 ## Local Development
 

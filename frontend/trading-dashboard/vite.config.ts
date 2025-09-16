@@ -9,16 +9,8 @@ function getBackendUrl(): string {
     return process.env.VITE_API_URL
   }
   
-  // 2. Detectar ambiente Docker vs Local
-  const isDocker = process.env.DOCKER_ENV === 'true' || process.env.NODE_ENV === 'docker'
-  
-  if (isDocker) {
-    // Em Docker, usar nome do serviço
-    return 'http://api-service:8000'
-  } else {
-    // Desenvolvimento local, usar localhost
-    return 'http://localhost:8000'
-  }
+  // Sempre usar localhost para desenvolvimento
+  return 'http://localhost:8002'
 }
 
 const BACKEND_URL = getBackendUrl()
@@ -34,11 +26,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3001,
+    port: 3000,
     host: true,
     strictPort: false,
     hmr: {
-      clientPort: 3001
+      clientPort: 3000
     },
     proxy: {
       '/auth': {

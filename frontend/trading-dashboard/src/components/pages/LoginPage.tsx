@@ -86,6 +86,7 @@ export const LoginPage: React.FC = () => {
             type="email"
             placeholder="seu@email.com"
             className="mt-1"
+            autoComplete="email"
             {...register('email')}
           />
           {errors.email && (
@@ -103,6 +104,7 @@ export const LoginPage: React.FC = () => {
               type={showPassword ? 'text' : 'password'}
               placeholder="Sua senha"
               className="pr-10"
+              autoComplete="current-password"
               {...register('password')}
             />
             <button
@@ -133,6 +135,7 @@ export const LoginPage: React.FC = () => {
               placeholder="123456"
               className="mt-1"
               maxLength={6}
+              autoComplete="one-time-code"
               {...register('totpCode')}
             />
             {errors.totpCode && (

@@ -22,10 +22,10 @@ def create_exchange_account_router() -> APIRouter:
             # For now, get all accounts
             
             accounts = await transaction_db.fetch("""
-                SELECT 
-                    id, name, exchange, testnet, is_active, 
+                SELECT
+                    id, name, exchange, testnet, is_active, is_main,
                     created_at, updated_at, user_id
-                FROM exchange_accounts 
+                FROM exchange_accounts
                 WHERE testnet = false AND is_active = true
                 ORDER BY created_at DESC
             """)
@@ -38,6 +38,7 @@ def create_exchange_account_router() -> APIRouter:
                     "exchange": account["exchange"],
                     "environment": "testnet" if account["testnet"] else "mainnet",
                     "is_active": account["is_active"],
+                    "is_main": account.get("is_main", False),
                     "created_at": account["created_at"].isoformat() if account["created_at"] else None,
                     "updated_at": account["updated_at"].isoformat() if account["updated_at"] else None,
                     "user_id": account["user_id"]
@@ -55,10 +56,10 @@ def create_exchange_account_router() -> APIRouter:
         """Get a specific exchange account by ID"""
         try:
             account = await transaction_db.fetchrow("""
-                SELECT 
-                    id, name, exchange, testnet, is_active, 
+                SELECT
+                    id, name, exchange, testnet, is_active, is_main,
                     created_at, updated_at, user_id
-                FROM exchange_accounts 
+                FROM exchange_accounts
                 WHERE id = $1
             """, account_id)
             
@@ -71,6 +72,7 @@ def create_exchange_account_router() -> APIRouter:
                 "exchange": account["exchange"],
                 "environment": "testnet" if account["testnet"] else "mainnet",
                 "is_active": account["is_active"],
+                "is_main": account.get("is_main", False),
                 "created_at": account["created_at"].isoformat() if account["created_at"] else None,
                 "updated_at": account["updated_at"].isoformat() if account["updated_at"] else None,
                 "user_id": account["user_id"]
@@ -88,8 +90,21 @@ def create_exchange_account_router() -> APIRouter:
     @router.post("")
     async def create_exchange_account(request: Request):
         """Create a new exchange account"""
+        logger.info("🔍 STARTING EXCHANGE ACCOUNT CREATION")
+
         try:
-            body = await request.json()
+            # Try to read body
+            try:
+                body = await request.json()
+                logger.info("🔍 BODY SUCCESSFULLY PARSED", body=body, body_keys=list(body.keys()) if isinstance(body, dict) else "NOT_DICT")
+            except Exception as json_error:
+                logger.error("🔍 JSON PARSE ERROR", error=str(json_error))
+                raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(json_error)}")
+
+            # Check if body is dict
+            if not isinstance(body, dict):
+                logger.error("🔍 BODY IS NOT DICT", body_type=type(body))
+                raise HTTPException(status_code=400, detail="Request body must be a JSON object")
             
             # Validate required fields
             required_fields = ["name", "exchange", "api_key", "secret_key"]
@@ -102,6 +117,7 @@ def create_exchange_account_router() -> APIRouter:
             api_key = body.get("api_key", "").strip()
             secret_key = body.get("secret_key", "").strip()
             testnet = body.get("testnet", True)  # Default to testnet for safety
+            is_main = body.get("is_main", False)  # Nova opção para conta principal
             
             # Validate exchange type
             if exchange not in ["binance", "bybit"]:
@@ -114,19 +130,27 @@ def create_exchange_account_router() -> APIRouter:
                 raise HTTPException(status_code=400, detail="No users found. Please create a user first.")
             
             user_id = user["id"]
-            
+
+            # Se esta conta está sendo marcada como principal, desmarcar todas as outras
+            if is_main:
+                await transaction_db.execute("""
+                    UPDATE exchange_accounts
+                    SET is_main = false
+                    WHERE exchange = $1 AND user_id = $2
+                """, exchange, user_id)
+
             # Store API credentials directly (simplified for now)
             # In production, you might want to encrypt these
-            
+
             # Create the exchange account
             account_id = await transaction_db.fetchval("""
                 INSERT INTO exchange_accounts (
-                    name, exchange, testnet, is_active, 
-                    api_key, secret_key, user_id,
+                    name, exchange, testnet, is_active,
+                    api_key, secret_key, user_id, is_main,
                     created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
                 RETURNING id
-            """, name, exchange, testnet, True, api_key, secret_key, user_id)
+            """, name, exchange, testnet, True, api_key, secret_key, user_id, is_main)
             
             logger.info("Exchange account created", 
                        account_id=account_id, name=name, exchange=exchange, testnet=testnet)
@@ -139,7 +163,8 @@ def create_exchange_account_router() -> APIRouter:
                     "name": name,
                     "exchange": exchange,
                     "environment": "testnet" if testnet else "mainnet",
-                    "is_active": True
+                    "is_active": True,
+                    "is_main": is_main
                 }
             }
             
@@ -181,7 +206,21 @@ def create_exchange_account_router() -> APIRouter:
                 update_fields.append(f"is_active = ${param_count}")
                 params.append(body["is_active"])
                 param_count += 1
-            
+
+            if "is_main" in body:
+                # Se está marcando como principal, desmarcar todas as outras da mesma exchange
+                if body["is_main"]:
+                    await transaction_db.execute("""
+                        UPDATE exchange_accounts
+                        SET is_main = false
+                        WHERE exchange = (SELECT exchange FROM exchange_accounts WHERE id = $1)
+                        AND id != $1
+                    """, account_id)
+
+                update_fields.append(f"is_main = ${param_count}")
+                params.append(body["is_main"])
+                param_count += 1
+
             if not update_fields:
                 raise HTTPException(status_code=400, detail="No valid fields to update")
             

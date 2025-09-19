@@ -16,7 +16,17 @@ class ExchangeAccountService {
     testnet: boolean
     isDefault?: boolean
   }): Promise<ExchangeAccount> {
-    const response = await apiClient.post<{ success: boolean; data: ExchangeAccount; message: string }>('/exchange-accounts', data)
+    // Convert camelCase to snake_case for backend compatibility
+    const backendData = {
+      name: data.name,
+      exchange: data.exchange,
+      api_key: data.apiKey,
+      secret_key: data.secretKey,
+      passphrase: data.passphrase,
+      testnet: data.testnet,
+      is_default: data.isDefault
+    }
+    const response = await apiClient.post<{ success: boolean; data: ExchangeAccount; message: string }>('/exchange-accounts', backendData)
     return response.data
   }
 

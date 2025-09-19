@@ -1,0 +1,58 @@
+#!/bin/bash
+# Script de sincronização automática a cada 30 segundos
+# Mantém os dados sempre atualizados
+
+ACCOUNT_ID="0bad440b-f800-46ff-812f-5c359969885e"
+API_URL="http://localhost:8000/api/v1/sync/balances"
+
+echo "🚀 Iniciando sincronização automática a cada 30 segundos..."
+echo "📝 Para parar, pressione Ctrl+C"
+echo "🎯 Conta: $ACCOUNT_ID"
+echo ""
+
+while true; do
+    # Timestamp atual
+    TIMESTAMP=$(date '+%H:%M:%S')
+
+    echo "🔄 $TIMESTAMP - Sincronizando dados da Binance..."
+
+    # Sincronizar balances
+    echo "  💰 Sincronizando balances..."
+    RESPONSE=$(curl -s -X POST "$API_URL/$ACCOUNT_ID")
+
+    # Sincronizar positions
+    echo "  🎯 Sincronizando positions..."
+    POSITIONS_RESPONSE=$(curl -s -X POST "http://localhost:8000/api/v1/sync/positions/$ACCOUNT_ID")
+
+    # Verificar se foi bem sucedido
+    BALANCES_SUCCESS=false
+    POSITIONS_SUCCESS=false
+
+    if echo "$RESPONSE" | grep -q '"success":true'; then
+        SYNCED_COUNT=$(echo "$RESPONSE" | grep -o '"synced_count":[0-9]*' | cut -d':' -f2)
+        echo "  ✅ Balances: $SYNCED_COUNT sincronizados"
+        BALANCES_SUCCESS=true
+    else
+        echo "  ❌ Erro nos balances: $RESPONSE"
+    fi
+
+    if echo "$POSITIONS_RESPONSE" | grep -q '"success":true'; then
+        POSITIONS_COUNT=$(echo "$POSITIONS_RESPONSE" | grep -o '"synced_count":[0-9]*' | cut -d':' -f2)
+        echo "  ✅ Positions: $POSITIONS_COUNT sincronizadas"
+        POSITIONS_SUCCESS=true
+    else
+        echo "  ❌ Erro nas positions: $POSITIONS_RESPONSE"
+    fi
+
+    if [ "$BALANCES_SUCCESS" = true ] && [ "$POSITIONS_SUCCESS" = true ]; then
+        echo "✅ $TIMESTAMP - Sincronização completa realizada com sucesso!"
+    else
+        echo "⚠️ $TIMESTAMP - Sincronização parcial ou com erros"
+    fi
+
+    echo "⏳ Aguardando 30 segundos..."
+    echo ""
+
+    # Aguardar 30 segundos
+    sleep 30
+done

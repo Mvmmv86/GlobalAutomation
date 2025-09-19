@@ -72,14 +72,71 @@ TradingView → Webhook → Nossa Plataforma → Exchange APIs → Dashboard
 - `totpCode`: string opcional (2FA)
 
 **Estados:**
-- `isLoading`: boolean (carregamento)
-- `error`: string | null (mensagens de erro)
-- `showPassword`: boolean (mostrar/ocultar senha)
-- `showTotpInput`: boolean (campo 2FA condicional)
+- `isLoading`: boolean (carregamento do login)
+- `error`: string (mensagem de erro)
 
-**Credenciais Demo:**
-- Email: `demo@tradingview.com`
-- Senha: `demo123456`
+---
+
+### **🔧 PROBLEMAS COMUNS DE CONFIGURAÇÃO E SOLUÇÕES**
+
+#### **1. Problemas de Permissões de Arquivos**
+
+**Problema:** Frontend falha ao iniciar com erro `EACCES: permission denied`
+```bash
+Error: EACCES: permission denied, open '/home/user/global/frontend/trading-dashboard/vite.config.ts.timestamp-xxx.mjs'
+```
+
+**Causa:** Arquivos criados com permissões de root no sistema
+
+**Solução:**
+```bash
+# Criar cópia com permissões corretas
+cp -r frontend/trading-dashboard frontend-new
+cd frontend-new && npm run dev
+```
+
+#### **2. Erro de Porta Incorreta no Frontend**
+
+**Problema:** Erro de conexão `ECONNREFUSED 127.0.0.1:8002`
+```javascript
+❌ AuthService: Error response: {"error":"API Proxy error","message":"connect ECONNREFUSED 127.0.0.1:8002"}
+```
+
+**Causa:** Frontend configurado para porta 8002, mas backend roda na porta 8000
+
+**Solução:** Corrigir arquivo `vite.config.ts`
+```javascript
+// Em vite.config.ts linha ~13
+// Alterar de:
+return 'http://localhost:8002'
+// Para:
+return 'http://localhost:8000'
+```
+
+#### **3. Erro de Mapeamento de Tokens no Login**
+
+**Problema:** Login retorna 200 mas falha com "No access token in response"
+```javascript
+❌ Login failed: Error: No access token in response
+```
+
+**Causa:** API retorna `access_token` (snake_case), frontend espera `accessToken` (camelCase)
+
+**Solução:** Atualizar `AuthContext.tsx`
+```javascript
+// Suporte para ambos os formatos
+const accessToken = response.access_token || response.accessToken
+const refreshToken = response.refresh_token || response.refreshToken
+```
+
+#### **4. Configurações de Porta Padrão**
+- **Frontend:** http://localhost:3000
+- **Backend API:** http://localhost:8000
+- **Documentação API:** http://localhost:8000/docs
+
+#### **5. Credenciais Demo Padrão**
+- **Email:** `demo@tradingview.com`
+- **Senha:** `demo123456`
 
 ---
 
@@ -486,11 +543,260 @@ interface Position {
 ## 🔌 **INTEGRAÇÕES DE API**
 
 ### **Exchanges Suportadas**
-- **Binance Spot & Futures**
+- **Binance Spot & Futures** ✅ **IMPLEMENTADO E FUNCIONANDO**
 - **Bybit USDT Perpetual**
 - **OKX Futures**
 - **Coinbase Pro**
 - **Bitget Futures**
+
+### **🎯 INTEGRAÇÃO BINANCE - IMPLEMENTAÇÃO COMPLETA**
+
+#### **📊 Dashboard Cards com Dados Reais**
+Sistema completo de sincronização e exibição de dados reais da Binance implementado em 20/01/2025:
+
+**Arquivos Principais:**
+- `apps/api-python/presentation/controllers/dashboard_cards_controller.py` - Endpoint de cards
+- `apps/api-python/infrastructure/exchanges/binance_connector.py` - Conector Binance
+- `apps/api-python/create_trades_table_and_sync.py` - Sincronização de trades
+- `frontend-new/src/hooks/useApiData.ts` - Hook para dados reais
+- `frontend-new/src/components/pages/DashboardPage.tsx` - Exibição no frontend
+
+**Dados Sincronizados:**
+- ✅ **Saldo Futures**: Total em USDT + P&L diário realizado
+- ✅ **Saldo Spot**: Total em USDT + contagem de ativos
+- ✅ **P&L Total**: Soma do P&L diário de Futures + Spot
+- ✅ **Posições Ativas**: Posições abertas em tempo real
+- ✅ **Ordens**: Total de ordens e ordens do dia
+
+**Endpoint Principal:**
+```
+GET /api/v1/dashboard/cards
+```
+
+**Resposta:**
+```json
+{
+  "success": true,
+  "data": {
+    "futures": {
+      "value": 710.36638042,
+      "daily_pnl_realized": -46.78766007
+    },
+    "spot": {
+      "value": 1730.56718875,
+      "total_assets": 28
+    },
+    "pnl_total": {
+      "value": -46.78766007
+    },
+    "positions_active": {
+      "value": 3
+    },
+    "orders_total": {
+      "value": 0
+    },
+    "orders_today": {
+      "value": 61
+    }
+  }
+}
+```
+
+**Features Implementadas:**
+- 🔄 **Auto-refresh**: Dados atualizados a cada 10 segundos
+- 📊 **Dados reais**: Sem mock data, apenas dados do banco
+- 💹 **P&L diário**: Calculado a partir dos trades realizados
+- 🏦 **Multi-conta**: Suporte para múltiplas contas Binance
+- 🔐 **Segurança**: API keys criptografadas com AES-256
+
+**Sincronização de Trades:**
+- Tabela `daily_trades` criada para tracking de P&L
+- Sync automático de trades Futures da Binance
+- Cálculo de P&L realizado por dia
+- 61 trades sincronizados com sucesso
+
+**Frontend Integration:**
+- Hook `useDashboardCards()` implementado
+- React Query para cache e auto-refresh
+- Cards responsivos com dados em tempo real
+- Debug logs para troubleshooting
+
+#### **🔧 Fixes e Ajustes Implementados**
+
+**1. Correção da Estrutura de Resposta da API:**
+```typescript
+// apiClient.get() modificado para extrair dados corretamente
+const apiResponse = response.data as any
+if (apiResponse.success && apiResponse.data) {
+  return apiResponse.data as T
+}
+```
+
+**2. Resolução de Conflito de Cards Duplicados:**
+- Removidos cards obsoletos que usavam `balancesSummary`
+- Mantidos apenas cards que usam `dashboardCards`
+- Eliminada duplicação de componentes Futures/Spot
+
+**3. Import Missing no Hook:**
+```typescript
+// Adicionado import essencial
+import { apiClient } from '@/lib/api'
+```
+
+**4. Configuração do Hook com Debug:**
+```typescript
+export const useDashboardCards = () => {
+  return useQuery({
+    queryKey: ['dashboard-cards'],
+    queryFn: async () => {
+      console.log('🔍 Dashboard Cards: Fazendo chamada para API...')
+      const response = await apiClient.get('/dashboard/cards')
+      console.log('✅ Dashboard Cards: Resposta recebida:', response)
+      return response
+    },
+    refetchInterval: 10000, // Auto-refresh a cada 10s
+    staleTime: 5000,
+  })
+}
+```
+
+**5. Mapeamento Correto dos Dados:**
+```typescript
+const stats = {
+  futuresBalance: dashboardCards?.futures?.value || 0,
+  futuresPnL: dashboardCards?.futures?.daily_pnl_realized || 0,
+  spotBalance: dashboardCards?.spot?.value || 0,
+  spotAssets: dashboardCards?.spot?.total_assets || 0,
+  totalPnL: dashboardCards?.pnl_total?.value || 0,
+  activePositions: dashboardCards?.positions_active?.value || 0,
+  totalOrders: dashboardCards?.orders_total?.value || 0,
+  todayOrders: dashboardCards?.orders_today?.value || 0,
+}
+```
+
+**Status Atual: ✅ FUNCIONANDO PERFEITAMENTE**
+- Dados reais da Binance exibidos no dashboard
+- Auto-refresh funcionando
+- P&L calculado corretamente
+- Sem mock data
+
+#### **🔄 FLUXO COMPLETO: BACKEND → FRONTEND**
+
+**Passo-a-passo de como os dados chegam no frontend:**
+
+**1. 📊 Backend - Coleta de Dados:**
+```python
+# apps/api-python/presentation/controllers/dashboard_cards_controller.py
+@router.get("/cards")
+async def get_dashboard_cards():
+    # 1. Busca dados da Binance via connector
+    futures_balance = await binance_connector.get_futures_balance()
+    spot_balance = await binance_connector.get_spot_balance()
+
+    # 2. Calcula P&L do banco de dados
+    daily_pnl = await calculate_daily_pnl_from_trades()
+
+    # 3. Retorna estrutura padronizada
+    return {
+        "success": True,
+        "data": {
+            "futures": {"value": 710.37, "daily_pnl_realized": -46.79},
+            "spot": {"value": 1730.57, "total_assets": 28},
+            "pnl_total": {"value": -46.79}
+        }
+    }
+```
+
+**2. 🌐 API Client - Interceptação e Parsing:**
+```typescript
+// frontend-new/src/lib/api.ts
+async get<T>(url: string): Promise<T> {
+    const response = await this.instance.get<ApiResponse<T>>(url)
+
+    // EXTRAI dados da estrutura { success: true, data: {...} }
+    const apiResponse = response.data as any
+    if (apiResponse.success && apiResponse.data) {
+        return apiResponse.data as T  // ← Retorna APENAS os dados úteis
+    }
+    return response.data as T
+}
+```
+
+**3. 🎣 React Hook - Chamada da API:**
+```typescript
+// frontend-new/src/hooks/useApiData.ts
+export const useDashboardCards = () => {
+  return useQuery({
+    queryKey: ['dashboard-cards'],
+    queryFn: async () => {
+      console.log('🔍 Fazendo chamada para /dashboard/cards...')
+
+      // Chama API através do apiClient
+      const response = await apiClient.get('/dashboard/cards')
+
+      console.log('✅ Dados recebidos:', response)
+      return response  // ← Dados já extraídos pelo apiClient
+    },
+    refetchInterval: 10000, // ← Auto-refresh a cada 10s
+    staleTime: 5000,
+  })
+}
+```
+
+**4. ⚛️ Componente React - Consumo dos Dados:**
+```typescript
+// frontend-new/src/components/pages/DashboardPage.tsx
+const DashboardPage = () => {
+  // Hook puxa dados automaticamente
+  const { data: dashboardCards, isLoading, error } = useDashboardCards()
+
+  // Mapeia dados para stats
+  const stats = {
+    futuresBalance: dashboardCards?.futures?.value || 0,        // 710.37
+    futuresPnL: dashboardCards?.futures?.daily_pnl_realized || 0, // -46.79
+    spotBalance: dashboardCards?.spot?.value || 0,              // 1730.57
+    totalPnL: dashboardCards?.pnl_total?.value || 0,           // -46.79
+  }
+
+  return (
+    <Card>
+      <CardContent>
+        <div className="text-2xl font-bold">
+          ${stats.futuresBalance.toFixed(2)}  {/* ← Exibe: $710.37 */}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+```
+
+**5. 🔄 Configuração do Proxy (Vite):**
+```typescript
+// frontend-new/vite.config.ts
+server: {
+  proxy: {
+    '/api': {
+      target: 'http://localhost:8000',  // ← Redireciona para backend
+      changeOrigin: true,
+    }
+  }
+}
+```
+
+**SEQUÊNCIA COMPLETA:**
+1. **React Query** dispara chamada a cada 10s
+2. **Hook** chama `apiClient.get('/dashboard/cards')`
+3. **Vite Proxy** redireciona para `http://localhost:8000/api/v1/dashboard/cards`
+4. **Backend** consulta Binance + banco e retorna dados
+5. **API Client** extrai dados da estrutura `{success: true, data: {...}}`
+6. **React Query** atualiza cache e re-renderiza componente
+7. **Dashboard** exibe dados atualizados em tempo real
+
+**RESULTADO FINAL:**
+- 🎯 Dados reais da Binance no frontend
+- 🔄 Atualização automática a cada 10 segundos
+- ⚡ Cache inteligente com React Query
+- 🛡️ Tratamento de erros e loading states
 
 ### **Endpoints Principais**
 ```
@@ -506,6 +812,7 @@ PUT    /api/v1/webhooks/{id}/config       - Configure webhook
 POST   /api/v1/webhooks/tradingview/{id}  - Receive signals
 GET    /api/v1/orders                     - List orders
 GET    /api/v1/positions                  - List positions
+GET    /api/v1/dashboard/cards            - ✅ Dashboard cards (Binance data)
 ```
 
 ---

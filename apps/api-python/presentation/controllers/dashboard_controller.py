@@ -200,9 +200,150 @@ def create_dashboard_router() -> APIRouter:
             ]
             
             return {"success": True, "data": chart_data}
-            
+
         except Exception as e:
             logger.error("Error getting P&L chart", error=str(e), exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to get P&L chart data")
+
+    @router.get("/balances")
+    async def get_balances_summary(request: Request):
+        """Get futures and spot balances summary"""
+        try:
+            logger.info("💰 Getting balances summary")
+
+            # Get exchange accounts balances
+            accounts_data = await transaction_db.fetch("""
+                SELECT
+                    ea.name as exchange_name,
+                    eab.account_type,
+                    eab.asset,
+                    eab.free_balance,
+                    eab.locked_balance,
+                    eab.total_balance,
+                    eab.usd_value
+                FROM exchange_account_balances eab
+                LEFT JOIN exchange_accounts ea ON eab.exchange_account_id = ea.id
+                WHERE ea.testnet = false
+                  AND ea.is_active = true
+                  AND eab.total_balance > 0
+                ORDER BY eab.usd_value DESC
+            """)
+
+            # Separate futures and spot balances
+            futures_balance = 0
+            spot_balance = 0
+            futures_assets = []
+            spot_assets = []
+
+            for balance in accounts_data:
+                account_type = balance["account_type"] or "SPOT"
+                usd_value = float(balance["usd_value"] or 0)
+
+                asset_info = {
+                    "asset": balance["asset"],
+                    "free": float(balance["free_balance"] or 0),
+                    "locked": float(balance["locked_balance"] or 0),
+                    "total": float(balance["total_balance"] or 0),
+                    "usd_value": usd_value,
+                    "exchange": balance["exchange_name"]
+                }
+
+                if account_type in ["FUTURES", "LINEAR", "UNIFIED"]:
+                    futures_balance += usd_value
+                    futures_assets.append(asset_info)
+                else:
+                    spot_balance += usd_value
+                    spot_assets.append(asset_info)
+
+            # Get P&L from Binance API in real-time (like we do for balances)
+            futures_pnl = 0.0
+            spot_pnl = 0.0
+
+            try:
+                # Get main account for real-time P&L
+                main_account = await transaction_db.fetchrow("""
+                    SELECT id, api_key, secret_key, testnet
+                    FROM exchange_accounts
+                    WHERE testnet = false AND is_active = true
+                    LIMIT 1
+                """)
+
+                if main_account:
+                    from infrastructure.exchanges.binance_connector import BinanceConnector
+                    import os
+
+                    # Use API keys from database or fallback to environment
+                    api_key = main_account['api_key'] or os.getenv('BINANCE_API_KEY')
+                    secret_key = main_account['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+
+                    connector = BinanceConnector(
+                        api_key=api_key,
+                        api_secret=secret_key,
+                        testnet=False
+                    )
+
+                    # Get real-time futures positions and P&L
+                    positions_result = await connector.get_futures_positions()
+                    if positions_result.get('success', True):
+                        positions = positions_result.get('positions', [])
+                        for position in positions:
+                            try:
+                                # Calculate unrealized PnL from real Binance data
+                                unrealized_pnl = float(position.get('unRealizedProfit', position.get('unrealizedPnl', 0)))
+                                futures_pnl += unrealized_pnl
+                            except (ValueError, TypeError):
+                                continue
+
+                    logger.info(f"Real-time futures P&L: ${futures_pnl:.2f}")
+
+            except Exception as e:
+                logger.error(f"Error getting real-time P&L: {e}")
+                # Fallback to database if API fails
+                positions_pnl = await transaction_db.fetchrow("""
+                    SELECT
+                        COALESCE(SUM(CASE WHEN ea.account_type IN ('FUTURES', 'LINEAR', 'UNIFIED')
+                                     THEN p.unrealized_pnl ELSE 0 END), 0) as futures_pnl,
+                        COALESCE(SUM(CASE WHEN ea.account_type NOT IN ('FUTURES', 'LINEAR', 'UNIFIED')
+                                     THEN p.unrealized_pnl ELSE 0 END), 0) as spot_pnl
+                    FROM positions p
+                    LEFT JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
+                    WHERE ea.testnet = false
+                      AND ea.is_active = true
+                      AND p.status = 'open'
+                """)
+
+                futures_pnl = float(positions_pnl["futures_pnl"] or 0)
+                spot_pnl = float(positions_pnl["spot_pnl"] or 0)
+
+            result = {
+                "futures": {
+                    "total_balance_usd": futures_balance,
+                    "unrealized_pnl": futures_pnl,
+                    "net_balance": futures_balance + futures_pnl,
+                    "assets": futures_assets[:5]  # Top 5 assets
+                },
+                "spot": {
+                    "total_balance_usd": spot_balance,
+                    "unrealized_pnl": spot_pnl,
+                    "net_balance": spot_balance + spot_pnl,
+                    "assets": spot_assets[:5]  # Top 5 assets
+                },
+                "total": {
+                    "balance_usd": futures_balance + spot_balance,
+                    "pnl": futures_pnl + spot_pnl,
+                    "net_worth": (futures_balance + spot_balance) + (futures_pnl + spot_pnl)
+                }
+            }
+
+            logger.info(f"💰 Balances calculated",
+                       futures_balance=futures_balance,
+                       spot_balance=spot_balance,
+                       total_assets=len(accounts_data))
+
+            return {"success": True, "data": result}
+
+        except Exception as e:
+            logger.error("Error getting balances summary", error=str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to get balances summary")
 
     return router

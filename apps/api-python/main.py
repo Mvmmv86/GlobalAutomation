@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -18,6 +18,12 @@ from slowapi.errors import RateLimitExceeded
 
 from presentation.controllers.webhook_controller import create_webhook_router
 from presentation.controllers.health_controller import create_health_router
+from presentation.controllers.dashboard_controller import create_dashboard_router
+from presentation.controllers.positions_controller import create_positions_router
+from presentation.controllers.dashboard_cards_controller import create_dashboard_cards_router
+from presentation.controllers.sync_controller import create_sync_router
+from presentation.controllers.exchange_account_controller import create_exchange_account_router
+from infrastructure.background.sync_scheduler import sync_scheduler
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -68,11 +74,19 @@ async def lifespan(app: FastAPI):
         # await redis_manager.connect()
         logger.info("Redis connection skipped for integration testing")
 
+        # Start background sync scheduler
+        logger.info("🚀 Starting background sync scheduler with real prices (30s interval)")
+        await sync_scheduler.start()  # Habilitado para dados em tempo real
+
         yield
 
     finally:
         # Shutdown
         logger.info("Shutting down TradingView Gateway API")
+
+        # Stop background sync scheduler
+        logger.info("🛑 Stopping background sync scheduler")
+        await sync_scheduler.stop()
 
         # Close connections
         await transaction_db.disconnect()
@@ -125,6 +139,31 @@ def create_app() -> FastAPI:
             path=request.url.path,
             client_ip=get_remote_address(request),
         )
+
+        # Special logging for exchange-accounts POST requests
+        if request.method == "POST" and "exchange-accounts" in request.url.path:
+            try:
+                # Read body for debugging (this consumes the body once)
+                body = await request.body()
+                logger.info("🚨 EXCHANGE ACCOUNT POST REQUEST",
+                           body_length=len(body),
+                           content_type=request.headers.get("content-type"),
+                           headers=dict(request.headers))
+
+                # We need to reconstruct the request with the body
+                from fastapi import Request as FastAPIRequest
+                from starlette.requests import Request as StarletteRequest
+
+                # Create a new request with the same body
+                scope = request.scope.copy()
+                receive = request.receive.__class__(lambda: {"type": "http.request", "body": body})
+
+                # Create new request
+                new_request = StarletteRequest(scope, receive)
+                request._body = body  # Cache the body for later use
+
+            except Exception as e:
+                logger.error("Error reading POST body", error=str(e))
 
         try:
             response = await call_next(request)
@@ -182,10 +221,20 @@ def create_app() -> FastAPI:
     # auth_router = create_auth_router()  # Comentado temporariamente - problema na DI
     # webhook_router = create_webhook_router()  # Comentado temporariamente para usar asyncpg
     health_router = create_health_router()
+    dashboard_router = create_dashboard_router()
+    positions_router = create_positions_router()
+    dashboard_cards_router = create_dashboard_cards_router()
+    sync_router = create_sync_router()
 
     # app.include_router(auth_router, prefix="/api/v1")  # Comentado temporariamente
     # app.include_router(webhook_router, prefix="/api/v1")  # Comentado temporariamente
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(dashboard_router)
+    app.include_router(positions_router)
+    app.include_router(dashboard_cards_router)
+    app.include_router(sync_router)
+    app.include_router(create_exchange_account_router())
+
 
     return app
 
@@ -288,20 +337,65 @@ async def tradingview_webhook(request: Request):
 
 # 📊 ENDPOINTS PARA FRONTEND - VISUALIZAÇÃO DE ORDENS
 @app.get("/api/v1/orders")
-async def get_orders():
-    """Lista ordens recentes para o frontend"""
+async def get_orders(
+    limit: int = Query(default=50, description="Limite de ordens a retornar"),
+    exchange_account_id: str = Query(default=None, description="ID da conta de exchange"),
+    date_from: str = Query(default=None, description="Data inicial (YYYY-MM-DD)"),
+    date_to: str = Query(default=None, description="Data final (YYYY-MM-DD)")
+):
+    """Lista ordens com filtros para o frontend"""
     try:
-        orders = await transaction_db.fetch(
-            """
-            SELECT 
-                id, symbol, side, order_type, quantity, price, status,
-                exchange, exchange_order_id, filled_quantity, average_price,
-                created_at, updated_at
-            FROM trading_orders 
-            ORDER BY created_at DESC
-            LIMIT 50
+        # Construir query dinamicamente baseada nos filtros
+        base_query = """
+            SELECT
+                t.id, t.symbol, t.side, t.order_type, t.quantity, t.price, t.status,
+                t.exchange, t.exchange_order_id, t.filled_quantity, t.average_price,
+                t.created_at, t.updated_at
+            FROM trading_orders t
         """
-        )
+
+        conditions = []
+        params = {}
+        joins = []
+
+        # Filtro por exchange account - primeiro buscar o nome da exchange
+        param_values = []
+        if exchange_account_id:
+            # Buscar o nome da exchange baseado no UUID
+            try:
+                exchange_account = await transaction_db.fetchrow(
+                    "SELECT exchange FROM exchange_accounts WHERE id = $1",
+                    exchange_account_id
+                )
+                if exchange_account:
+                    param_values.append(exchange_account['exchange'])
+                    conditions.append(f"t.exchange = ${len(param_values)}")
+            except Exception as e:
+                print(f"❌ Erro ao buscar exchange account: {e}")
+                # Se não encontrar a conta, não aplicar filtro
+
+        # Filtro por data
+        if date_from:
+            param_values.append(date_from)
+            conditions.append(f"DATE(t.created_at) >= ${len(param_values)}")
+
+        if date_to:
+            param_values.append(date_to)
+            conditions.append(f"DATE(t.created_at) <= ${len(param_values)}")
+
+        # Adicionar WHERE se houver condições
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        # Adicionar ordenação e limite
+        base_query += " ORDER BY t.created_at DESC"
+        if limit:
+            base_query += f" LIMIT {limit}"
+
+        print(f"🔍 Orders Query: {base_query}")
+        print(f"🔍 Orders Params: {param_values}")
+
+        orders = await transaction_db.fetch(base_query, *param_values)
 
         # Converter para formato JSON serializable
         orders_list = []
@@ -604,6 +698,71 @@ async def get_current_user(request: Request):
     except Exception as e:
         logger.error(f"Get current user error: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/api/v1/exchange-accounts")
+async def get_exchange_accounts():
+    """Get exchange accounts from database"""
+    try:
+        # Get exchange accounts from database
+        accounts = await transaction_db.fetch("""
+            SELECT
+                id, name, exchange,
+                testnet, is_active, created_at, updated_at
+            FROM exchange_accounts
+            WHERE is_active = true
+            ORDER BY created_at DESC
+        """)
+
+        result = []
+        for account in accounts:
+            result.append({
+                "id": str(account["id"]),
+                "name": account["name"],
+                "exchange": account["exchange"],
+                "api_key_preview": "***key***",
+                "testnet": account["testnet"],
+                "is_active": account["is_active"],
+                "status": "connected" if account["is_active"] else "disconnected",
+                "balance": {
+                    "total": 0.0,  # Would need to fetch from exchange API
+                    "available": 0.0,
+                    "used": 0.0
+                },
+                "created_at": account["created_at"].isoformat(),
+                "updated_at": account["updated_at"].isoformat()
+            })
+
+        return result
+    except Exception as e:
+        logger.error(f"Get exchange accounts error: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/api/v1/webhooks")
+async def get_webhooks():
+    """Get webhooks from database"""
+    try:
+        # Mock webhook data for demo
+        result = [
+            {
+                "id": "webhook_1",
+                "name": "TradingView Webhook",
+                "url": "/api/v1/webhooks/tradingview",
+                "secret_key": "***hidden***",
+                "status": "active",
+                "is_active": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "last_triggered": None
+            }
+        ]
+
+        return result
+    except Exception as e:
+        logger.error(f"Get webhooks error: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
 
 
 if __name__ == "__main__":

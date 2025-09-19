@@ -9,6 +9,7 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 | Data | Descrição |
 |------|-----------|
 | 2025-06-25 | Estrutura inicial (Dev Container + Docker Compose + pipelines CI) criada. |
+| 2025-09-19 | **Sistema de Trading Operacional** - Dashboard funcionando com dados reais da Binance, sincronização automática implementada, projeto limpo e otimizado. |
 
 ---
 
@@ -53,11 +54,76 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 
 ---
 
-## 5. Comandos Essenciais
+## 5. Arquitetura e Portas do Sistema
+
+### 🏗️ Estrutura Atual Funcionando
+
+| Serviço | Porta | Diretório | Status |
+|---------|-------|-----------|--------|
+| **Backend API** | `8000` | `/apps/api-python/` | ✅ Operacional |
+| **Frontend React** | `3000` | `/frontend-new/` | ✅ Operacional |
+| **Auto Sync** | - | `/apps/api-python/auto_sync.sh` | ✅ Ativo (30s) |
+
+### 🔄 Fluxo de Dados Implementado
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Binance API   │ -> │  Backend FastAPI │ -> │ Frontend React  │
+│   (Real-time)   │    │   (Port 8000)    │    │  (Port 3000)    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                        │                       │
+         │              ┌─────────▼─────────┐             │
+         │              │  PostgreSQL DB   │             │
+         │              │    (Supabase)    │             │
+         │              └───────────────────┘             │
+         │                                                │
+         └──────────── Auto Sync (30s) ◄──────────────────┘
+```
+
+### 📡 Endpoints Principais Funcionando
+
+| Endpoint | Função | Frontend Hook |
+|----------|--------|--------------|
+| `/api/v1/dashboard/balances` | **Dados principais** - SPOT/FUTURES + P&L | `useBalancesSummary` |
+| `/api/v1/sync/balances/{id}` | Sincronização automática | Auto Sync Script |
+| `/api/v1/auth/login` | Autenticação | `useAuth` |
+| `/api/v1/orders/stats` | Estatísticas de ordens | `useOrdersStats` |
+| `/api/v1/positions/metrics` | Métricas de posições | `usePositionsMetrics` |
+
+### 🎯 Configuração de Cache e Atualização
+
+**Frontend (React Query)**:
+```typescript
+// useBalancesSummary - Atualização agressiva
+staleTime: 0,           // Dados sempre considerados stale
+gcTime: 0,              // Sem cache garbage collection
+refetchInterval: 10000, // Refetch a cada 10 segundos
+```
+
+**Backend (P&L Real-time)**:
+```python
+# Dashboard Controller - Busca direta da Binance API
+connector = BinanceConnector(api_key, api_secret, testnet=False)
+positions_result = await connector.get_futures_positions()
+# Calcula P&L em tempo real das posições
+```
+
+---
+
+## 6. Comandos Essenciais
 
 ```bash
-# Dev Container
-docker compose up service-template      # sobe FastAPI + deps
+# Iniciar o sistema completo
+cd /home/globalauto/global/apps/api-python && python3 main.py &     # Backend
+cd /home/globalauto/global/frontend-new && PORT=3000 npm run dev &  # Frontend
+cd /home/globalauto/global/apps/api-python && ./auto_sync.sh &      # Auto Sync
+
+# Verificar status dos serviços
+lsof -i:8000  # Backend
+lsof -i:3000  # Frontend
+ps aux | grep auto_sync  # Sincronização
+
+# Desenvolvimento
 pre-commit run --all-files              # lint + format + testes rápidos
 pytest -q                               # suíte completa
 make docs                               # gera documentação (se aplicável)

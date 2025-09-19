@@ -13,6 +13,7 @@ from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
+from infrastructure.pricing.binance_price_service import BinancePriceService
 from infrastructure.security.encryption_service import EncryptionService
 
 logger = structlog.get_logger(__name__)
@@ -266,31 +267,163 @@ def create_sync_router() -> APIRouter:
 
     @router.post("/balances/{account_id}")
     async def sync_balances(account_id: str, request: Request):
-        """Sync balances from exchange"""
+        """Sync balances from exchange (SPOT + FUTURES)"""
         try:
             logger.info(f"💰 Syncing balances for account {account_id}")
-            
-            connector = await get_exchange_connector(account_id)
-            result = await connector.get_account_balances()
-            
-            if not result.get('success', True):
-                return {
-                    "success": False,
-                    "error": result.get('error', 'Failed to fetch balances')
-                }
 
-            balances = result.get('balances', [])
-            
-            # Store balances in database (we'll need to create balances table)
-            # For now, just return the balances
-            
-            logger.info(f"💰 Found {len(balances)} balances")
-            
+            connector = await get_exchange_connector(account_id)
+
+            # Get SPOT balances
+            spot_result = await connector.get_account_info()
+            spot_balances = spot_result.get('balances', []) if spot_result.get('success', True) else []
+
+            # Get FUTURES balances
+            futures_result = await connector.get_futures_account()
+            futures_balances = []
+
+            if futures_result.get('success', True):
+                futures_account = futures_result.get('account', {})
+                # Extract assets from futures account
+                for asset_data in futures_account.get('assets', []):
+                    wallet_balance = float(asset_data.get('walletBalance', 0))
+                    available_balance = float(asset_data.get('availableBalance', 0))
+                    if wallet_balance > 0:
+                        futures_balances.append({
+                            'asset': asset_data.get('asset'),
+                            'free': available_balance,
+                            'locked': wallet_balance - available_balance,
+                            'total': wallet_balance
+                        })
+
+            # Combine all balances
+            all_balances = [
+                *[(balance, 'SPOT') for balance in spot_balances],
+                *[(balance, 'FUTURES') for balance in futures_balances]
+            ]
+
+            # Store balances in database
+            synced_count = 0
+            errors = []
+
+            # Track which assets we've seen from Binance for cleanup
+            binance_assets = set()
+            for balance_data, account_type in all_balances:
+                asset = balance_data.get('asset')
+                if asset:
+                    binance_assets.add((asset, account_type))
+
+            # Initialize real-time price service (use real API, not testnet)
+            price_service = BinancePriceService(testnet=False)  # Always use real prices
+
+            # Get real-time prices from Binance API
+            logger.info("🔄 Fetching real-time prices from Binance...")
+            real_prices = await price_service.get_all_ticker_prices()
+
+            if not real_prices:
+                logger.error("❌ Failed to fetch real prices, sync cancelled")
+                raise HTTPException(status_code=500, detail="Failed to fetch price data from Binance")
+
+            logger.info(f"✅ Fetched {len(real_prices)} real prices from Binance")
+
+            for balance_data, account_type in all_balances:
+                try:
+                    asset = balance_data.get('asset')
+
+                    if account_type == 'SPOT':
+                        free = float(balance_data.get('free', 0))
+                        locked = float(balance_data.get('locked', 0))
+                        total = free + locked
+                    else:  # FUTURES
+                        free = float(balance_data.get('free', 0))
+                        locked = float(balance_data.get('locked', 0))
+                        total = float(balance_data.get('total', free + locked))
+
+                    # Debug: log all balances before filtering
+                    logger.info(f"🔍 Processing {account_type} balance: {asset} = {total} (raw data: {balance_data})")
+
+                    if total <= 0:
+                        logger.info(f"⏭️ Skipping {asset} - total balance <= 0")
+                        continue
+
+                    # Calculate USD value using real-time prices
+                    usd_value = await price_service.calculate_usdt_value(asset, total, real_prices)
+
+                    # Check if balance already exists for this account type
+                    existing = await transaction_db.fetchrow("""
+                        SELECT id FROM exchange_account_balances
+                        WHERE exchange_account_id = $1 AND asset = $2 AND account_type = $3
+                    """, account_id, asset, account_type)
+
+                    if existing:
+                        # Update existing balance
+                        logger.info(f"🔄 Updating existing balance for {asset} ({account_type})")
+                        await transaction_db.execute("""
+                            UPDATE exchange_account_balances SET
+                                free_balance = $1,
+                                locked_balance = $2,
+                                total_balance = $3,
+                                usd_value = $4
+                            WHERE id = $5
+                        """, free, locked, total, usd_value, existing['id'])
+                        logger.info(f"✅ Updated balance for {asset} ({account_type})")
+                    else:
+                        # Insert new balance
+                        logger.info(f"➕ Inserting new balance for {asset} ({account_type})")
+                        await transaction_db.execute("""
+                            INSERT INTO exchange_account_balances (
+                                exchange_account_id, asset, free_balance, locked_balance,
+                                total_balance, usd_value, account_type
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """, account_id, asset, free, locked, total, usd_value, account_type)
+                        logger.info(f"✅ Inserted balance for {asset} ({account_type})")
+
+                    synced_count += 1
+                    logger.info(f"💰 Synced {account_type} balance: {asset} = {total} (${usd_value:.2f}) for account {account_id}")
+
+                except Exception as e:
+                    error_msg = f"Failed to sync {account_type} balance {balance_data.get('asset')}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+
+            # Clean up old balances that no longer exist in Binance
+            logger.info("🧹 Cleaning up old balances not found in Binance...")
+
+            # Get all existing assets in database for this account
+            existing_assets = await transaction_db.fetch("""
+                SELECT asset, account_type FROM exchange_account_balances
+                WHERE exchange_account_id = $1
+            """, account_id)
+
+            # Remove assets that are no longer in Binance
+            removed_count = 0
+            for db_asset in existing_assets:
+                asset_key = (db_asset['asset'], db_asset['account_type'])
+                if asset_key not in binance_assets:
+                    # This asset is in DB but not in Binance anymore - remove it
+                    await transaction_db.execute("""
+                        DELETE FROM exchange_account_balances
+                        WHERE exchange_account_id = $1 AND asset = $2 AND account_type = $3
+                    """, account_id, db_asset['asset'], db_asset['account_type'])
+
+                    removed_count += 1
+                    logger.info(f"🗑️ Removed old balance: {db_asset['asset']} ({db_asset['account_type']})")
+
+            if removed_count > 0:
+                logger.info(f"🧹 Cleaned up {removed_count} old balances")
+            else:
+                logger.info("✅ No old balances to clean up")
+
+            logger.info(f"💰 Synced {synced_count} balances to database (SPOT + FUTURES)")
+
             return {
                 "success": True,
-                "message": f"Found {len(balances)} balances",
-                "balances": balances,
-                "demo": result.get('demo', False)
+                "message": f"Synced {synced_count} balances to database",
+                "synced_count": synced_count,
+                "total_balances": len(all_balances),
+                "spot_balances": len(spot_balances),
+                "futures_balances": len(futures_balances),
+                "errors": errors,
+                "demo": futures_result.get('demo', False)
             }
 
         except HTTPException:
@@ -298,6 +431,31 @@ def create_sync_router() -> APIRouter:
         except Exception as e:
             logger.error(f"Error syncing balances: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to sync balances: {str(e)}")
+
+    @router.get("/balances/debug/{account_id}")
+    async def debug_balances_sync(account_id: str):
+        """Debug balances sync to see what's being returned by Binance"""
+        try:
+            connector = await get_exchange_connector(account_id)
+
+            # Get SPOT data
+            spot_result = await connector.get_account_info()
+
+            # Get FUTURES data
+            futures_result = await connector.get_futures_account()
+
+            return {
+                "account_id": account_id,
+                "spot_api_response": spot_result,
+                "futures_api_response": futures_result,
+                "spot_success": spot_result.get('success', False),
+                "futures_success": futures_result.get('success', False),
+                "spot_balances_count": len(spot_result.get('balances', [])) if spot_result.get('success') else 0,
+                "futures_assets_count": len(futures_result.get('account', {}).get('assets', [])) if futures_result.get('success') else 0
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
 
     @router.post("/positions/{account_id}")
     async def sync_positions(account_id: str, request: Request):
@@ -315,7 +473,14 @@ def create_sync_router() -> APIRouter:
                 }
 
             positions = result.get('positions', [])
-            
+
+            # Track which symbols we've seen from Binance for cleanup
+            binance_symbols = set()
+            for position in positions:
+                symbol = position.get('symbol', '').replace('-', '')
+                if symbol:
+                    binance_symbols.add(symbol)
+
             # Store positions in database (positions table already exists)
             synced_count = 0
             errors = []
@@ -389,8 +554,37 @@ def create_sync_router() -> APIRouter:
                     errors.append(error_msg)
                     logger.error(error_msg)
 
+            # Clean up old positions that no longer exist in Binance
+            logger.info("🧹 Cleaning up old positions not found in Binance...")
+
+            # Get all existing positions in database for this account
+            existing_positions = await transaction_db.fetch("""
+                SELECT symbol FROM positions
+                WHERE exchange_account_id = $1 AND status = 'open'
+            """, account_id)
+
+            # Close positions that are no longer in Binance
+            closed_count = 0
+            for db_position in existing_positions:
+                if db_position['symbol'] not in binance_symbols:
+                    # This position is in DB but not in Binance anymore - close it
+                    await transaction_db.execute("""
+                        UPDATE positions SET
+                            status = 'closed',
+                            updated_at = $1
+                        WHERE exchange_account_id = $2 AND symbol = $3 AND status = 'open'
+                    """, datetime.now(), account_id, db_position['symbol'])
+
+                    closed_count += 1
+                    logger.info(f"🗑️ Closed old position: {db_position['symbol']}")
+
+            if closed_count > 0:
+                logger.info(f"🧹 Closed {closed_count} old positions")
+            else:
+                logger.info("✅ No old positions to close")
+
             logger.info(f"📊 Synced {synced_count} positions")
-            
+
             return {
                 "success": True,
                 "message": f"Synced {synced_count} positions",
@@ -463,5 +657,64 @@ def create_sync_router() -> APIRouter:
         except Exception as e:
             logger.error(f"Error testing connection: {e}")
             raise HTTPException(status_code=500, detail=f"Connection test failed: {str(e)}")
+
+    @router.get("/check-database/{account_id}")
+    async def check_database_balances(account_id: str):
+        """Check what's actually in the database"""
+        try:
+            # Count total balances for this account
+            total_count = await transaction_db.fetchval("""
+                SELECT COUNT(*) FROM exchange_account_balances
+                WHERE exchange_account_id = $1
+            """, account_id)
+
+            # Count by account type
+            spot_count = await transaction_db.fetchval("""
+                SELECT COUNT(*) FROM exchange_account_balances
+                WHERE exchange_account_id = $1 AND account_type = 'SPOT'
+            """, account_id)
+
+            futures_count = await transaction_db.fetchval("""
+                SELECT COUNT(*) FROM exchange_account_balances
+                WHERE exchange_account_id = $1 AND account_type = 'FUTURES'
+            """, account_id)
+
+            # Get all balances
+            all_balances = await transaction_db.fetch("""
+                SELECT account_type, asset, total_balance, usd_value, free_balance, locked_balance, created_at
+                FROM exchange_account_balances
+                WHERE exchange_account_id = $1
+                ORDER BY account_type, usd_value DESC
+            """, account_id)
+
+            # Sum USD values
+            total_usd = await transaction_db.fetchval("""
+                SELECT COALESCE(SUM(usd_value), 0) FROM exchange_account_balances
+                WHERE exchange_account_id = $1
+            """, account_id)
+
+            spot_usd = await transaction_db.fetchval("""
+                SELECT COALESCE(SUM(usd_value), 0) FROM exchange_account_balances
+                WHERE exchange_account_id = $1 AND account_type = 'SPOT'
+            """, account_id)
+
+            futures_usd = await transaction_db.fetchval("""
+                SELECT COALESCE(SUM(usd_value), 0) FROM exchange_account_balances
+                WHERE exchange_account_id = $1 AND account_type = 'FUTURES'
+            """, account_id)
+
+            return {
+                "account_id": account_id,
+                "total_balances": total_count,
+                "spot_balances": spot_count,
+                "futures_balances": futures_count,
+                "total_usd": float(total_usd),
+                "spot_usd": float(spot_usd),
+                "futures_usd": float(futures_usd),
+                "balances": [dict(b) for b in all_balances]
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
 
     return router

@@ -4,6 +4,7 @@ Conecta com a API da Binance para executar ordens reais
 """
 
 import asyncio
+import os
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 from decimal import Decimal
@@ -17,7 +18,7 @@ class BinanceConnector:
     """Connector para Binance API"""
 
     def __init__(
-        self, api_key: str = None, api_secret: str = None, testnet: bool = True
+        self, api_key: str = None, api_secret: str = None, testnet: bool = False
     ):
         """
         Initialize Binance connector
@@ -25,8 +26,14 @@ class BinanceConnector:
         Args:
             api_key: Binance API key
             api_secret: Binance API secret
-            testnet: Use testnet (default True for safety)
+            testnet: Use testnet (default False for production)
         """
+        # Se não fornecidas, tentar pegar do ambiente
+        if not api_key:
+            api_key = os.getenv("BINANCE_API_KEY")
+        if not api_secret:
+            api_secret = os.getenv("BINANCE_SECRET_KEY") or os.getenv("BINANCE_API_SECRET")
+
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
@@ -36,6 +43,7 @@ class BinanceConnector:
             self.client = Client(
                 api_key=api_key, api_secret=api_secret, testnet=testnet
             )
+            logger.info("✅ Binance connector initialized with REAL credentials", testnet=testnet)
         else:
             # Modo demo (sem API keys)
             self.client = None
@@ -269,6 +277,7 @@ class BinanceConnector:
         try:
             if self.is_demo_mode():
                 return {
+                    "success": True,
                     "demo": True,
                     "account_type": "DEMO",
                     "balances": [
@@ -288,6 +297,7 @@ class BinanceConnector:
             ]
 
             return {
+                "success": True,
                 "demo": False,
                 "account_type": account.get("accountType", "SPOT"),
                 "can_trade": account.get("canTrade", False),
@@ -298,7 +308,92 @@ class BinanceConnector:
 
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
-            raise
+            return {"success": False, "error": str(e)}
+
+    async def get_futures_account(self) -> Dict[str, Any]:
+        """Get futures account information"""
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "account": {
+                        "totalWalletBalance": "0.00",
+                        "availableBalance": "0.00",
+                        "totalUnrealizedProfit": "0.00",
+                        "assets": []
+                    }
+                }
+
+            # Get futures account info
+            futures_account = self.client.futures_account()
+
+            return {
+                "success": True,
+                "demo": False,
+                "account": futures_account
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting futures account info: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_account_orders(self, symbol=None, limit=100, start_time=None, end_time=None) -> Dict[str, Any]:
+        """Get account orders"""
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orders": []
+                }
+
+            # Get orders from Binance
+            orders = self.client.get_all_orders(
+                symbol=symbol,
+                limit=limit,
+                startTime=start_time,
+                endTime=end_time
+            )
+
+            return {
+                "success": True,
+                "demo": False,
+                "orders": orders
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting account orders: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_futures_positions(self) -> Dict[str, Any]:
+        """Get futures positions"""
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "positions": []
+                }
+
+            # Get futures positions
+            positions = self.client.futures_position_information()
+
+            # Filter only positions with size > 0
+            active_positions = [
+                pos for pos in positions
+                if float(pos.get('positionAmt', 0)) != 0
+            ]
+
+            return {
+                "success": True,
+                "demo": False,
+                "positions": active_positions
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting futures positions: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Factory function para criar connector

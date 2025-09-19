@@ -2,100 +2,82 @@
 
 Uma plataforma completa para automação de serviços, incluindo trading de criptomoedas, marketing e suporte.
 
-## 🏗️ Estrutura do Projeto
+## 🏗️ Estrutura Atual do Projeto (Execução Nativa)
 
 ```
 GlobalAutomation/
-├── services/
-│   └── trading/           # Serviços de trading
-│       ├── api-service/   # Backend Python/FastAPI
-│       ├── execution-service/
-│       └── reconciliation-service/
-├── frontend/
-│   └── trading-dashboard/ # Frontend React/TypeScript
-├── shared/
-│   └── templates/         # Templates para novos serviços
-├── infrastructure/        # Docker, K8s, configs
-└── docs/                  # Documentação
+├── apps/
+│   └── api-python/        # Backend FastAPI + Python (Operacional)
+├── frontend-new/          # Frontend React/TypeScript (Operacional)
+├── docs/                  # Documentação
+├── venv/                  # Ambiente Python
+└── CLAUDE.md             # Instruções para desenvolvimento
 ```
 
-## 🚀 Como Executar
+**Nota**: Sistema migrou para **execução nativa** (sem Docker) para melhor performance e menor consumo de CPU.
 
-### Opção 1: Desenvolvimento Local (Recomendado)
+## 🚀 Como Executar (Sistema Nativo)
+
+### Execução do Sistema Completo
 
 ```bash
-# Backend
-cd services/trading/api-service
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Backend FastAPI
+cd /home/globalauto/global/apps/api-python
+python3 main.py &
 
-# Frontend (em outro terminal)
-cd frontend/trading-dashboard
-npm install
-npm run dev
+# Frontend React
+cd /home/globalauto/global/frontend-new
+PORT=3000 npm run dev &
+
+# Auto Sync (Sincronização automática com Binance)
+cd /home/globalauto/global/apps/api-python
+./auto_sync.sh &
 ```
 
-### Opção 2: Com Docker Compose
+## 🔧 Configuração
 
-```bash
-# Subir todos os serviços
-docker-compose up -d
+O sistema está configurado para execução nativa:
 
-# Ou apenas alguns serviços
-docker-compose up postgres redis api-service trading-dashboard
-```
-
-## 🔧 Configuração Inteligente
-
-O sistema detecta automaticamente o ambiente:
-
-- **Desenvolvimento Local**: Usa `localhost:8000`
-- **Docker**: Usa `api-service:8000`  
-- **Personalizado**: Define `VITE_API_URL` no `.env`
+- **Backend API**: http://localhost:8000
+- **Frontend**: http://localhost:3000
+- **Database**: Supabase (PostgreSQL remoto)
+- **Environment**: `.env` configurado para produção
 
 ### Credenciais de Teste
 
 - **Email**: `demo@tradingview.com`
 - **Senha**: `demo123456`
 
-## Local Development
+## 🛠️ Desenvolvimento Local
 
-### Prerequisites
+### Pré-requisitos
 
-- Docker and Docker Compose
-- VS Code with Dev Containers extension
+- Python 3.11+
+- Node.js 18+
+- WSL2 (Windows) ou ambiente Linux/macOS
 
-### Setup
+### Setup Inicial
 
-1. Clone the repository
-2. Open in VS Code
-3. Click "Reopen in Container" when prompted
-4. Services will start automatically via docker-compose
+1. Clone o repositório
+2. Configure as variáveis de ambiente no `.env`
+3. Instale dependências do backend: `pip install -r requirements.txt`
+4. Instale dependências do frontend: `npm install`
+5. Execute os comandos de inicialização acima
 
-### Services
-
-- **API**: http://localhost:8000
-- **PostgreSQL**: localhost:5432
-- **Redis**: localhost:6379
-
-### Environment Variables
-
-Copy `.env.example` to `.env` and configure:
+### Monitoramento
 
 ```bash
-POSTGRES_USER=globalautomations
-POSTGRES_DB=globalautomations
-POSTGRES_PASSWORD=your_password
+# Verificar status dos serviços
+lsof -i:8000  # Backend
+lsof -i:3000  # Frontend
+ps aux | grep auto_sync  # Sincronização
+
+# Logs em tempo real
+tail -f logs/api.log    # Se existir
 ```
 
-### Running Tests
+### Ambiente de Produção
 
-```bash
-docker compose run --rm service-template pytest
-```
-
-### Building Services
-
-```bash
-docker compose build
-```
+- **Database**: Supabase PostgreSQL
+- **API Keys**: Binance (configuradas no .env)
+- **Deploy**: Execução nativa no servidor

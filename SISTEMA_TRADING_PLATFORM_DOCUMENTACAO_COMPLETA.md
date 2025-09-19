@@ -43,11 +43,11 @@ TradingView → Webhook → Nossa Plataforma → Exchange APIs → Dashboard
 - **Arquitetura:** Clean Architecture
 - **APIs:** Binance, Bybit, OKX
 
-### **Infraestrutura**
-- **Containers:** Docker Compose
-- **Desenvolvimento:** Dev Containers
-- **CI/CD:** GitHub Actions (configurado)
-- **Monitoramento:** Logs estruturados
+### **Infraestrutura (Execução Nativa)**
+- **Deploy:** Execução nativa (sem containers)
+- **Performance:** Otimizada para baixo consumo de CPU
+- **Desenvolvimento:** WSL2 + ambiente nativo
+- **Monitoramento:** Logs estruturados + process monitoring
 
 ---
 

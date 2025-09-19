@@ -1,11 +1,10 @@
-import React, { useState } from 'react'
-import { Wifi, Calendar, Filter } from 'lucide-react'
+import React, { useState, useRef, useEffect } from 'react'
+import { Wifi, Calendar, Filter, ChevronDown, Check, Building } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Badge } from '../atoms/Badge'
 import { Button } from '../atoms/Button'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 import { Input } from '../atoms/Input'
-import { Select } from '../atoms/Select'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useOrders, useExchangeAccounts } from '@/hooks/useApiData'
 import { useQueryClient } from '@tanstack/react-query'
@@ -19,6 +18,10 @@ const OrdersPage: React.FC = () => {
   const [dateTo, setDateTo] = useState<string>('')
   const [selectedExchange, setSelectedExchange] = useState<string>('all')
 
+  // Estados para dropdown customizado
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
   // API Data hooks - usar filtros
   const { data: ordersApi, isLoading: loadingOrders, error: ordersError } = useOrders({
     exchangeAccountId: selectedExchange,
@@ -27,6 +30,18 @@ const OrdersPage: React.FC = () => {
   })
   const { data: exchangeAccounts, isLoading: loadingAccounts } = useExchangeAccounts()
   
+  // Fechar dropdown ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   // Debug logs
   console.log('📋 OrdersPage: ordersApi:', ordersApi)
   console.log('📋 OrdersPage: loadingOrders:', loadingOrders)
@@ -54,7 +69,20 @@ const OrdersPage: React.FC = () => {
     setDateFrom('')
     setDateTo('')
     setSelectedExchange('all')
+    setIsDropdownOpen(false)
     refreshOrders()
+  }
+
+  const handleExchangeSelect = (exchangeId: string) => {
+    setSelectedExchange(exchangeId)
+    setIsDropdownOpen(false)
+    console.log('🏦 Exchange selecionada:', exchangeId)
+  }
+
+  const getSelectedExchangeLabel = () => {
+    if (selectedExchange === 'all') return 'Todas as exchanges'
+    const account = exchangeAccounts?.find((acc: any) => acc.id === selectedExchange)
+    return account ? `${account.exchange} - ${account.label || account.name || 'Conta'}` : 'Exchange não encontrada'
   }
 
   const testApiConnection = async () => {
@@ -229,54 +257,117 @@ const OrdersPage: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             {/* Filtro Data Início */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Data de Início</label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                placeholder="Data inicial"
-              />
+              <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                <Calendar className="w-4 h-4" />
+                Data de Início
+              </label>
+              <div className="relative">
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="pl-10 bg-background border-border focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all duration-200"
+                />
+                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              </div>
             </div>
 
             {/* Filtro Data Fim */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Data de Fim</label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                placeholder="Data final"
-              />
+              <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                <Calendar className="w-4 h-4" />
+                Data de Fim
+              </label>
+              <div className="relative">
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="pl-10 bg-background border-border focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all duration-200"
+                />
+                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              </div>
             </div>
 
-            {/* Filtro Exchange */}
+            {/* Dropdown Customizado Exchange */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Conta de Exchange</label>
-              <Select
-                value={selectedExchange}
-                onChange={(e) => setSelectedExchange(e.target.value)}
-                disabled={loadingAccounts}
-              >
-                <option value="all">Todas as contas</option>
-                {exchangeAccounts?.map((account: any) => (
-                  <option key={account.id} value={account.id}>
-                    {account.exchange} - {account.label || account.name}
-                  </option>
-                ))}
-              </Select>
+              <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                <Building className="w-4 h-4" />
+                Conta de Exchange
+              </label>
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                  disabled={loadingAccounts}
+                  className="w-full px-4 py-2 pl-10 text-left bg-background border border-border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary hover:bg-muted transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Building className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <span className="block truncate text-foreground">
+                    {loadingAccounts ? 'Carregando...' : getSelectedExchangeLabel()}
+                  </span>
+                  <ChevronDown className={`absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {/* Dropdown List */}
+                {isDropdownOpen && !loadingAccounts && (
+                  <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                    <div className="py-1">
+                      {/* Opção "Todas as exchanges" */}
+                      <button
+                        onClick={() => handleExchangeSelect('all')}
+                        className={`w-full px-4 py-3 text-left hover:bg-muted transition-colors duration-150 flex items-center justify-between ${
+                          selectedExchange === 'all' ? 'bg-primary/10 text-primary' : 'text-foreground'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-2 h-2 rounded-full bg-muted-foreground"></div>
+                          <span className="font-medium">Todas as exchanges</span>
+                        </div>
+                        {selectedExchange === 'all' && <Check className="w-4 h-4 text-primary" />}
+                      </button>
+
+                      {/* Lista de exchanges */}
+                      {exchangeAccounts?.map((account: any) => (
+                        <button
+                          key={account.id}
+                          onClick={() => handleExchangeSelect(account.id)}
+                          className={`w-full px-4 py-3 text-left hover:bg-muted transition-colors duration-150 flex items-center justify-between ${
+                            selectedExchange === account.id ? 'bg-primary/10 text-primary' : 'text-foreground'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${
+                              account.exchange === 'Binance' ? 'bg-yellow-500' :
+                              account.exchange === 'Bybit' ? 'bg-orange-500' :
+                              account.exchange === 'Coinbase' ? 'bg-blue-500' :
+                              'bg-muted-foreground'
+                            }`}></div>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{account.exchange}</span>
+                              <span className="text-sm text-muted-foreground">{account.label || account.name}</span>
+                            </div>
+                          </div>
+                          {selectedExchange === account.id && <Check className="w-4 h-4 text-primary" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Botões */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Ações</label>
+              <label className="text-sm font-medium text-foreground">Ações</label>
               <div className="flex gap-2">
                 <Button
                   onClick={applyFilters}
                   variant="default"
-                  className="flex-1"
+                  className="flex-1 bg-primary hover:bg-primary/90 focus:ring-2 focus:ring-primary/20 transition-all duration-200"
                 >
                   <Filter className="w-4 h-4 mr-2" />
                   Filtrar
@@ -284,7 +375,7 @@ const OrdersPage: React.FC = () => {
                 <Button
                   onClick={clearFilters}
                   variant="outline"
-                  className="flex-1"
+                  className="flex-1 border-border hover:bg-muted transition-all duration-200"
                 >
                   Limpar
                 </Button>
@@ -350,7 +441,7 @@ const OrdersPage: React.FC = () => {
                     <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                       <div className="flex items-center">
                         <Badge variant="outline" className="text-xs">
-                          {order.exchange || 'Binance'}
+                          {(order as any).exchange || (order as any).exchangeAccountId || 'Binance'}
                         </Badge>
                       </div>
                     </td>

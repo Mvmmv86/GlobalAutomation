@@ -56,13 +56,25 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 
 ## 5. Arquitetura e Portas do Sistema
 
-### 🏗️ Estrutura Atual Funcionando
+### 🏗️ Estrutura Atual Funcionando (Execução Nativa - Sem Docker)
 
 | Serviço | Porta | Diretório | Status |
 |---------|-------|-----------|--------|
-| **Backend API** | `8000` | `/apps/api-python/` | ✅ Operacional |
-| **Frontend React** | `3000` | `/frontend-new/` | ✅ Operacional |
+| **Backend API** | `8000` | `/apps/api-python/` | ✅ Operacional (python3 main.py) |
+| **Frontend React** | `3000` | `/frontend-new/` | ✅ Operacional (npm run dev) |
 | **Auto Sync** | - | `/apps/api-python/auto_sync.sh` | ✅ Ativo (30s) |
+
+### 📝 Nota Importante sobre Docker
+
+**Sistema atual**: Execução **NATIVA** (sem containers)
+- ✅ **Melhor performance**: Sem overhead de containers
+- ✅ **Menos CPU**: Resolveu problemas de consumo excessivo
+- ✅ **Mais simples**: Deploy direto no ambiente WSL2
+
+**Docker Compose**: ❌ **Removido do projeto**
+- Arquivo `docker-compose.yml` → Movido para `docker-compose.backup.yml`
+- Diretórios Docker órfãos → Identificados (alguns com permissões restritas)
+- Sistema funciona 100% nativo agora
 
 ### 🔄 Fluxo de Dados Implementado
 
@@ -113,10 +125,13 @@ positions_result = await connector.get_futures_positions()
 ## 6. Comandos Essenciais
 
 ```bash
-# Iniciar o sistema completo
-cd /home/globalauto/global/apps/api-python && python3 main.py &     # Backend
-cd /home/globalauto/global/frontend-new && PORT=3000 npm run dev &  # Frontend
+# Iniciar o sistema completo (Execução Nativa)
+cd /home/globalauto/global/apps/api-python && python3 main.py &     # Backend API
+cd /home/globalauto/global/frontend-new && PORT=3000 npm run dev &  # Frontend React
 cd /home/globalauto/global/apps/api-python && ./auto_sync.sh &      # Auto Sync
+
+# IMPORTANTE: Sistema roda NATIVO (sem Docker)
+# Melhor performance e menor consumo de CPU
 
 # Verificar status dos serviços
 lsof -i:8000  # Backend

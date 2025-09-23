@@ -366,6 +366,34 @@ class BinanceConnector:
             logger.error(f"Error getting account orders: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_futures_orders(self, symbol=None, limit=100, start_time=None, end_time=None) -> Dict[str, Any]:
+        """Get futures orders history"""
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orders": []
+                }
+
+            # Get futures orders from Binance
+            orders = self.client.futures_get_all_orders(
+                symbol=symbol,
+                limit=limit,
+                startTime=start_time,
+                endTime=end_time
+            )
+
+            return {
+                "success": True,
+                "demo": False,
+                "orders": orders
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting futures orders: {e}")
+            return {"success": False, "error": str(e)}
+
     async def get_futures_positions(self) -> Dict[str, Any]:
         """Get futures positions"""
         try:

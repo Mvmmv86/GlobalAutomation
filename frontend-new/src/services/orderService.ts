@@ -29,29 +29,53 @@ class OrderService {
         data: any[];
         total: number;
       }>(endpoint)
-      
+
       console.log('📊 OrderService: Response received:', response)
-      
-      // Transform Python API data to match frontend Order type
-      const transformedOrders = response.data.map((order: any) => ({
+
+      // FASE 1: Our API returns {success, data: [...], total} format
+      console.log('🔍 OrderService: Full response structure:', JSON.stringify(response, null, 2))
+
+      // Check if response is the actual API response or wrapped by axios
+      const apiResponse = response.data ? response : { data: response, success: true }
+
+      if (!apiResponse.data || !apiResponse.success) {
+        console.error('❌ API Error or invalid response:', apiResponse)
+        return []
+      }
+
+      const orders = apiResponse.data || []
+      if (!Array.isArray(orders)) {
+        console.error('❌ Data is not an array:', orders)
+        return []
+      }
+
+      console.log(`✅ Processing ${orders.length} orders from API`)
+
+      // Transform Python API data to match frontend Order type - FASE 1
+      const transformedOrders = orders.map((order: any) => ({
         id: order.id.toString(),
         clientOrderId: order.exchange_order_id || `order_${order.id}`,
         symbol: order.symbol,
         side: order.side,
         type: order.order_type,
-        status: order.status === 'FILLED' ? 'filled' : 
-                order.status === 'pending' ? 'open' : 
-                order.status.toLowerCase(),
+        status: order.status,
         quantity: order.quantity,
         price: order.price,
         filledQuantity: order.filled_quantity || 0,
         averageFillPrice: order.average_price,
-        feesPaid: 0, // Not available in current schema
+        feesPaid: 0, // FASE 1: Not implemented yet
         feeCurrency: null,
-        source: 'tradingview',
+        source: 'binance',
         exchangeAccountId: order.exchange || 'binance',
         createdAt: order.created_at,
         updatedAt: order.updated_at,
+
+        // FASE 1: Campos adicionais que implementamos
+        operation_type: order.operation_type || 'spot',
+        entry_exit: order.entry_exit || (order.side === 'buy' ? 'entrada' : 'saida'),
+        margin_usdt: order.margin_usdt || 0,
+        profit_loss: order.profit_loss || 0,
+        order_id: order.order_id || null,  // Order ID para agrupamento
       }))
       
       return transformedOrders

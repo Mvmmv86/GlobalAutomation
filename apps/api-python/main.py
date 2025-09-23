@@ -2,13 +2,13 @@
 
 import structlog
 import json
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -24,6 +24,10 @@ from presentation.controllers.dashboard_cards_controller import create_dashboard
 from presentation.controllers.sync_controller import create_sync_router
 from presentation.controllers.exchange_account_controller import create_exchange_account_router
 from infrastructure.background.sync_scheduler import sync_scheduler
+from infrastructure.exchanges.binance_connector import BinanceConnector
+from infrastructure.exchanges.bybit_connector import BybitConnector
+from infrastructure.security.encryption_service import EncryptionService
+from infrastructure.pricing.binance_price_service import BinancePriceService
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -335,6 +339,104 @@ async def tradingview_webhook(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# Função helper reutilizada do sync controller
+async def get_exchange_connector(account_id: str):
+    """Get exchange connector for account - reutilizada do sync controller"""
+    try:
+        encryption_service = EncryptionService()
+
+        # Get account from database
+        account = await transaction_db.fetchrow("""
+            SELECT id, name, exchange, api_key, secret_key, passphrase, testnet, is_active
+            FROM exchange_accounts
+            WHERE id = $1 AND is_active = true
+        """, account_id)
+
+        if not account:
+            raise HTTPException(status_code=404, detail=f"Exchange account {account_id} not found or inactive")
+
+        # Decrypt API credentials - FASE 1: Fallback para env vars se descriptografia falhar
+        try:
+            api_key = encryption_service.decrypt_string(account['api_key']) if account['api_key'] else None
+            secret_key = encryption_service.decrypt_string(account['secret_key']) if account['secret_key'] else None
+            passphrase = encryption_service.decrypt_string(account['passphrase']) if account['passphrase'] else None
+        except Exception as decrypt_error:
+            print(f"⚠️ Erro na descriptografia, usando fallback: {decrypt_error}")
+            # Fallback para variáveis de ambiente (igual dashboard)
+            import os
+            api_key = account['api_key'] or os.getenv('BINANCE_API_KEY')
+            secret_key = account['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+            passphrase = account['passphrase']
+
+        # Create appropriate connector
+        exchange = account['exchange'].lower()
+        testnet = account['testnet']
+
+        if exchange == 'binance':
+            return BinanceConnector(api_key, secret_key, testnet)
+        elif exchange == 'bybit':
+            return BybitConnector(api_key, secret_key, testnet)
+        else:
+            raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting exchange connector: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get exchange connector")
+
+# 🎯 SISTEMA HÍBRIDO: Função para buscar TODOS os símbolos relevantes
+async def get_all_relevant_symbols(exchange_account_id: str) -> list:
+    """
+    Estratégia híbrida para garantir cobertura completa de símbolos:
+    1. Símbolos que já temos ordens no banco (histórico)
+    2. Top símbolos populares da Binance
+    3. Combinar sem duplicatas
+    """
+    try:
+        print("🔍 Iniciando busca híbrida de símbolos...")
+
+        # 1. SÍMBOLOS HISTÓRICOS: Buscar da nossa base de dados
+        existing_symbols_rows = await transaction_db.fetch("""
+            SELECT DISTINCT symbol
+            FROM trading_orders
+            WHERE symbol IS NOT NULL
+              AND symbol != ''
+              AND created_at >= NOW() - INTERVAL '3 months'
+            ORDER BY symbol
+        """)
+
+        existing_symbols = [row['symbol'] for row in existing_symbols_rows]
+        print(f"📚 Símbolos históricos encontrados: {len(existing_symbols)} - {existing_symbols[:10]}...")
+
+        # 2. SÍMBOLOS POPULARES: Lista curada dos principais pares
+        popular_symbols = [
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'LINKUSDT', 'DOTUSDT', 'AVAXUSDT',
+            'XRPUSDT', 'LTCUSDT', 'MATICUSDT', 'ATOMUSDT', 'ALGOUSDT', 'VETUSDT', 'XLMUSDT', 'TRXUSDT',
+            'EOSUSDT', 'IOTAUSDT', 'NEOUSDT', 'DASHUSDT', 'ETCUSDT', 'XMRUSDT', 'ZECUSDT', 'COMPUSDT',
+            'FILUSDT', 'UNIUSDT', 'AAVEUSDT', 'SUSHIUSDT', 'CHZUSDT', 'MANAUSDT', 'SANDUSDT', 'ENJUSDT',
+            'GRTUSDT', 'BALUSDT', 'CRVUSDT', 'RNDRUSDT', 'NEARUSDT', 'FTMUSDT', 'APEUSDT', 'GALAUSDT'
+        ]
+        print(f"⭐ Símbolos populares: {len(popular_symbols)}")
+
+        # 3. COMBINAR SEM DUPLICATAS: Histórico tem prioridade
+        all_symbols = list(dict.fromkeys(existing_symbols + popular_symbols))
+
+        print(f"🎯 TOTAL DE SÍMBOLOS: {len(all_symbols)} (histórico: {len(existing_symbols)}, populares: {len(popular_symbols)})")
+
+        return all_symbols
+
+    except Exception as e:
+        print(f"❌ Erro na busca híbrida de símbolos: {e}")
+        # Fallback para símbolos populares
+        fallback_symbols = [
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'LINKUSDT', 'DOTUSDT', 'AVAXUSDT',
+            'XRPUSDT', 'LTCUSDT', 'MATICUSDT', 'ATOMUSDT', 'ALGOUSDT', 'VETUSDT', 'XLMUSDT', 'TRXUSDT'
+        ]
+        print(f"🔄 Usando fallback com {len(fallback_symbols)} símbolos populares")
+        return fallback_symbols
+
+
 # 📊 ENDPOINTS PARA FRONTEND - VISUALIZAÇÃO DE ORDENS
 @app.get("/api/v1/orders")
 async def get_orders(
@@ -343,89 +445,387 @@ async def get_orders(
     date_from: str = Query(default=None, description="Data inicial (YYYY-MM-DD)"),
     date_to: str = Query(default=None, description="Data final (YYYY-MM-DD)")
 ):
-    """Lista ordens com filtros para o frontend"""
+    """Lista ordens com filtros para o frontend - FASE 1: Dados diretos da Binance"""
     try:
-        # Construir query dinamicamente baseada nos filtros
-        base_query = """
-            SELECT
-                t.id, t.symbol, t.side, t.order_type, t.quantity, t.price, t.status,
-                t.exchange, t.exchange_order_id, t.filled_quantity, t.average_price,
-                t.created_at, t.updated_at
-            FROM trading_orders t
-        """
+        print(f"🔍 FASE 1: Buscando ordens direto da Binance API")
+        print(f"🔍 Filtros: account_id={exchange_account_id}, date_from={date_from}, date_to={date_to}, limit={limit}")
 
-        conditions = []
-        params = {}
-        joins = []
+        # FASE 1: Se não especificar conta, usar conta principal
+        if not exchange_account_id or exchange_account_id == 'all':
+            # Buscar conta principal (comportamento atual)
+            main_account = await transaction_db.fetchrow("""
+                SELECT id FROM exchange_accounts
+                WHERE testnet = false AND is_active = true
+                ORDER BY created_at ASC
+                LIMIT 1
+            """)
 
-        # Filtro por exchange account - primeiro buscar o nome da exchange
-        param_values = []
-        if exchange_account_id:
-            # Buscar o nome da exchange baseado no UUID
-            try:
-                exchange_account = await transaction_db.fetchrow(
-                    "SELECT exchange FROM exchange_accounts WHERE id = $1",
-                    exchange_account_id
-                )
-                if exchange_account:
-                    param_values.append(exchange_account['exchange'])
-                    conditions.append(f"t.exchange = ${len(param_values)}")
-            except Exception as e:
-                print(f"❌ Erro ao buscar exchange account: {e}")
-                # Se não encontrar a conta, não aplicar filtro
+            if not main_account:
+                return {"success": False, "error": "Nenhuma conta principal encontrada", "data": []}
 
-        # Filtro por data
+            account_id_to_use = main_account['id']
+        else:
+            account_id_to_use = exchange_account_id
+
+        print(f"🏦 Usando conta: {account_id_to_use}")
+
+        # Buscar ordens direto da Binance via connector
+        connector = await get_exchange_connector(account_id_to_use)
+
+        # Configurar filtros de tempo - PADRÃO: Últimos 3 meses se não especificado
+        start_time = None
+        end_time = None
+
         if date_from:
-            param_values.append(date_from)
-            conditions.append(f"DATE(t.created_at) >= ${len(param_values)}")
+            try:
+                start_time = int(datetime.strptime(date_from, '%Y-%m-%d').timestamp() * 1000)
+            except ValueError as e:
+                print(f"❌ Erro ao converter date_from: {e}")
 
         if date_to:
-            param_values.append(date_to)
-            conditions.append(f"DATE(t.created_at) <= ${len(param_values)}")
+            try:
+                # Adicionar 23:59:59 ao date_to
+                end_time = int((datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1) - timedelta(seconds=1)).timestamp() * 1000)
+            except ValueError as e:
+                print(f"❌ Erro ao converter date_to: {e}")
 
-        # Adicionar WHERE se houver condições
-        if conditions:
-            base_query += " WHERE " + " AND ".join(conditions)
+        # Se não especificado, buscar apenas últimos 3 meses (mais eficiente)
+        if not date_from and not date_to:
+            # Últimos 90 dias (3 meses)
+            three_months_ago = datetime.now() - timedelta(days=90)
+            start_time = int(three_months_ago.timestamp() * 1000)
+            print(f"🗓️ Aplicando filtro padrão: últimos 3 meses (desde {three_months_ago.strftime('%Y-%m-%d')})")
 
-        # Adicionar ordenação e limite
-        base_query += " ORDER BY t.created_at DESC"
-        if limit:
-            base_query += f" LIMIT {limit}"
+        # SISTEMA HÍBRIDO: Buscar símbolos dinamicamente para MÁXIMA cobertura
+        all_symbols = await get_all_relevant_symbols(exchange_account_id)
+        print(f"🎯 Sistema Híbrido: {len(all_symbols)} símbolos identificados para busca completa")
+        all_raw_orders = []
 
-        print(f"🔍 Orders Query: {base_query}")
-        print(f"🔍 Orders Params: {param_values}")
+        for symbol in all_symbols:
+            try:
+                print(f"🔍 Buscando ordens SPOT + FUTURES para {symbol}...")
 
-        orders = await transaction_db.fetch(base_query, *param_values)
+                # 1. BUSCAR ORDENS SPOT
+                spot_result = await connector.get_account_orders(
+                    symbol=symbol,
+                    limit=100,  # Limite alto para pegar histórico completo
+                    start_time=start_time,
+                    end_time=end_time
+                )
 
-        # Converter para formato JSON serializable
+                spot_orders = []
+                if spot_result.get('success', True):
+                    spot_orders = spot_result.get('orders', [])
+                    # Marcar como SPOT
+                    for order in spot_orders:
+                        order['_market_type'] = 'SPOT'
+                    all_raw_orders.extend(spot_orders)
+
+                # 2. BUSCAR ORDENS FUTURES
+                # IMPORTANTE: Binance Futures tem limitação de 7 dias sem start_time
+                # e 90 dias com start_time. Buscar últimos 7 dias apenas
+                futures_result = await connector.get_futures_orders(
+                    symbol=symbol,
+                    limit=100,  # Limite alto para pegar histórico completo
+                    start_time=None,  # None = últimos 7 dias (padrão Binance)
+                    end_time=None
+                )
+
+                futures_orders = []
+                if futures_result.get('success', True):
+                    futures_orders = futures_result.get('orders', [])
+                    # Marcar como FUTURES
+                    for order in futures_orders:
+                        order['_market_type'] = 'FUTURES'
+                    all_raw_orders.extend(futures_orders)
+
+                total_orders = len(spot_orders) + len(futures_orders)
+                print(f"✅ {symbol}: {len(spot_orders)} SPOT + {len(futures_orders)} FUTURES = {total_orders} ordens")
+
+            except Exception as e:
+                print(f"❌ Erro ao buscar {symbol}: {e}")
+                continue
+
+        # Ordenar por data (mais recentes primeiro) - CRUCIAL para mostrar ordens atuais
+        all_raw_orders.sort(key=lambda x: int(x.get('updateTime', x.get('time', 0))), reverse=True)
+
+        # FASE 1: Aplicar limite inteligente - se muito dados, pegar só os mais recentes
+        if len(all_raw_orders) > limit and limit < 1000:
+            raw_orders = all_raw_orders[:limit]
+            print(f"⚡ Aplicando limite de {limit} ordens (das {len(all_raw_orders)} encontradas)")
+        else:
+            raw_orders = all_raw_orders
+            print(f"📋 Retornando todas as {len(all_raw_orders)} ordens encontradas")
+
+        # Contar SPOT vs FUTURES
+        spot_count = len([o for o in raw_orders if o.get('_market_type') == 'SPOT'])
+        futures_count = len([o for o in raw_orders if o.get('_market_type') == 'FUTURES'])
+
+        print(f"📊 Total de ordens coletadas: {len(raw_orders)} ({spot_count} SPOT + {futures_count} FUTURES)")
+
+        # FASE 1: Converter dados da Binance para formato da nossa tabela
         orders_list = []
-        for order in orders:
-            orders_list.append(
-                {
-                    "id": order["id"],
-                    "symbol": order["symbol"],
-                    "side": order["side"],
-                    "order_type": order["order_type"],
-                    "quantity": float(order["quantity"]) if order["quantity"] else 0,
-                    "price": float(order["price"]) if order["price"] else None,
-                    "status": order["status"],
-                    "exchange": order["exchange"],
-                    "exchange_order_id": order["exchange_order_id"],
-                    "filled_quantity": float(order["filled_quantity"])
-                    if order["filled_quantity"]
-                    else 0,
-                    "average_price": float(order["average_price"])
-                    if order["average_price"]
-                    else None,
-                    "created_at": order["created_at"].isoformat()
-                    if order["created_at"]
-                    else None,
-                    "updated_at": order["updated_at"].isoformat()
-                    if order["updated_at"]
-                    else None,
-                }
-            )
+        for order in raw_orders:
+            try:
+                # Mapear campos da Binance para nosso formato
+                order_data = {
+                    "id": str(order.get('orderId', order.get('id', ''))),
+                    "symbol": order.get('symbol', ''),
+                    "side": order.get('side', '').lower(),
+                    "order_type": order.get('type', 'market').lower(),
+                    "quantity": float(order.get('origQty', order.get('executedQty', 0))),
+                    "price": float(order.get('price', 0)) if order.get('price') else None,
+                    "status": order.get('status', 'unknown').lower(),
+                    "exchange": "binance",  # FASE 1: Hardcoded
+                    "exchange_order_id": str(order.get('orderId', order.get('id', ''))),
+                    "filled_quantity": float(order.get('executedQty', 0)),
+                    "average_price": float(order.get('avgPrice', order.get('price', 0))) if order.get('avgPrice', order.get('price')) else None,
+                    "created_at": datetime.fromtimestamp(int(order.get('time', 0)) / 1000).isoformat() if order.get('time') else None,
+                    "updated_at": datetime.fromtimestamp(int(order.get('updateTime', order.get('time', 0))) / 1000).isoformat() if order.get('updateTime', order.get('time')) else None,
 
+                    # FASE 2: Campos completos - SPOT/FUTURES baseado no mercado
+                    "operation_type": order.get('_market_type', 'SPOT').lower(),  # SPOT ou FUTURES
+                    "entry_exit": "entrada" if order.get('side', '').lower() == 'buy' else "saida",
+                    "margin_usdt": float(order.get('cummulativeQuoteQty', 0)) if order.get('cummulativeQuoteQty') else (float(order.get('origQty', 0)) * float(order.get('price', 0)) if order.get('price') else 0),
+                    "profit_loss": 0.0,  # FASE 2: Será calculado abaixo para operações SPOT + FUTURES
+
+                    # ORDEM ID para agrupar operações relacionadas
+                    "order_id": None  # Será calculado depois do processamento de P&L
+                }
+
+                orders_list.append(order_data)
+
+            except (ValueError, TypeError) as e:
+                print(f"❌ Erro ao processar ordem {order.get('orderId', 'N/A')}: {e}")
+                continue
+
+        # FASE 2: CALCULAR P&L PARA OPERAÇÕES SPOT + FUTURES USANDO LÓGICA SIMPLIFICADA
+        print(f"🧮 FASE 2: Calculando P&L individual para operações SPOT + FUTURES...")
+
+        try:
+            # Agrupar ordens SPOT E FUTURES por ativo para calcular preço médio
+            spot_orders = [o for o in orders_list if o.get('operation_type') == 'spot']
+            futures_orders = [o for o in orders_list if o.get('operation_type') == 'futures']
+
+            # Agrupar SPOT
+            spot_orders_by_asset = {}
+            for order in spot_orders:
+                symbol = order.get('symbol', '')
+                if symbol.endswith('USDT'):
+                    asset = symbol[:-4]
+                else:
+                    asset = symbol.split('USDT')[0] if 'USDT' in symbol else symbol
+
+                if asset not in spot_orders_by_asset:
+                    spot_orders_by_asset[asset] = []
+                spot_orders_by_asset[asset].append(order)
+
+            # Agrupar FUTURES
+            futures_orders_by_asset = {}
+            for order in futures_orders:
+                symbol = order.get('symbol', '')
+                if symbol.endswith('USDT'):
+                    asset = symbol[:-4]
+                else:
+                    asset = symbol.split('USDT')[0] if 'USDT' in symbol else symbol
+
+                if asset not in futures_orders_by_asset:
+                    futures_orders_by_asset[asset] = []
+                futures_orders_by_asset[asset].append(order)
+
+            print(f"📊 SPOT P&L: Processando {len(spot_orders)} ordens SPOT para {len(spot_orders_by_asset)} ativos")
+            print(f"📊 FUTURES P&L: Processando {len(futures_orders)} ordens FUTURES para {len(futures_orders_by_asset)} ativos")
+
+            # CALCULAR P&L PARA ORDENS SPOT
+            for asset, asset_orders in spot_orders_by_asset.items():
+                try:
+                    # FASE 2: Implementação simplificada - calcular preço médio de compra
+                    total_quantity = 0.0
+                    total_cost = 0.0
+
+                    # Coletar apenas ordens de compra (BUY) para calcular preço médio
+                    buy_orders = [o for o in asset_orders if o.get('side') == 'buy' and o.get('filled_quantity', 0) > 0]
+
+                    for buy_order in buy_orders:
+                        quantity = float(buy_order.get('filled_quantity', 0))
+                        price = float(buy_order.get('average_price', 0))
+
+                        if quantity > 0 and price > 0:
+                            total_quantity += quantity
+                            total_cost += quantity * price
+
+                    # Calcular preço médio de compra ponderado
+                    avg_buy_price = total_cost / total_quantity if total_quantity > 0 else 0.0
+
+                    if avg_buy_price > 0:
+                        print(f"📊 {asset}: Preço médio de compra = ${avg_buy_price:.4f} (de {len(buy_orders)} compras)")
+
+                    # Calcular P&L para cada ordem deste ativo
+                    for order in asset_orders:
+                        try:
+                            if order.get('side') == 'sell' and avg_buy_price > 0:
+                                # Para vendas: (preço_venda - preço_médio_compra) × quantidade
+                                sell_price = float(order.get('average_price', 0))
+                                quantity = float(order.get('filled_quantity', 0))
+
+                                if sell_price > 0 and quantity > 0:
+                                    pnl = (sell_price - avg_buy_price) * quantity
+                                    order['profit_loss'] = round(pnl, 4)
+                                    print(f"💰 {asset} SELL: {quantity:.4f} @ ${sell_price:.4f} vs avg ${avg_buy_price:.4f} = ${pnl:.4f}")
+
+                            elif order.get('side') == 'buy' and avg_buy_price > 0:
+                                # Para compras: P&L vs preço médio (se for mais barato que a média)
+                                buy_price = float(order.get('average_price', 0))
+                                quantity = float(order.get('filled_quantity', 0))
+
+                                if buy_price > 0 and quantity > 0:
+                                    # P&L potencial se vendesse ao preço médio
+                                    pnl_potential = (avg_buy_price - buy_price) * quantity
+                                    order['profit_loss'] = round(pnl_potential, 4)
+                                    print(f"📈 {asset} BUY: {quantity:.4f} @ ${buy_price:.4f} vs avg ${avg_buy_price:.4f} = ${pnl_potential:.4f} (vs média)")
+
+                        except Exception as e:
+                            print(f"❌ Erro calculando P&L para ordem {order.get('id', 'N/A')}: {e}")
+                            continue
+
+                except Exception as e:
+                    print(f"❌ Erro calculando P&L SPOT para {asset}: {e}")
+                    continue
+
+            # CALCULAR P&L PARA ORDENS FUTURES
+            for asset, asset_orders in futures_orders_by_asset.items():
+                try:
+                    # FUTURES: Calcular preço médio de compra (entrada)
+                    total_quantity = 0.0
+                    total_cost = 0.0
+
+                    # Coletar apenas ordens de compra (BUY) para calcular preço médio
+                    buy_orders = [o for o in asset_orders if o.get('side') == 'buy' and o.get('filled_quantity', 0) > 0]
+
+                    for buy_order in buy_orders:
+                        quantity = float(buy_order.get('filled_quantity', 0))
+                        price = float(buy_order.get('average_price', 0))
+
+                        if quantity > 0 and price > 0:
+                            total_quantity += quantity
+                            total_cost += quantity * price
+
+                    # Calcular preço médio de entrada ponderado
+                    avg_entry_price = total_cost / total_quantity if total_quantity > 0 else 0.0
+
+                    if avg_entry_price > 0:
+                        print(f"📊 {asset} FUTURES: Preço médio de entrada = ${avg_entry_price:.4f} (de {len(buy_orders)} compras)")
+
+                    # Calcular P&L para cada ordem FUTURES deste ativo
+                    for order in asset_orders:
+                        try:
+                            if order.get('side') == 'sell' and avg_entry_price > 0:
+                                # Para vendas FUTURES: (preço_venda - preço_médio_entrada) × quantidade
+                                sell_price = float(order.get('average_price', 0))
+                                quantity = float(order.get('filled_quantity', 0))
+
+                                if sell_price > 0 and quantity > 0:
+                                    pnl = (sell_price - avg_entry_price) * quantity
+                                    order['profit_loss'] = round(pnl, 4)
+                                    print(f"💰 {asset} FUTURES SELL: {quantity:.4f} @ ${sell_price:.4f} vs avg ${avg_entry_price:.4f} = ${pnl:.4f}")
+
+                            elif order.get('side') == 'buy' and avg_entry_price > 0:
+                                # Para compras FUTURES: P&L vs preço médio (se for mais barato que a média)
+                                buy_price = float(order.get('average_price', 0))
+                                quantity = float(order.get('filled_quantity', 0))
+
+                                if buy_price > 0 and quantity > 0:
+                                    # P&L potencial se vendesse ao preço médio
+                                    pnl_potential = (avg_entry_price - buy_price) * quantity
+                                    order['profit_loss'] = round(pnl_potential, 4)
+                                    print(f"📈 {asset} FUTURES BUY: {quantity:.4f} @ ${buy_price:.4f} vs avg ${avg_entry_price:.4f} = ${pnl_potential:.4f} (vs média)")
+
+                        except Exception as e:
+                            print(f"❌ Erro calculando P&L para ordem FUTURES {order.get('id', 'N/A')}: {e}")
+                            continue
+
+                except Exception as e:
+                    print(f"❌ Erro calculando P&L FUTURES para {asset}: {e}")
+                    continue
+
+            print(f"✅ FASE 2: P&L calculado para {len(spot_orders)} SPOT + {len(futures_orders)} FUTURES operações")
+
+        except Exception as e:
+            print(f"❌ Erro no cálculo de P&L: {e}")
+            # Continuar sem P&L se houver erro
+
+        # GERAR ORDER_ID para agrupar operações relacionadas
+        print(f"🔗 Gerando order_id para agrupar operações relacionadas...")
+        try:
+            # IMPORTANTE: NÃO reordenar! Manter ordem por data (mais recentes primeiro)
+            # Criar índice temporário para processar agrupamento sem alterar ordem
+
+            operation_groups = {}
+            current_order_id = 1
+
+            # Processar em ordem cronológica reversa (mais antigas primeiro) para agrupar corretamente
+            # mas sem alterar a lista original
+            orders_chronological = sorted(orders_list, key=lambda x: x.get('created_at', ''))
+
+            for order in orders_chronological:
+                symbol = order.get('symbol', '')
+                created_at_str = order.get('created_at', '')
+                operation_type = order.get('operation_type', 'spot')
+
+                if not created_at_str:
+                    order['order_id'] = f"OP_{current_order_id}"
+                    current_order_id += 1
+                    continue
+
+                try:
+                    order_time = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                except:
+                    order['order_id'] = f"OP_{current_order_id}"
+                    current_order_id += 1
+                    continue
+
+                # Buscar grupo existente para este símbolo + operation_type
+                group_key = f"{symbol}_{operation_type}"
+                found_group = False
+
+                if group_key in operation_groups:
+                    for existing_group_id, group_data in operation_groups[group_key].items():
+                        # Se ordem está dentro de 10 minutos da última ordem do grupo
+                        time_diff = abs((order_time - group_data['last_time']).total_seconds())
+                        if time_diff <= 600:  # 10 minutos
+                            order['order_id'] = existing_group_id
+                            group_data['last_time'] = max(group_data['last_time'], order_time)
+                            group_data['count'] += 1
+                            found_group = True
+                            break
+
+                if not found_group:
+                    # Criar novo grupo
+                    new_group_id = f"OP_{current_order_id}"
+                    if group_key not in operation_groups:
+                        operation_groups[group_key] = {}
+
+                    operation_groups[group_key][new_group_id] = {
+                        'last_time': order_time,
+                        'count': 1
+                    }
+                    order['order_id'] = new_group_id
+                    current_order_id += 1
+
+            # Contar grupos criados
+            total_groups = sum(len(groups) for groups in operation_groups.values())
+            print(f"✅ Criados {total_groups} grupos de operações para {len(orders_list)} ordens")
+
+            # MANTER ORDEM ORIGINAL (mais recentes primeiro) - NÃO reordenar!
+            # orders_list já está ordenado corretamente
+
+        except Exception as e:
+            print(f"❌ Erro gerando order_id: {e}")
+            # Fallback: usar IDs sequenciais simples
+            for i, order in enumerate(orders_list):
+                order['order_id'] = f"OP_{i+1}"
+
+        print(f"✅ Processadas {len(orders_list)} ordens com sucesso")
         return {"success": True, "data": orders_list, "total": len(orders_list)}
 
     except Exception as e:
@@ -442,15 +842,15 @@ async def get_orders_stats():
     try:
         stats = await transaction_db.fetchrow(
             """
-            SELECT 
+            SELECT
                 COUNT(*) as total_orders,
                 COUNT(CASE WHEN status IN ('FILLED', 'filled') THEN 1 END) as filled_orders,
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_orders,
                 COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_orders,
-                SUM(CASE WHEN status IN ('FILLED', 'filled') AND filled_quantity > 0 
-                    THEN filled_quantity * COALESCE(average_price, price, 0) 
+                SUM(CASE WHEN status IN ('FILLED', 'filled') AND filled_quantity > 0
+                    THEN filled_quantity * COALESCE(average_price, price, 0)
                     ELSE 0 END) as total_volume
-            FROM trading_orders 
+            FROM trading_orders
             WHERE created_at >= NOW() - INTERVAL '7 days'
         """
         )

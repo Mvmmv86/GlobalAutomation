@@ -76,6 +76,13 @@ export interface Order {
   exchangeAccountId: string
   createdAt: string
   updatedAt: string
+
+  // Campos adicionais do backend
+  operation_type?: string
+  entry_exit?: string
+  margin_usdt?: number
+  profit_loss?: number
+  order_id?: string | null
 }
 
 export interface Position {

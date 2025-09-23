@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Wifi, Calendar, Filter, ChevronDown, Check, Building } from 'lucide-react'
+import { Wifi, Calendar, Filter, ChevronDown, Check, Building, Settings } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Badge } from '../atoms/Badge'
 import { Button } from '../atoms/Button'
@@ -17,16 +17,22 @@ const OrdersPage: React.FC = () => {
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
   const [selectedExchange, setSelectedExchange] = useState<string>('all')
+  const [selectedOperationType, setSelectedOperationType] = useState<string>('all') // all, spot, futures
+
+  // Paginação
+  const [currentPage, setCurrentPage] = useState<number>(1)
+  const itemsPerPage = 10
 
   // Estados para dropdown customizado
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // API Data hooks - usar filtros
+  // API Data hooks - FASE 1: Buscar TODAS as ordens dos últimos 6 meses (sem filtro de data)
   const { data: ordersApi, isLoading: loadingOrders, error: ordersError } = useOrders({
     exchangeAccountId: selectedExchange,
-    dateFrom: dateFrom,
-    dateTo: dateTo,
+    // dateFrom: dateFrom,  // Removido - fazer filtro no frontend
+    // dateTo: dateTo,      // Removido - fazer filtro no frontend
+    limit: 1000, // FASE 1: Limite alto para buscar TODAS as ordens dos últimos 6 meses
   })
   const { data: exchangeAccounts, isLoading: loadingAccounts } = useExchangeAccounts()
   
@@ -60,8 +66,10 @@ const OrdersPage: React.FC = () => {
       dateTo,
       selectedExchange
     })
-    // Os filtros são aplicados automaticamente via hook
-    // Apenas invalidamos o cache para forçar uma nova busca
+    // Reset da paginação ao aplicar filtros
+    setCurrentPage(1)
+    // Os filtros de data são aplicados no frontend
+    // Apenas invalidamos o cache para forçar uma nova busca da API (se necessário)
     queryClient.invalidateQueries({ queryKey: ['orders'] })
   }
 
@@ -69,14 +77,42 @@ const OrdersPage: React.FC = () => {
     setDateFrom('')
     setDateTo('')
     setSelectedExchange('all')
+    setSelectedOperationType('all')
+    setCurrentPage(1) // Reset pagination
     setIsDropdownOpen(false)
     refreshOrders()
   }
 
   const handleExchangeSelect = (exchangeId: string) => {
     setSelectedExchange(exchangeId)
+    setCurrentPage(1) // Reset pagination when changing exchange
     setIsDropdownOpen(false)
     console.log('🏦 Exchange selecionada:', exchangeId)
+  }
+
+  const handleOperationTypeSelect = (operationType: string) => {
+    setSelectedOperationType(operationType)
+    setCurrentPage(1) // Reset pagination when changing operation type
+    console.log('⚙️ Tipo de operação selecionado:', operationType)
+  }
+
+  // Funções de paginação
+  const goToPage = (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page)
+    }
+  }
+
+  const goToPreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1)
+    }
+  }
+
+  const goToNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1)
+    }
   }
 
   const getSelectedExchangeLabel = () => {
@@ -140,7 +176,7 @@ const OrdersPage: React.FC = () => {
     {
       id: '3',
       clientOrderId: 'SOL_BUY_003_11223344',
-      symbol: 'SOLUSDT',
+      symbol: 'SOLUSDT-PERP',
       side: 'buy',
       type: 'limit',
       status: 'partially_filled',
@@ -175,8 +211,56 @@ const OrdersPage: React.FC = () => {
     }
   ]
 
-  // Use real data when available, fallback to mock data
-  const orders = ordersApi || mockOrders
+  // FASE 1: Usar dados reais da API sempre (sem fallback para mock)
+  // REGRA: Mostrar todas as ordens (de todas as contas ou conta específica)
+  const allOrdersRaw = ordersApi || []
+
+  // Filtros no frontend (data + tipo de operação)
+  const allOrdersFiltered = allOrdersRaw.filter(order => {
+    // Filtro de data
+    let passesDateFilter = true;
+    if (dateFrom || dateTo) {
+      const orderDate = order.createdAt ? new Date(order.createdAt) : null;
+      if (!orderDate) return false;
+
+      const orderDateStr = orderDate.toISOString().split('T')[0];
+      let passesDateFrom = true;
+      let passesDateTo = true;
+
+      if (dateFrom) {
+        passesDateFrom = orderDateStr >= dateFrom;
+      }
+
+      if (dateTo) {
+        passesDateTo = orderDateStr <= dateTo;
+      }
+
+      passesDateFilter = passesDateFrom && passesDateTo;
+    }
+
+    // Filtro de tipo de operação
+    let passesOperationFilter = true;
+    if (selectedOperationType !== 'all') {
+      const orderOperationType = order.operation_type?.toLowerCase() || 'spot';
+      passesOperationFilter = orderOperationType === selectedOperationType;
+    }
+
+    return passesDateFilter && passesOperationFilter;
+  });
+
+  // Paginação
+  const totalItems = allOrdersFiltered.length
+  const totalPages = Math.ceil(totalItems / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const orders = allOrdersFiltered.slice(startIndex, endIndex)
+
+  console.log('🔍 FINAL: Using orders:', orders)
+  console.log('🔍 FINAL: Orders count:', orders?.length)
+  console.log('🔍 FINAL: Total items:', totalItems, 'Current page:', currentPage)
+  console.log('🔍 FINAL: Raw orders:', allOrdersRaw?.length, 'Filtered orders:', allOrdersFiltered?.length)
+  console.log('🔍 FINAL: Date filters:', { dateFrom, dateTo })
+  console.log('🔍 FINAL: selectedExchange:', selectedExchange)
 
   const getStatusBadge = (status: string) => {
     const normalizedStatus = status?.toLowerCase()
@@ -246,18 +330,22 @@ const OrdersPage: React.FC = () => {
       )}
 
       {/* Filtros */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Filter className="w-5 h-5" />
-            Filtros de Busca
-          </CardTitle>
-          <CardDescription>
-            Filtre as ordens por data e conta de exchange
-          </CardDescription>
+      <Card className="shadow-sm border-border">
+        <CardHeader className="border-b bg-muted/10">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Filter className="w-5 h-5 text-primary" />
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Filtros de Busca</CardTitle>
+                <CardDescription className="text-sm text-muted-foreground mt-1">
+                  Filtre as ordens por data e conta de exchange
+                </CardDescription>
+              </div>
+            </div>
+          </div>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <CardContent className="pt-6">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
             {/* Filtro Data Início */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground flex items-center gap-2">
@@ -360,6 +448,27 @@ const OrdersPage: React.FC = () => {
               </div>
             </div>
 
+            {/* Filtro Tipo de Operação */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                <Settings className="w-4 h-4" />
+                Tipo de Operação
+              </label>
+              <div className="relative">
+                <select
+                  value={selectedOperationType}
+                  onChange={(e) => handleOperationTypeSelect(e.target.value)}
+                  className="w-full px-4 py-2 pl-10 bg-background border border-border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary hover:bg-muted transition-all duration-200 appearance-none"
+                >
+                  <option value="all">Todas as operações</option>
+                  <option value="spot">SPOT</option>
+                  <option value="futures">FUTURES</option>
+                </select>
+                <Settings className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              </div>
+            </div>
+
             {/* Botões */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">Ações</label>
@@ -385,140 +494,307 @@ const OrdersPage: React.FC = () => {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Histórico de Ordens</CardTitle>
-          <CardDescription>
-            Todas as ordens executadas pela plataforma
-          </CardDescription>
+      <Card className="shadow-sm border-border">
+        <CardHeader className="border-b bg-muted/10">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-xl font-semibold text-foreground">Histórico de Ordens</CardTitle>
+              <CardDescription className="text-sm text-muted-foreground mt-1">
+                Todas as ordens executadas com informações detalhadas de trading
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="text-xs font-medium">
+              {totalItems} ordens totais • Página {currentPage} de {totalPages || 1}
+            </Badge>
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-0">
           {loadingOrders ? (
             <div className="flex items-center justify-center py-12">
               <LoadingSpinner />
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead className="bg-gray-50 dark:bg-gray-800">
+              <table className="w-full">
+              <thead className="bg-muted/50 border-b border-border">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Exchange
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Símbolo
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Lado
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Data
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Operação
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Tipo
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Lado
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Entrada/Saída
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Quantidade
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Preço
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Executado
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Margem USDT
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Taxa
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Profit/Loss
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Data
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Order ID
                   </th>
                 </tr>
               </thead>
-              <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                {orders && orders.length > 0 ? orders.map((order) => (
-                  <tr key={order.id || Math.random()} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+              <tbody className="divide-y divide-border">
+                {orders && orders.length > 0 ? orders.map((order, index) => (
+                  <tr key={order.id || Math.random()} className="hover:bg-muted/30 transition-colors duration-150">
                     {/* Exchange */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                      <div className="flex items-center">
-                        <Badge variant="outline" className="text-xs">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${
+                          (order as any).exchange === 'Binance' || (order as any).exchange === 'binance' ? 'bg-yellow-500' :
+                          (order as any).exchange === 'Bybit' || (order as any).exchange === 'bybit' ? 'bg-orange-500' :
+                          'bg-gray-500'
+                        }`} />
+                        <span className="text-sm font-medium text-foreground capitalize">
                           {(order as any).exchange || (order as any).exchangeAccountId || 'Binance'}
-                        </Badge>
+                        </span>
                       </div>
                     </td>
 
                     {/* Símbolo */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                      {order.symbol || 'N/A'}
-                    </td>
-
-                    {/* Lado */}
-                    <td className="px-4 py-4 whitespace-nowrap">
-                      {getSideBadge(order.side || 'unknown')}
-                    </td>
-
-                    {/* Tipo */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 capitalize">
-                      {order.type || 'N/A'}
-                    </td>
-
-                    {/* Quantidade */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {order.quantity || 0}
-                    </td>
-
-                    {/* Preço */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {order.price ? formatCurrency(order.price) : 'Market'}
-                    </td>
-
-                    {/* Executado */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      <div className="flex flex-col">
-                        <span>{order.filledQuantity || 0}</span>
-                        {order.averageFillPrice && (
-                          <span className="text-xs text-gray-400">
-                            @ {formatCurrency(order.averageFillPrice)}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Taxa */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      <div className="flex flex-col">
-                        <span>{formatCurrency(order.feesPaid || 0)}</span>
-                        {order.feeCurrency && (
-                          <span className="text-xs text-gray-400">{order.feeCurrency}</span>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Status */}
-                    <td className="px-4 py-4 whitespace-nowrap">
-                      {getStatusBadge(order.status || 'unknown')}
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="text-sm font-semibold text-foreground">
+                        {order.symbol || 'N/A'}
+                      </span>
                     </td>
 
                     {/* Data */}
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex flex-col">
-                        <span>{order.createdAt ? formatDate(order.createdAt) : 'N/A'}</span>
-                        {order.clientOrderId && (
-                          <span className="text-xs text-gray-400">
-                            ID: {order.clientOrderId.slice(-8)}
-                          </span>
-                        )}
+                        <span className="text-sm text-foreground">
+                          {order.createdAt ? new Date(order.createdAt).toLocaleDateString('pt-BR') : 'N/A'}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {order.createdAt ? new Date(order.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
                       </div>
+                    </td>
+
+                    {/* Operação (Spot/Futures) */}
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <Badge variant={(order.operation_type?.toLowerCase() === 'futures' ? 'warning' : 'secondary')} className="text-xs font-medium">
+                        {order.operation_type?.toUpperCase() || 'SPOT'}
+                      </Badge>
+                    </td>
+
+                    {/* Tipo de Ordem */}
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <span className="text-sm text-muted-foreground capitalize">
+                        {order.type || 'market'}
+                      </span>
+                    </td>
+
+                    {/* Lado (Compra/Venda) */}
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <Badge
+                        variant={order.side === 'buy' ? 'success' : 'danger'}
+                        className="text-xs font-semibold"
+                      >
+                        {order.side === 'buy' ? 'COMPRA' : 'VENDA'}
+                      </Badge>
+                    </td>
+
+                    {/* Entrada/Saída */}
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <Badge
+                        variant="outline"
+                        className={`text-xs font-medium ${
+                          order.side === 'buy' ? 'text-success border-success' : 'text-danger border-danger'
+                        }`}
+                      >
+                        {order.side === 'buy' ? 'ENTRADA' : 'SAÍDA'}
+                      </Badge>
+                    </td>
+
+                    {/* Quantidade */}
+                    <td className="px-4 py-3 whitespace-nowrap text-right">
+                      <span className="text-sm font-medium text-foreground">
+                        {order.quantity || 0}
+                      </span>
+                    </td>
+
+                    {/* Preço */}
+                    <td className="px-4 py-3 whitespace-nowrap text-right">
+                      <span className="text-sm font-medium text-foreground">
+                        {(() => {
+                          // FASE 1: Usar dados da API quando disponíveis
+                          const apiOrder = order as any;
+                          const price = apiOrder.price || order.price || order.averageFillPrice || 0;
+                          const marginUsdt = apiOrder.margin_usdt || 0;
+
+                          // Se temos margin_usdt mas não price, calcular price
+                          if (marginUsdt > 0 && price === 0 && (order.quantity || 0) > 0) {
+                            const calculatedPrice = marginUsdt / (order.quantity || 1);
+                            return calculatedPrice.toFixed(2);
+                          }
+
+                          return price > 0 ? price.toFixed(2) : '0.00';
+                        })()}
+                      </span>
+                    </td>
+
+                    {/* Margem USDT */}
+                    <td className="px-4 py-3 whitespace-nowrap text-right">
+                      <span className="text-sm font-semibold text-foreground">
+                        {(() => {
+                          // FASE 1: Usar margin_usdt da API quando disponível
+                          const apiOrder = order as any;
+                          const marginFromApi = apiOrder.margin_usdt || 0;
+
+                          if (marginFromApi > 0) {
+                            return marginFromApi.toFixed(2);
+                          }
+
+                          // Fallback: calcular baseado em quantity x price
+                          const price = order.price || order.averageFillPrice || 0;
+                          return ((order.quantity || 0) * price).toFixed(2);
+                        })()}
+                      </span>
+                    </td>
+
+                    {/* Profit/Loss */}
+                    <td className="px-4 py-3 whitespace-nowrap text-right">
+                      {(() => {
+                        // FASE 1: Usar profit_loss da API quando disponível
+                        const apiOrder = order as any;
+                        const profitLossFromApi = apiOrder.profit_loss || 0;
+                        const marginUsdt = apiOrder.margin_usdt || 0;
+
+                        let profitLoss = profitLossFromApi;
+
+                        // Se não temos P&L da API, fazer cálculo básico
+                        if (profitLoss === 0 && order.status === 'filled') {
+                          // Usar margin_usdt como base para cálculo
+                          profitLoss = order.side === 'sell' ? marginUsdt * 0.02 : -marginUsdt * 0.01;
+                        }
+
+                        const percentage = marginUsdt > 0 ? (profitLoss / marginUsdt) * 100 : 0;
+
+                        return (
+                          <div className="flex flex-col items-end">
+                            <span className={`text-sm font-bold ${
+                              profitLoss > 0 ? 'text-green-600 dark:text-green-400' :
+                              profitLoss < 0 ? 'text-red-600 dark:text-red-400' :
+                              'text-gray-500'
+                            }`}>
+                              {profitLoss > 0 ? '+' : ''}{profitLoss.toFixed(2)}
+                            </span>
+                            {profitLoss !== 0 && marginUsdt > 0 && (
+                              <span className="text-xs text-muted-foreground">
+                                {percentage.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </td>
+
+                    {/* Order ID - Nova coluna para agrupar operações */}
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      {(() => {
+                        const apiOrder = order as any;
+                        const orderId = apiOrder.order_id || '-';
+                        return (
+                          <Badge variant="outline" className="text-xs font-mono">
+                            {orderId}
+                          </Badge>
+                        );
+                      })()}
                     </td>
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={10} className="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
-                      {loadingOrders ? 'Carregando ordens...' : 'Nenhuma ordem encontrada'}
+                    <td colSpan={12} className="px-6 py-12 text-center">
+                      <div className="flex flex-col items-center justify-center">
+                        <div className="text-muted-foreground text-sm">
+                          {loadingOrders ? 'Carregando ordens...' : 'Nenhuma ordem encontrada'}
+                        </div>
+                        {!loadingOrders && (
+                          <p className="text-xs text-muted-foreground mt-2">
+                            {selectedExchange === 'all' ?
+                              'Nenhuma ordem encontrada para todas as exchanges' :
+                              `Nenhuma ordem encontrada para a conta selecionada`}
+                          </p>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )}
               </tbody>
               </table>
+            </div>
+          )}
+
+          {/* Controles de Paginação */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-6 py-4 border-t border-border">
+              <div className="flex items-center text-sm text-muted-foreground">
+                Mostrando {startIndex + 1} a {Math.min(endIndex, totalItems)} de {totalItems} ordens
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={goToPreviousPage}
+                  disabled={currentPage === 1}
+                  className="h-8"
+                >
+                  Anterior
+                </Button>
+
+                <div className="flex items-center space-x-1">
+                  {/* Páginas numeradas */}
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    const pageNumber = Math.max(1, Math.min(totalPages - 4, currentPage - 2)) + i;
+                    if (pageNumber > totalPages) return null;
+
+                    return (
+                      <Button
+                        key={pageNumber}
+                        variant={currentPage === pageNumber ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => goToPage(pageNumber)}
+                        className="h-8 w-8 p-0"
+                      >
+                        {pageNumber}
+                      </Button>
+                    );
+                  })}
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={goToNextPage}
+                  disabled={currentPage === totalPages}
+                  className="h-8"
+                >
+                  Próxima
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

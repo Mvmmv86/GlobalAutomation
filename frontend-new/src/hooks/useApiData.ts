@@ -58,11 +58,12 @@ export const useOrders = (params?: {
     queryKey: ['orders', params],
     queryFn: () => orderService.getOrders(params),
     staleTime: 1 * 60 * 1000, // 1 minute for orders
+    // REGRA: Sempre buscar ordens (todas as contas ou conta específica)
   })
 }
 
 export const useRecentOrders = () => {
-  return useOrders({ limit: 10 }) // Last 10 orders
+  return useOrders({ limit: 1000 }) // Increased limit to get all orders for 6 months
 }
 
 export const useCreateOrder = () => {

@@ -404,14 +404,20 @@ class BinanceConnector:
                     "positions": []
                 }
 
-            # Get futures positions
-            positions = self.client.futures_position_information()
+            # Get futures positions (use asyncio.to_thread for sync client)
+            positions = await asyncio.to_thread(
+                self.client.futures_position_information
+            )
+
+            logger.info(f"🔍 BINANCE API returned {len(positions)} total positions")
 
             # Filter only positions with size > 0
             active_positions = [
                 pos for pos in positions
                 if float(pos.get('positionAmt', 0)) != 0
             ]
+
+            logger.info(f"🎯 Filtered to {len(active_positions)} active positions (positionAmt != 0)")
 
             return {
                 "success": True,
@@ -422,6 +428,168 @@ class BinanceConnector:
         except Exception as e:
             logger.error(f"Error getting futures positions: {e}")
             return {"success": False, "error": str(e)}
+
+    async def get_force_orders(self, symbol=None, start_time=None, end_time=None, limit=100) -> Dict[str, Any]:
+        """
+        Busca ordens de liquidação (force orders) da Binance
+
+        Args:
+            symbol: Símbolo específico (opcional)
+            start_time: Timestamp de início (opcional)
+            end_time: Timestamp de fim (opcional)
+            limit: Limite de resultados (máximo 1000, padrão 100)
+
+        Returns:
+            Dict com dados das ordens de liquidação ou erro
+        """
+        if not self.client:
+            logger.warning("🚨 Demo mode: returning mock force orders data")
+            return {
+                "success": True,
+                "demo": True,
+                "force_orders": []
+            }
+
+        try:
+            logger.info(f"🔥 Getting force orders from Binance API", symbol=symbol, limit=limit)
+
+            # Parâmetros para a API
+            params = {"limit": min(limit, 1000)}  # Máximo permitido pela Binance
+
+            if symbol:
+                params["symbol"] = symbol
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+
+            # Chamar endpoint de force orders da Binance
+            force_orders = await asyncio.to_thread(
+                self.client.futures_forceorders, **params
+            )
+
+            logger.info(f"📊 Found {len(force_orders)} force orders", symbol=symbol)
+
+            return {
+                "success": True,
+                "demo": False,
+                "force_orders": force_orders
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"Binance API error getting force orders: {e}")
+            return {"success": False, "error": f"Binance API error: {e}"}
+        except Exception as e:
+            logger.error(f"Error getting force orders: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 500,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Busca dados históricos de candles (klines/OHLCV)
+
+        Args:
+            symbol: Par de negociação (ex: BTCUSDT)
+            interval: Timeframe (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M)
+            limit: Quantidade de candles (max 1000)
+            start_time: Timestamp de início (ms)
+            end_time: Timestamp de fim (ms)
+
+        Returns:
+            Dict com success, data (list de klines)
+            Cada kline: [timestamp, open, high, low, close, volume, ...]
+        """
+        if not self.client:
+            logger.warning("🔴 get_klines called in DEMO mode - returning empty data")
+            return {
+                "success": False,
+                "demo": True,
+                "error": "API keys not configured",
+                "data": []
+            }
+
+        try:
+            logger.info(f"📊 Fetching klines for {symbol} ({interval}, limit={limit})")
+
+            # Parâmetros para API
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": min(limit, 1000)  # Max 1000 por request
+            }
+
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+
+            # Chamar API da Binance (SPOT klines)
+            klines = await asyncio.to_thread(
+                self.client.get_klines, **params
+            )
+
+            logger.info(f"✅ Fetched {len(klines)} klines for {symbol}")
+
+            return {
+                "success": True,
+                "demo": False,
+                "data": klines
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"Binance API error getting klines: {e}")
+            return {"success": False, "error": f"Binance API error: {e}", "data": []}
+        except Exception as e:
+            logger.error(f"Error getting klines: {e}")
+            return {"success": False, "error": str(e), "data": []}
+
+    async def get_ticker_24h(self, symbol: str) -> Dict[str, Any]:
+        """
+        Busca ticker 24h do símbolo (preço, volume, mudança %)
+
+        Args:
+            symbol: Par de negociação (ex: BTCUSDT)
+
+        Returns:
+            Dict com dados de ticker 24h
+        """
+        if not self.client:
+            logger.warning("🔴 get_ticker_24h called in DEMO mode")
+            return {
+                "success": False,
+                "demo": True,
+                "error": "API keys not configured",
+                "data": {}
+            }
+
+        try:
+            logger.info(f"📊 Fetching 24h ticker for {symbol}")
+
+            # Chamar API da Binance
+            ticker = await asyncio.to_thread(
+                self.client.get_ticker, symbol=symbol
+            )
+
+            logger.info(f"✅ Fetched ticker for {symbol}: ${ticker.get('lastPrice', 0)}")
+
+            return {
+                "success": True,
+                "demo": False,
+                "data": ticker
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"Binance API error getting ticker: {e}")
+            return {"success": False, "error": f"Binance API error: {e}", "data": {}}
+        except Exception as e:
+            logger.error(f"Error getting ticker: {e}")
+            return {"success": False, "error": str(e), "data": {}}
 
 
 # Factory function para criar connector

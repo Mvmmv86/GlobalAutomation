@@ -97,16 +97,24 @@ export const useOrderStats = () => {
 }
 
 // Positions hooks
-export const usePositions = (status?: string) => {
+export const usePositions = (params?: {
+  status?: string
+  exchangeAccountId?: string
+  dateFrom?: string
+  dateTo?: string
+  symbol?: string
+  operationType?: string
+  limit?: number
+}) => {
   return useQuery({
-    queryKey: ['positions', status],
-    queryFn: () => positionService.getPositions(status),
+    queryKey: ['positions', params],
+    queryFn: () => positionService.getPositions(params),
     staleTime: 30 * 1000, // 30 seconds for positions
   })
 }
 
 export const useActivePositions = () => {
-  return usePositions('open')
+  return usePositions({ status: 'open' })
 }
 
 export const usePositionMetrics = () => {

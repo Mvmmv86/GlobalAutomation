@@ -474,6 +474,13 @@ def create_sync_router() -> APIRouter:
 
             positions = result.get('positions', [])
 
+            # 🔍 DEBUG: Log detalhado das posições retornadas pela Binance
+            logger.info(f"🔍 DEBUG BINANCE POSITIONS: Total retornado = {len(positions)}")
+            for i, pos in enumerate(positions):
+                symbol = pos.get('symbol', 'N/A')
+                amount = pos.get('positionAmt', '0')
+                logger.info(f"   [{i+1}] {symbol}: {amount}")
+
             # Track which symbols we've seen from Binance for cleanup
             binance_symbols = set()
             for position in positions:
@@ -496,12 +503,12 @@ def create_sync_router() -> APIRouter:
                     """, position.get('symbol', '').replace('-', ''), account_id)
                     
                     if existing:
-                        # Update existing position
+                        # Update existing position (set status='open' since Binance returned it)
                         await transaction_db.execute("""
                             UPDATE positions SET
                                 side = $1, size = $2, entry_price = $3, mark_price = $4,
                                 unrealized_pnl = $5, leverage = $6, liquidation_price = $7,
-                                last_update_at = $8, updated_at = $9
+                                last_update_at = $8, updated_at = $9, status = 'open'
                             WHERE id = $10
                         """,
                         'long' if float(position.get('positionAmt', position.get('size', 0))) > 0 else 'short',
@@ -555,33 +562,44 @@ def create_sync_router() -> APIRouter:
                     logger.error(error_msg)
 
             # Clean up old positions that no longer exist in Binance
-            logger.info("🧹 Cleaning up old positions not found in Binance...")
+            # 🚨 CONSERVATIVE CLEANUP: Only close positions if they haven't been seen
+            # in multiple consecutive syncs to avoid false positives due to API issues
+            logger.info("🧹 Checking for positions that may need cleanup...")
 
             # Get all existing positions in database for this account
             existing_positions = await transaction_db.fetch("""
-                SELECT symbol FROM positions
+                SELECT symbol, updated_at FROM positions
                 WHERE exchange_account_id = $1 AND status = 'open'
             """, account_id)
 
-            # Close positions that are no longer in Binance
+            # Only consider closing positions that:
+            # 1. Are not in current Binance response
+            # 2. Haven't been updated in the last 5 minutes (multiple sync cycles)
             closed_count = 0
+            from datetime import timezone
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+
             for db_position in existing_positions:
                 if db_position['symbol'] not in binance_symbols:
-                    # This position is in DB but not in Binance anymore - close it
-                    await transaction_db.execute("""
-                        UPDATE positions SET
-                            status = 'closed',
-                            updated_at = $1
-                        WHERE exchange_account_id = $2 AND symbol = $3 AND status = 'open'
-                    """, datetime.now(), account_id, db_position['symbol'])
+                    # Check if position is old enough to be considered stale
+                    if db_position['updated_at'] < cutoff_time:
+                        # This position hasn't been seen for a while - close it
+                        await transaction_db.execute("""
+                            UPDATE positions SET
+                                status = 'closed',
+                                updated_at = $1
+                            WHERE exchange_account_id = $2 AND symbol = $3 AND status = 'open'
+                        """, datetime.now(timezone.utc), account_id, db_position['symbol'])
 
-                    closed_count += 1
-                    logger.info(f"🗑️ Closed old position: {db_position['symbol']}")
+                        closed_count += 1
+                        logger.info(f"🗑️ Closed stale position: {db_position['symbol']} (not updated for >5min)")
+                    else:
+                        logger.info(f"⏳ Position {db_position['symbol']} not in Binance response but recently updated - keeping open")
 
             if closed_count > 0:
-                logger.info(f"🧹 Closed {closed_count} old positions")
+                logger.info(f"🧹 Closed {closed_count} stale positions")
             else:
-                logger.info("✅ No old positions to close")
+                logger.info("✅ No stale positions found to close")
 
             logger.info(f"📊 Synced {synced_count} positions")
 

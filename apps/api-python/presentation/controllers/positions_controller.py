@@ -14,32 +14,64 @@ def create_positions_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1/positions", tags=["Positions"])
 
     @router.get("")
-    async def get_positions(request: Request, status: Optional[str] = None, symbol: Optional[str] = None):
+    async def get_positions(
+        request: Request,
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        exchange_account_id: Optional[str] = None,
+        operation_type: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: Optional[int] = None
+    ):
         """Get all positions with optional filtering"""
         try:
             # Build query with optional filters
             where_conditions = []
             params = []
             param_count = 1
-            
+
             if status:
-                where_conditions.append(f"status = ${param_count}")
+                where_conditions.append(f"p.status = ${param_count}")
                 params.append(status)
                 param_count += 1
-            
+
             if symbol:
-                where_conditions.append(f"symbol ILIKE ${param_count}")
+                where_conditions.append(f"p.symbol ILIKE ${param_count}")
                 params.append(f"%{symbol}%")
                 param_count += 1
-            
-            where_clause = ""
-            if where_conditions:
-                where_clause = "WHERE " + " AND ".join(where_conditions)
-            
+
+            if exchange_account_id:
+                where_conditions.append(f"p.exchange_account_id = ${param_count}")
+                params.append(exchange_account_id)
+                param_count += 1
+
+            # Note: operation_type filter ignored - positions table only contains FUTURES
+            # SPOT positions are not stored in this table
+
+            if date_from:
+                where_conditions.append(f"p.created_at >= ${param_count}::timestamp")
+                params.append(date_from)
+                param_count += 1
+
+            if date_to:
+                where_conditions.append(f"p.created_at <= ${param_count}::timestamp")
+                params.append(date_from)
+                param_count += 1
+
+            # Base WHERE clause - only check if account is active
+            base_conditions = ["ea.is_active = true"]
+            all_conditions = base_conditions + where_conditions
+
+            # Add LIMIT clause if specified
+            limit_clause = ""
+            if limit:
+                limit_clause = f"LIMIT {limit}"
+
             query = f"""
-                SELECT 
+                SELECT
                     p.id, p.external_id, p.symbol, p.side, p.status,
-                    p.size, p.entry_price, p.mark_price, 
+                    p.size, p.entry_price, p.mark_price,
                     p.unrealized_pnl, p.realized_pnl,
                     p.initial_margin, p.maintenance_margin, p.leverage,
                     p.liquidation_price, p.bankruptcy_price,
@@ -49,9 +81,9 @@ def create_positions_router() -> APIRouter:
                     ea.name as exchange_account_name, ea.exchange
                 FROM positions p
                 LEFT JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
-                WHERE ea.testnet = false AND ea.is_active = true
-                {' AND ' + ' AND '.join(where_conditions) if where_conditions else ''}
+                WHERE {' AND '.join(all_conditions)}
                 ORDER BY p.created_at DESC
+                {limit_clause}
             """
             
             positions = await transaction_db.fetch(query, *params)
@@ -62,11 +94,12 @@ def create_positions_router() -> APIRouter:
                     "id": position["id"],
                     "external_id": position["external_id"],
                     "symbol": position["symbol"],
-                    "side": position["side"],
+                    "side": position["side"].upper() if position["side"] else "LONG",
                     "status": position["status"],
                     "size": float(position["size"]) if position["size"] else 0,
                     "entry_price": float(position["entry_price"]) if position["entry_price"] else 0,
                     "mark_price": float(position["mark_price"]) if position["mark_price"] else 0,
+                    "exit_price": None,  # Campo não disponível na tabela atual
                     "unrealized_pnl": float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0,
                     "realized_pnl": float(position["realized_pnl"]) if position["realized_pnl"] else 0,
                     "initial_margin": float(position["initial_margin"]) if position["initial_margin"] else 0,
@@ -86,7 +119,14 @@ def create_positions_router() -> APIRouter:
                     "updated_at": position["updated_at"].isoformat() if position["updated_at"] else None
                 })
             
-            logger.info("Positions retrieved", count=len(positions_list), status=status, symbol=symbol)
+            logger.info("Positions retrieved",
+                       count=len(positions_list),
+                       status=status,
+                       symbol=symbol,
+                       exchange_account_id=exchange_account_id,
+                       date_from=date_from,
+                       date_to=date_to,
+                       limit=limit)
             return {"success": True, "data": positions_list}
             
         except Exception as e:
@@ -234,7 +274,7 @@ def create_positions_router() -> APIRouter:
                 "id": position["id"],
                 "external_id": position["external_id"],
                 "symbol": position["symbol"],
-                "side": position["side"],
+                "side": position["side"].upper() if position["side"] else "LONG",
                 "status": position["status"],
                 "size": float(position["size"]) if position["size"] else 0,
                 "entry_price": float(position["entry_price"]) if position["entry_price"] else 0,

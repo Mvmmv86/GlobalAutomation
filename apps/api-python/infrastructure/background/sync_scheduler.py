@@ -106,12 +106,29 @@ class SyncScheduler:
         exchange = account['exchange'].lower()
 
         if exchange == 'binance':
+            from infrastructure.security.encryption_service import EncryptionService
+            encryption_service = EncryptionService()
+
             # Usar as chaves do banco de dados
             api_key = account['api_key']
             secret_key = account['secret_key']
-            testnet = account.get('testnet', True)
+            # IMPORTANTE: Usar False como default para REAL trading
+            testnet = account.get('testnet', False)
 
-            # Se as chaves do banco são inválidas ou vazias, usar as do .env como fallback
+            # Tentar descriptografar as credenciais
+            try:
+                if api_key and len(api_key) > 10:
+                    api_key = encryption_service.decrypt_string(api_key)
+                if secret_key and len(secret_key) > 10:
+                    secret_key = encryption_service.decrypt_string(secret_key)
+            except Exception as e:
+                # Se falhar a descriptografia, usar fallback do .env
+                logger.warning(f"Decryption failed for account {account['id']}, using env vars")
+                import os
+                api_key = os.getenv('BINANCE_API_KEY')
+                secret_key = os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+
+            # Se as chaves são inválidas ou vazias, usar as do .env como fallback
             import os
             if not api_key or len(api_key) < 10:
                 api_key = os.getenv('BINANCE_API_KEY')

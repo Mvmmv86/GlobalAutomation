@@ -104,6 +104,8 @@ export interface Position {
   closedAt?: string
   createdAt: string
   updatedAt: string
+
+  operation_type?: string
 }
 
 export interface Webhook {

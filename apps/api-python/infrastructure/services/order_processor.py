@@ -20,9 +20,10 @@ class OrderProcessor:
     """Processa ordens do TradingView para exchanges"""
 
     def __init__(self):
+        # IMPORTANTE: Usar REAL trading (testnet=False)
         self.binance_connector = create_binance_connector(
-            testnet=True
-        )  # Demo mode por segurança
+            testnet=False
+        )
 
     async def process_tradingview_webhook(
         self, webhook_payload: Dict[str, Any], webhook_delivery_id: Optional[int] = None

@@ -18,6 +18,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from presentation.controllers.webhook_controller import create_webhook_router
+from presentation.controllers.webhooks_crud_controller import create_webhooks_crud_router
 from presentation.controllers.health_controller import create_health_router
 from presentation.controllers.dashboard_controller import create_dashboard_router
 from presentation.controllers.positions_controller import create_positions_router
@@ -264,6 +265,7 @@ def create_app() -> FastAPI:
     app.include_router(create_orders_router())  # Orders endpoints (create, close, modify)
     app.include_router(sltp_router, prefix="/api/v1/orders")  # SL/TP modification endpoint
     app.include_router(create_websocket_router())  # WebSocket for real-time notifications
+    app.include_router(create_webhooks_crud_router())  # Webhooks CRUD endpoints (já tem prefix interno)
 
 
     return app
@@ -1465,29 +1467,9 @@ async def get_exchange_accounts():
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
 
-@app.get("/api/v1/webhooks")
-async def get_webhooks():
-    """Get webhooks from database"""
-    try:
-        # Mock webhook data for demo
-        result = [
-            {
-                "id": "webhook_1",
-                "name": "TradingView Webhook",
-                "url": "/api/v1/webhooks/tradingview",
-                "secret_key": "***hidden***",
-                "status": "active",
-                "is_active": True,
-                "created_at": "2024-01-01T00:00:00Z",
-                "updated_at": "2024-01-01T00:00:00Z",
-                "last_triggered": None
-            }
-        ]
-
-        return result
-    except Exception as e:
-        logger.error(f"Get webhooks error: {e}")
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+# REMOVIDO: Endpoint mock substituído pelo webhooks_crud_controller
+# O endpoint GET /api/v1/webhooks agora é fornecido pelo create_webhooks_crud_router()
+# que busca dados reais do banco de dados
 
 
 

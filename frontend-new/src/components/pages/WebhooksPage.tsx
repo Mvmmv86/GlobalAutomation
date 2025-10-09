@@ -1,24 +1,61 @@
 import React, { useState } from 'react'
-import { Plus, Copy, Settings, Trash2, Wifi } from 'lucide-react'
+import { Plus, Copy, Settings, Trash2, Wifi, Edit, AlertCircle } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
-import { useWebhooks, useCreateWebhook } from '@/hooks/useApiData'
-import { CreateWebhookModal, WebhookData } from '../molecules/CreateWebhookModal'
-import { ConfigureWebhookModal, WebhookConfiguration } from '../molecules/ConfigureWebhookModal'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { webhookService, WebhookData } from '@/services/webhookService'
+import { CreateWebhookModalSimple, WebhookSimpleData } from '../molecules/CreateWebhookModalSimple'
+import { EditWebhookModalSimple, WebhookEditData } from '../molecules/EditWebhookModalSimple'
 
 const WebhooksPage: React.FC = () => {
+  const queryClient = useQueryClient()
+
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
-  const [isConfigureModalOpen, setIsConfigureModalOpen] = useState(false)
-  const [selectedWebhookId, setSelectedWebhookId] = useState<string>('')
-  const [selectedWebhookName, setSelectedWebhookName] = useState<string>('')
-  const [selectedWebhookStatus, setSelectedWebhookStatus] = useState<string>('')
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [selectedWebhook, setSelectedWebhook] = useState<WebhookEditData | null>(null)
 
-  // API Data hooks
-  const { data: webhooksApi, isLoading: loadingWebhooks, error: webhooksError } = useWebhooks()
-  const createWebhookMutation = useCreateWebhook()
+  // React Query hooks para API real
+  const { data: webhooks = [], isLoading: loadingWebhooks, error: webhooksError } = useQuery({
+    queryKey: ['webhooks'],
+    queryFn: () => webhookService.getWebhooks()
+  })
+
+  const createMutation = useMutation({
+    mutationFn: (data: WebhookSimpleData) => webhookService.createWebhook(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['webhooks'] })
+      alert('✅ Webhook criado com sucesso!')
+    },
+    onError: (error: any) => {
+      alert(`❌ Erro ao criar webhook: ${error.message || 'Erro desconhecido'}`)
+    }
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ webhookId, data }: { webhookId: string, data: any }) =>
+      webhookService.updateWebhook(webhookId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['webhooks'] })
+      alert('✅ Webhook atualizado com sucesso!')
+    },
+    onError: (error: any) => {
+      alert(`❌ Erro ao atualizar webhook: ${error.message || 'Erro desconhecido'}`)
+    }
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (webhookId: string) => webhookService.deleteWebhook(webhookId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['webhooks'] })
+      alert('✅ Webhook deletado com sucesso!')
+    },
+    onError: (error: any) => {
+      alert(`❌ Erro ao deletar webhook: ${error.message || 'Erro desconhecido'}`)
+    }
+  })
 
   const testApiConnection = async () => {
     setApiStatus('testing')
@@ -38,75 +75,36 @@ const WebhooksPage: React.FC = () => {
     setIsCreateModalOpen(true)
   }
 
-  const handleSubmitWebhook = async (data: WebhookData) => {
-    try {
-      // Here you would normally save to backend
-      console.log('💾 Creating webhook:', data)
-      setIsCreateModalOpen(false)
-      alert(`✅ Webhook "${data.name}" criado com sucesso!`)
-      // In a real app, you would refetch webhooks here
-    } catch (error: any) {
-      alert(`❌ Erro ao criar webhook: ${error.message || "Não foi possível criar"}`)
-    }
+  const handleSubmitCreate = async (data: WebhookSimpleData) => {
+    await createMutation.mutateAsync(data)
   }
 
   const handleCopyUrl = (urlPath: string) => {
-    const fullUrl = `${import.meta.env.VITE_API_URL}/webhook/${urlPath}`
+    const fullUrl = `${import.meta.env.VITE_API_URL}/api/v1/webhooks/tradingview/${urlPath}`
     navigator.clipboard.writeText(fullUrl)
     alert('URL copiada para clipboard!')
   }
 
-  const handleConfigureWebhook = (webhookId: string) => {
-    const webhook = webhooks.find(w => w.id === webhookId)
-    if (webhook) {
-      setSelectedWebhookId(webhookId)
-      setSelectedWebhookName(webhook.name)
-      setSelectedWebhookStatus(webhook.status)
-      setIsConfigureModalOpen(true)
-    }
+  const handleEditWebhook = (webhook: WebhookData) => {
+    setSelectedWebhook({
+      id: webhook.id || '',
+      name: webhook.name,
+      url_path: webhook.url_path,
+      status: webhook.status,
+      secret: webhook.secret
+    })
+    setIsEditModalOpen(true)
   }
 
-  const handleSubmitConfiguration = async (config: WebhookConfiguration) => {
-    try {
-      // Here you would normally save to backend
-      console.log('💾 Saving webhook configuration for:', selectedWebhookId, config)
-      setIsConfigureModalOpen(false)
-      alert(`✅ Configurações salvas com sucesso para "${selectedWebhookName}"!`)
-    } catch (error: any) {
-      alert(`❌ Erro ao salvar configurações: ${error.message || "Não foi possível salvar"}`)
-    }
+  const handleSubmitEdit = async (webhookId: string, data: WebhookEditData) => {
+    await updateMutation.mutateAsync({ webhookId, data })
   }
 
-  const handleDeleteWebhook = (webhookId: string) => {
-    if (confirm('Tem certeza que deseja deletar este webhook?')) {
-      alert(`Webhook ${webhookId} deletado - implementação em breve!`)
+  const handleDeleteWebhook = (webhookId: string, webhookName: string) => {
+    if (confirm(`Tem certeza que deseja deletar o webhook "${webhookName}"?`)) {
+      deleteMutation.mutate(webhookId)
     }
   }
-
-  // Mock data for fallback
-  const mockWebhooks = [
-    {
-      id: '1',
-      name: 'TradingView Strategy 1',
-      urlPath: 'webhook_abc123',
-      status: 'active',
-      totalDeliveries: 156,
-      successfulDeliveries: 154,
-      failedDeliveries: 2,
-    },
-    {
-      id: '2',
-      name: 'Scalping Bot',
-      urlPath: 'webhook_def456',
-      status: 'paused',
-      totalDeliveries: 89,
-      successfulDeliveries: 87,
-      failedDeliveries: 2,
-    },
-  ]
-
-  // Use real data when available, fallback to mock data
-  const webhooks = webhooksApi || mockWebhooks
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -152,10 +150,26 @@ const WebhooksPage: React.FC = () => {
 
       {/* API Error Banner */}
       {webhooksError && (
-        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-          <p className="text-yellow-800 dark:text-yellow-200 text-sm">
-            ⚠️ API indisponível - usando dados demo
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
+            <p className="text-red-800 dark:text-red-200 text-sm">
+              ❌ Erro ao carregar webhooks da API - verifique se o backend está rodando
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!loadingWebhooks && webhooks.length === 0 && (
+        <div className="bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-800 rounded-lg p-8 text-center">
+          <p className="text-gray-600 dark:text-gray-400 mb-4">
+            Nenhum webhook cadastrado ainda
           </p>
+          <Button onClick={handleCreateWebhook}>
+            <Plus className="w-4 h-4 mr-2" />
+            Criar Primeiro Webhook
+          </Button>
         </div>
       )}
 
@@ -174,12 +188,12 @@ const WebhooksPage: React.FC = () => {
                   <CardTitle className="text-lg">{webhook.name}</CardTitle>
                   <CardDescription className="flex items-center space-x-2 mt-1">
                     <code className="text-sm bg-muted px-2 py-1 rounded">
-                      {webhook.urlPath}
+                      {webhook.url_path}
                     </code>
-                    <Button 
-                      variant="ghost" 
+                    <Button
+                      variant="ghost"
                       size="sm"
-                      onClick={() => handleCopyUrl(webhook.urlPath)}
+                      onClick={() => handleCopyUrl(webhook.url_path)}
                     >
                       <Copy className="w-4 h-4" />
                     </Button>
@@ -187,17 +201,17 @@ const WebhooksPage: React.FC = () => {
                 </div>
                 <div className="flex space-x-2">
                   {getStatusBadge(webhook.status)}
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     size="sm"
-                    onClick={() => handleConfigureWebhook(webhook.id)}
+                    onClick={() => handleEditWebhook(webhook)}
                   >
-                    <Settings className="w-4 h-4" />
+                    <Edit className="w-4 h-4" />
                   </Button>
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     size="sm"
-                    onClick={() => handleDeleteWebhook(webhook.id)}
+                    onClick={() => handleDeleteWebhook(webhook.id || '', webhook.name)}
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
@@ -205,18 +219,22 @@ const WebhooksPage: React.FC = () => {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-3 gap-4 text-sm">
+              <div className="grid grid-cols-4 gap-4 text-sm">
                 <div>
-                  <p className="text-muted-foreground">Total</p>
-                  <p className="font-medium">{webhook.totalDeliveries}</p>
+                  <p className="text-muted-foreground">Total Deliveries</p>
+                  <p className="font-medium">{webhook.total_deliveries || 0}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Sucessos</p>
-                  <p className="font-medium text-success">{webhook.successfulDeliveries}</p>
+                  <p className="font-medium text-success">{webhook.successful_deliveries || 0}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Falhas</p>
-                  <p className="font-medium text-danger">{webhook.failedDeliveries}</p>
+                  <p className="font-medium text-danger">{webhook.failed_deliveries || 0}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Taxa de Sucesso</p>
+                  <p className="font-medium">{webhook.success_rate?.toFixed(1) || '0'}%</p>
                 </div>
               </div>
             </CardContent>
@@ -226,22 +244,20 @@ const WebhooksPage: React.FC = () => {
       )}
 
       {/* Create Webhook Modal */}
-      <CreateWebhookModal
+      <CreateWebhookModalSimple
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
-        onSubmit={handleSubmitWebhook}
-        isLoading={false}
+        onSubmit={handleSubmitCreate}
+        isLoading={createMutation.isPending}
       />
 
-      {/* Configure Webhook Modal */}
-      <ConfigureWebhookModal
-        isOpen={isConfigureModalOpen}
-        onClose={() => setIsConfigureModalOpen(false)}
-        onSubmit={handleSubmitConfiguration}
-        webhookId={selectedWebhookId}
-        webhookName={selectedWebhookName}
-        webhookStatus={selectedWebhookStatus}
-        isLoading={false}
+      {/* Edit Webhook Modal */}
+      <EditWebhookModalSimple
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        onSubmit={handleSubmitEdit}
+        isLoading={updateMutation.isPending}
+        webhook={selectedWebhook}
       />
     </div>
   )

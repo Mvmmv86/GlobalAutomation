@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import List, Optional
 import structlog
 from decimal import Decimal
+from datetime import datetime
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 
@@ -50,13 +51,17 @@ def create_positions_router() -> APIRouter:
             # SPOT positions are not stored in this table
 
             if date_from:
-                where_conditions.append(f"p.created_at >= ${param_count}::timestamp")
-                params.append(date_from)
+                where_conditions.append(f"p.created_at >= ${param_count}")
+                # Convert string to datetime object
+                date_obj = datetime.strptime(date_from, "%Y-%m-%d")
+                params.append(date_obj)
                 param_count += 1
 
             if date_to:
-                where_conditions.append(f"p.created_at <= ${param_count}::timestamp")
-                params.append(date_from)
+                where_conditions.append(f"p.created_at <= ${param_count}")
+                # Convert string to datetime object
+                date_obj = datetime.strptime(date_to, "%Y-%m-%d")
+                params.append(date_obj)
                 param_count += 1
 
             # Base WHERE clause - only check if account is active

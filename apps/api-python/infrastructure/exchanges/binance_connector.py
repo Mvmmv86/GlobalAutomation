@@ -53,6 +53,80 @@ class BinanceConnector:
         """Check if running in demo mode"""
         return self.client is None
 
+    async def normalize_quantity(self, symbol: str, quantity: float, is_futures: bool = False) -> float:
+        """
+        Normaliza quantidade baseado no stepSize do símbolo
+
+        Args:
+            symbol: Par de negociação (ex: BTCUSDT, AVAXUSDT)
+            quantity: Quantidade original
+            is_futures: Se é futures (usa futures_exchange_info)
+
+        Returns:
+            Quantidade normalizada segundo stepSize da Binance
+
+        Exemplos:
+            BTCUSDT: stepSize=0.001 (3 decimais) → 0.123456 → 0.123
+            AVAXUSDT: stepSize=1.0 (0 decimais) → 10.5 → 10.0
+        """
+        try:
+            import math
+
+            # Buscar exchange info
+            if is_futures:
+                exchange_info = await asyncio.to_thread(
+                    self.client.futures_exchange_info
+                )
+            else:
+                exchange_info = await asyncio.to_thread(
+                    self.client.get_exchange_info
+                )
+
+            # Encontrar símbolo
+            symbol_info = next(
+                (s for s in exchange_info['symbols'] if s['symbol'] == symbol.upper()),
+                None
+            )
+
+            if not symbol_info:
+                logger.warning(f"Símbolo {symbol} não encontrado, usando 3 decimais como fallback")
+                return round(quantity, 3)
+
+            # Buscar filtro LOT_SIZE
+            lot_size_filter = next(
+                (f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'),
+                None
+            )
+
+            if not lot_size_filter:
+                logger.warning(f"LOT_SIZE não encontrado para {symbol}, usando 3 decimais como fallback")
+                return round(quantity, 3)
+
+            step_size = float(lot_size_filter['stepSize'])
+            min_qty = float(lot_size_filter['minQty'])
+
+            # Normalizar para stepSize (arredondar para baixo)
+            normalized = math.floor(quantity / step_size) * step_size
+
+            # Verificar quantidade mínima
+            if normalized < min_qty:
+                logger.error(
+                    f"⚠️ Quantidade {normalized} menor que mínimo {min_qty} para {symbol}"
+                )
+                return min_qty
+
+            logger.info(
+                f"📊 Quantidade normalizada: {symbol} {quantity} → {normalized} "
+                f"(stepSize={step_size}, minQty={min_qty})"
+            )
+
+            return normalized
+
+        except Exception as e:
+            logger.error(f"Erro ao normalizar quantidade para {symbol}: {e}")
+            # Fallback seguro
+            return round(quantity, 3)
+
     async def test_connection(self) -> Dict[str, Any]:
         """Test connection to Binance"""
         try:
@@ -148,6 +222,7 @@ class BinanceConnector:
         side: str,  # 'buy' or 'sell'
         quantity: Decimal,
         test_order: bool = None,
+        reduce_only: bool = False,
     ) -> Dict[str, Any]:
         """
         Create market order
@@ -157,6 +232,7 @@ class BinanceConnector:
             side: buy or sell
             quantity: Order quantity
             test_order: If True, only test the order (default: auto based on demo mode)
+            reduce_only: If True, order will only reduce position (for closing positions)
         """
 
         if test_order is None:
@@ -232,25 +308,39 @@ class BinanceConnector:
                 }
             else:
                 # Real order execution
-                result = self.client.order_market(
-                    symbol=symbol, side=side, quantity=quantity_str
-                )
+                if reduce_only:
+                    # Use futures_create_order for reduceOnly support
+                    result = self.client.futures_create_order(
+                        symbol=symbol,
+                        side=side,
+                        type="MARKET",
+                        quantity=quantity_str,
+                        reduceOnly="true"
+                    )
+                else:
+                    # Use simplified order_market for regular orders
+                    result = self.client.order_market(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity_str
+                    )
 
+                # futures_create_order returns different fields than order_market
                 return {
                     "success": True,
                     "demo": False,
                     "test_order": False,
-                    "order_id": str(result["orderId"]),
+                    "order_id": str(result.get("orderId", result.get("id", ""))),
                     "symbol": result["symbol"],
                     "side": result["side"],
                     "type": result["type"],
-                    "quantity": result["origQty"],
+                    "quantity": result.get("origQty", result.get("quantity", "0")),
                     "price": result.get("price", "0"),
                     "status": result["status"],
-                    "filled_quantity": result.get("executedQty", "0"),
-                    "average_price": result.get("avgPrice", "0"),
+                    "filled_quantity": result.get("executedQty", result.get("quantity", "0")),
+                    "average_price": result.get("avgPrice", result.get("price", "0")),
                     "commission": result.get("commission", "0"),
-                    "timestamp": result["transactTime"],
+                    "timestamp": result.get("transactTime", result.get("updateTime", 0)),
                     "raw_response": result,
                 }
 
@@ -590,6 +680,222 @@ class BinanceConnector:
         except Exception as e:
             logger.error(f"Error getting ticker: {e}")
             return {"success": False, "error": str(e), "data": {}}
+
+    async def create_spot_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: Optional[float] = None,
+        stop_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Create SPOT order on Binance
+
+        Args:
+            symbol: Trading pair (ex: BTCUSDT)
+            side: BUY or SELL
+            order_type: MARKET, LIMIT, STOP_LOSS_LIMIT
+            quantity: Amount to trade
+            price: Price (for LIMIT orders)
+            stop_price: Stop price (for STOP orders)
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": False,
+                    "error": "Demo mode - cannot create real orders",
+                    "demo": True
+                }
+
+            # Normalizar quantidade usando stepSize correto do símbolo
+            quantity = await self.normalize_quantity(symbol, quantity, is_futures=False)
+
+            # Prepare order params
+            params = {
+                'symbol': symbol.upper(),
+                'side': side.upper(),
+                'type': order_type.upper(),
+                'quantity': quantity
+            }
+
+            # Add price for LIMIT orders
+            if order_type.upper() in ['LIMIT', 'STOP_LOSS_LIMIT']:
+                if not price:
+                    return {"success": False, "error": "Price required for LIMIT orders"}
+                params['price'] = price
+                params['timeInForce'] = 'GTC'  # Good Till Cancelled
+
+            # Add stop price for STOP orders
+            if 'STOP' in order_type.upper():
+                if not stop_price:
+                    return {"success": False, "error": "Stop price required for STOP orders"}
+                params['stopPrice'] = stop_price
+
+            logger.info(f"🔵 Creating SPOT order: {params}")
+
+            # Execute order
+            order_result = await asyncio.to_thread(
+                self.client.create_order,
+                **params
+            )
+
+            logger.info(f"✅ SPOT order created successfully: {order_result.get('orderId')}")
+
+            return {
+                "success": True,
+                "data": order_result,
+                "order_id": str(order_result.get('orderId')),
+                "demo": False
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API error creating SPOT order: {e}")
+            return {"success": False, "error": f"Binance error: {e.message}"}
+        except Exception as e:
+            logger.error(f"❌ Error creating SPOT order: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def create_futures_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        leverage: int = 1,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Create FUTURES order on Binance
+
+        Args:
+            symbol: Trading pair (ex: BTCUSDT)
+            side: BUY or SELL
+            order_type: MARKET, LIMIT, STOP, STOP_MARKET
+            quantity: Amount to trade
+            price: Price (for LIMIT orders)
+            stop_price: Stop price (for STOP orders)
+            leverage: Leverage (1-125x)
+            stop_loss: Stop loss price
+            take_profit: Take profit price
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": False,
+                    "error": "Demo mode - cannot create real orders",
+                    "demo": True
+                }
+
+            # 1. Set leverage first
+            if leverage > 1:
+                logger.info(f"🔧 Setting leverage to {leverage}x for {symbol}")
+                await asyncio.to_thread(
+                    self.client.futures_change_leverage,
+                    symbol=symbol.upper(),
+                    leverage=leverage
+                )
+
+            # 2. Normalizar quantidade usando stepSize correto do símbolo
+            quantity = await self.normalize_quantity(symbol, quantity, is_futures=True)
+
+            # Prepare main order params
+            params = {
+                'symbol': symbol.upper(),
+                'side': side.upper(),
+                'type': order_type.upper() if order_type.upper() != 'STOP' else 'STOP_MARKET',
+                'quantity': quantity
+            }
+
+            # Add price for LIMIT orders
+            if order_type.upper() == 'LIMIT':
+                if not price:
+                    return {"success": False, "error": "Price required for LIMIT orders"}
+                params['price'] = price
+                params['timeInForce'] = 'GTC'
+
+            # Add stop price for STOP orders
+            if 'STOP' in order_type.upper():
+                if not stop_price:
+                    return {"success": False, "error": "Stop price required for STOP orders"}
+                params['stopPrice'] = stop_price
+
+            logger.info(f"🔵 Creating FUTURES order: {params}")
+
+            # 3. Execute main order
+            order_result = await asyncio.to_thread(
+                self.client.futures_create_order,
+                **params
+            )
+
+            logger.info(f"✅ FUTURES order created successfully: {order_result.get('orderId')}")
+
+            # Inicializar IDs de SL/TP como None
+            sl_order_id = None
+            tp_order_id = None
+
+            # 4. Add Stop Loss if provided
+            if stop_loss:
+                sl_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+                sl_params = {
+                    'symbol': symbol.upper(),
+                    'side': sl_side,
+                    'type': 'STOP_MARKET',
+                    'stopPrice': stop_loss,
+                    'closePosition': 'true'  # Close entire position
+                }
+
+                logger.info(f"🛑 Creating Stop Loss: {sl_params}")
+
+                sl_result = await asyncio.to_thread(
+                    self.client.futures_create_order,
+                    **sl_params
+                )
+
+                sl_order_id = str(sl_result.get('orderId'))
+                logger.info(f"✅ Stop Loss created: {sl_order_id}")
+
+            # 5. Add Take Profit if provided
+            if take_profit:
+                tp_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+                tp_params = {
+                    'symbol': symbol.upper(),
+                    'side': tp_side,
+                    'type': 'TAKE_PROFIT_MARKET',
+                    'stopPrice': take_profit,
+                    'closePosition': 'true'  # Close entire position
+                }
+
+                logger.info(f"🎯 Creating Take Profit: {tp_params}")
+
+                tp_result = await asyncio.to_thread(
+                    self.client.futures_create_order,
+                    **tp_params
+                )
+
+                tp_order_id = str(tp_result.get('orderId'))
+                logger.info(f"✅ Take Profit created: {tp_order_id}")
+
+            # Retornar IDs de todas as ordens
+            return {
+                "success": True,
+                "data": order_result,
+                "order_id": str(order_result.get('orderId')),
+                "stop_loss_order_id": sl_order_id,  # ✅ NOVO: ID do Stop Loss
+                "take_profit_order_id": tp_order_id,  # ✅ NOVO: ID do Take Profit
+                "demo": False
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API error creating FUTURES order: {e}")
+            return {"success": False, "error": f"Binance error: {e.message}"}
+        except Exception as e:
+            logger.error(f"❌ Error creating FUTURES order: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Factory function para criar connector

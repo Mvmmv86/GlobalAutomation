@@ -57,25 +57,24 @@ class PositionService {
       return positions.map((pos: any) => ({
         id: pos.id,
         symbol: pos.symbol,
-        side: pos.side,
+        side: pos.side.toUpperCase(), // Garantir uppercase (LONG/SHORT)
         status: pos.status,
-        size: pos.size,
+        quantity: pos.size, // Quantidade da posição
         entryPrice: pos.entry_price,
         markPrice: pos.mark_price,
+        exitPrice: pos.exit_price, // Preço de saída para posições fechadas
         unrealizedPnl: pos.unrealized_pnl,
         realizedPnl: pos.realized_pnl,
-        initialMargin: pos.initial_margin,
-        maintenanceMargin: pos.maintenance_margin,
+        margin: pos.initial_margin,
         leverage: pos.leverage,
-        liquidationPrice: pos.liquidation_price,
-        exchangeAccountId: pos.exchange_account_id || pos.exchange || 'binance',
+        exchangeAccountId: pos.exchange_account_id,
         openedAt: pos.opened_at,
         closedAt: pos.closed_at,
         createdAt: pos.created_at,
         updatedAt: pos.updated_at,
 
-        // Campos adicionais que podem vir do backend
-        operation_type: pos.operation_type || 'spot',
+        // Campos adicionais específicos
+        operationType: 'futures' // Sempre FUTURES para esta implementação
       }))
     } catch (error) {
       console.error('Error fetching positions from Python API:', error)

@@ -20,6 +20,12 @@
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
+    --success: 134 61% 41%;
+    --success-foreground: 0 0% 98%;
+    --danger: 0 84% 60%;
+    --danger-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 98%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
@@ -44,6 +50,12 @@
     --accent-foreground: 0 0% 98%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
+    --success: 134 61% 41%;
+    --success-foreground: 0 0% 98%;
+    --danger: 0 84% 60%;
+    --danger-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 98%;
     --border: 0 0% 16%;
     --input: 0 0% 14%;
     --ring: 142 76% 36%;
@@ -72,6 +84,16 @@
   @apply text-muted-foreground;
 }
 
+/* Force badge colors for LONG/SHORT positions */
+.bg-success {
+  background-color: hsl(var(--success)) !important;
+  color: hsl(var(--success-foreground)) !important;
+}
+
+.hover\:bg-success\/80:hover {
+  background-color: hsl(var(--success) / 0.8) !important;
+}
+
 /* Loading animations */
 @keyframes pulse-slow {
   0%, 100% {
@@ -84,4 +106,15 @@
 
 .animate-pulse-slow {
   animation: pulse-slow 2s ease-in-out infinite;
+}
+
+/* Position badges specific to Trading page PositionsCard */
+.position-badge-long {
+  background-color: hsl(var(--success)) !important;
+  color: hsl(var(--success-foreground)) !important;
+}
+
+.position-badge-short {
+  background-color: hsl(var(--danger)) !important;
+  color: hsl(var(--danger-foreground)) !important;
 }

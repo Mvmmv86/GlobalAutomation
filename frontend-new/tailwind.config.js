@@ -53,16 +53,16 @@ export default {
         },
         // Trading specific colors
         success: {
-          DEFAULT: "hsl(134, 61%, 41%)",
-          foreground: "hsl(0, 0%, 98%)",
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(var(--success-foreground))",
         },
         danger: {
-          DEFAULT: "hsl(0, 84%, 60%)",
-          foreground: "hsl(0, 0%, 98%)",
+          DEFAULT: "hsl(var(--danger))",
+          foreground: "hsl(var(--danger-foreground))",
         },
         warning: {
-          DEFAULT: "hsl(38, 92%, 50%)",
-          foreground: "hsl(0, 0%, 98%)",
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
         },
       },
       borderRadius: {

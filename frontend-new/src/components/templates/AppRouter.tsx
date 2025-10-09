@@ -6,6 +6,7 @@ import { LoginPage } from '../pages/LoginPage'
 import { RegisterPage } from '../pages/RegisterPage'
 import DashboardPage from '../pages/DashboardPage'
 import TradingPage from '../pages/TradingPage'
+import TradingPageSimple from '../pages/TradingPageSimple'
 import ExchangeAccountsPage from '../pages/ExchangeAccountsPage'
 import WebhooksPage from '../pages/WebhooksPage'
 import OrdersPage from '../pages/OrdersPage'
@@ -98,7 +99,9 @@ export const AppRouter: React.FC = () => {
         path="/trading"
         element={
           <ProtectedRoute>
-            <TradingPage />
+            <DashboardLayout fullWidth>
+              <TradingPage />
+            </DashboardLayout>
           </ProtectedRoute>
         }
       />

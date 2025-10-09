@@ -11,6 +11,7 @@ load_dotenv()
 from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -23,11 +24,17 @@ from presentation.controllers.positions_controller import create_positions_route
 from presentation.controllers.dashboard_cards_controller import create_dashboard_cards_router
 from presentation.controllers.sync_controller import create_sync_router
 from presentation.controllers.exchange_account_controller import create_exchange_account_router
+from presentation.controllers.market_controller import router as market_router
+from presentation.controllers.orders_controller import create_orders_router
+from presentation.controllers.sltp_update_controller import router as sltp_router
+from presentation.controllers.websocket_controller import create_websocket_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.security.encryption_service import EncryptionService
 from infrastructure.pricing.binance_price_service import BinancePriceService
+from infrastructure.cache import start_cache_cleanup_task
+from infrastructure.cache.candles_cache import start_candles_cache_cleanup
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -82,6 +89,15 @@ async def lifespan(app: FastAPI):
         logger.info("🚀 Starting background sync scheduler with real prices (30s interval)")
         await sync_scheduler.start()  # Habilitado para dados em tempo real
 
+        # Start cache cleanup background task
+        logger.info("🧹 Starting cache cleanup background task (60s interval)")
+        import asyncio
+        asyncio.create_task(start_cache_cleanup_task())
+
+        # Start candles cache cleanup
+        logger.info("📊 Starting candles cache cleanup background task")
+        asyncio.create_task(start_candles_cache_cleanup())
+
         yield
 
     finally:
@@ -131,6 +147,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["*"],
+    )
+
+    # 🚀 PERFORMANCE: GZip compression for faster data transfer
+    app.add_middleware(
+        GZipMiddleware,
+        minimum_size=500  # Compress responses >= 500 bytes
     )
 
     # Request logging middleware
@@ -238,6 +260,10 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_cards_router)
     app.include_router(sync_router)
     app.include_router(create_exchange_account_router())
+    app.include_router(market_router)  # Market data (candles, ticker)
+    app.include_router(create_orders_router())  # Orders endpoints (create, close, modify)
+    app.include_router(sltp_router, prefix="/api/v1/orders")  # SL/TP modification endpoint
+    app.include_router(create_websocket_router())  # WebSocket for real-time notifications
 
 
     return app
@@ -388,41 +414,94 @@ async def get_exchange_connector(account_id: str):
 # 🎯 SISTEMA HÍBRIDO: Função para buscar TODOS os símbolos relevantes
 async def get_all_relevant_symbols(exchange_account_id: str) -> list:
     """
-    Estratégia híbrida para garantir cobertura completa de símbolos:
-    1. Símbolos que já temos ordens no banco (histórico)
-    2. Top símbolos populares da Binance
-    3. Combinar sem duplicatas
+    Estratégia híbrida MELHORADA para garantir cobertura completa de símbolos:
+    1. Símbolos de POSIÇÕES ATUAIS (ativos novos que o usuário está operando)
+    2. Símbolos HISTÓRICOS do banco (ordens antigas)
+    3. Símbolos populares como fallback
+    4. Combinar tudo sem duplicatas
     """
     try:
-        print("🔍 Iniciando busca híbrida de símbolos...")
+        print("🔍 Iniciando busca híbrida MELHORADA de símbolos...")
 
-        # 1. SÍMBOLOS HISTÓRICOS: Buscar da nossa base de dados
+        all_discovered_symbols = []
+
+        # 1. DESCOBERTA DINÂMICA: Buscar posições atuais direto da Binance (como faz Positions)
+        try:
+            connector = await get_exchange_connector(exchange_account_id)
+
+            # Buscar FUTURES positions (ativos com posição)
+            futures_result = await connector.get_futures_positions()
+            if futures_result.get('success', True):
+                futures_positions = futures_result.get('positions', [])
+                futures_symbols = []
+                for pos in futures_positions:
+                    symbol = pos.get('symbol')
+                    # Pegar apenas posições com quantidade > 0
+                    position_amt = abs(float(pos.get('positionAmt', 0)))
+                    if symbol and position_amt > 0:
+                        futures_symbols.append(symbol)
+
+                if futures_symbols:
+                    print(f"🎯 FUTURES: {len(futures_symbols)} símbolos com posição ativa: {futures_symbols[:5]}...")
+                    all_discovered_symbols.extend(futures_symbols)
+
+            # Buscar SPOT balances (ativos na carteira)
+            spot_result = await connector.get_account()
+            if spot_result.get('success', True):
+                spot_balances = spot_result.get('balances', [])
+                spot_symbols = []
+                for balance in spot_balances:
+                    asset = balance.get('asset', '')
+                    free = float(balance.get('free', 0))
+                    locked = float(balance.get('locked', 0))
+
+                    # Se tem saldo, adicionar símbolo USDT
+                    if (free + locked) > 0 and asset != 'USDT':
+                        symbol = f"{asset}USDT"
+                        spot_symbols.append(symbol)
+
+                if spot_symbols:
+                    print(f"💰 SPOT: {len(spot_symbols)} ativos com saldo: {spot_symbols[:5]}...")
+                    all_discovered_symbols.extend(spot_symbols)
+
+        except Exception as e:
+            print(f"⚠️ Erro na descoberta dinâmica de símbolos: {e}")
+
+        # 2. SÍMBOLOS HISTÓRICOS: Buscar da nossa base de dados (últimos 6 meses)
         existing_symbols_rows = await transaction_db.fetch("""
             SELECT DISTINCT symbol
             FROM trading_orders
             WHERE symbol IS NOT NULL
               AND symbol != ''
-              AND created_at >= NOW() - INTERVAL '3 months'
+              AND created_at >= NOW() - INTERVAL '6 months'
             ORDER BY symbol
         """)
 
         existing_symbols = [row['symbol'] for row in existing_symbols_rows]
-        print(f"📚 Símbolos históricos encontrados: {len(existing_symbols)} - {existing_symbols[:10]}...")
+        if existing_symbols:
+            print(f"📚 Histórico do banco: {len(existing_symbols)} símbolos dos últimos 6 meses")
+            all_discovered_symbols.extend(existing_symbols)
 
-        # 2. SÍMBOLOS POPULARES: Lista curada dos principais pares
+        # 3. SÍMBOLOS POPULARES: Lista curada dos principais pares (fallback mínimo)
         popular_symbols = [
             'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'LINKUSDT', 'DOTUSDT', 'AVAXUSDT',
             'XRPUSDT', 'LTCUSDT', 'MATICUSDT', 'ATOMUSDT', 'ALGOUSDT', 'VETUSDT', 'XLMUSDT', 'TRXUSDT',
             'EOSUSDT', 'IOTAUSDT', 'NEOUSDT', 'DASHUSDT', 'ETCUSDT', 'XMRUSDT', 'ZECUSDT', 'COMPUSDT',
             'FILUSDT', 'UNIUSDT', 'AAVEUSDT', 'SUSHIUSDT', 'CHZUSDT', 'MANAUSDT', 'SANDUSDT', 'ENJUSDT',
-            'GRTUSDT', 'BALUSDT', 'CRVUSDT', 'RNDRUSDT', 'NEARUSDT', 'FTMUSDT', 'APEUSDT', 'GALAUSDT'
+            'GRTUSDT', 'BALUSDT', 'CRVUSDT', 'RNDRUSDT', 'NEARUSDT', 'FTMUSDT', 'APEUSDT', 'GALAUSDT',
+            # Adicionar ativos novos populares
+            'WIFUSDT', 'SEIUSDT', 'ARBUSDT', 'OPUSDT', 'INJUSDT', 'SUIUSDT', 'APTUSDT', 'STXUSDT',
+            'BLURUSDT', 'JUPUSDT', 'TIAUSDT', 'PYTHUSDT', 'ORDIUSDT', 'BONKUSDT', 'DOGEUSDT'
         ]
-        print(f"⭐ Símbolos populares: {len(popular_symbols)}")
+        all_discovered_symbols.extend(popular_symbols)
 
-        # 3. COMBINAR SEM DUPLICATAS: Histórico tem prioridade
-        all_symbols = list(dict.fromkeys(existing_symbols + popular_symbols))
+        # 4. COMBINAR SEM DUPLICATAS: Descobertos têm prioridade
+        all_symbols = list(dict.fromkeys(all_discovered_symbols))
 
-        print(f"🎯 TOTAL DE SÍMBOLOS: {len(all_symbols)} (histórico: {len(existing_symbols)}, populares: {len(popular_symbols)})")
+        print(f"🎯 TOTAL DE SÍMBOLOS ÚNICOS: {len(all_symbols)}")
+        print(f"   - Posições ativas (descobertos): primeiros da lista")
+        print(f"   - Histórico banco: símbolos operados antes")
+        print(f"   - Populares: garantia de cobertura mínima")
 
         return all_symbols
 
@@ -437,6 +516,103 @@ async def get_all_relevant_symbols(exchange_account_id: str) -> list:
         return fallback_symbols
 
 
+# 🚀 SISTEMA DE CACHE SIMPLES PARA ORDERS
+import asyncio
+from typing import Dict, List, Any, Optional
+from time import time
+
+# Cache global para orders (em memória)
+orders_cache: Dict[str, Dict[str, Any]] = {}
+CACHE_DURATION = 60  # 60 segundos
+
+def get_cache_key(account_id: str, date_from: Optional[str], date_to: Optional[str]) -> str:
+    """Gera chave única para o cache baseada nos parâmetros"""
+    return f"{account_id}_{date_from or 'none'}_{date_to or 'none'}"
+
+def is_cache_valid(cache_entry: Dict[str, Any]) -> bool:
+    """Verifica se o cache ainda é válido"""
+    if not cache_entry:
+        return False
+    return (time() - cache_entry.get('timestamp', 0)) < CACHE_DURATION
+
+async def fetch_orders_for_symbol(connector, symbol: str, start_time: Optional[int], end_time: Optional[int]) -> List[Dict]:
+    """Busca ordens para um símbolo específico (SPOT + FUTURES) com tratamento de erros"""
+    orders = []
+
+    try:
+        # SPOT Orders
+        try:
+            spot_result = await connector.get_account_orders(
+                symbol=symbol,
+                limit=500,
+                start_time=start_time,
+                end_time=end_time
+            )
+            if spot_result.get('success', True):
+                spot_orders = spot_result.get('orders', [])
+                for order in spot_orders:
+                    order['_market_type'] = 'SPOT'
+                orders.extend(spot_orders)
+        except Exception as e:
+            if "Symbol is closed" not in str(e) and "Invalid symbol" not in str(e):
+                print(f"⚠️ Erro SPOT {symbol}: {str(e)[:50]}")
+
+        # FUTURES Orders (últimos 7 dias apenas)
+        try:
+            futures_result = await connector.get_futures_orders(
+                symbol=symbol,
+                limit=500,
+                start_time=None,  # Limitação: apenas 7 dias
+                end_time=None
+            )
+            if futures_result.get('success', True):
+                futures_orders = futures_result.get('orders', [])
+                for order in futures_orders:
+                    order['_market_type'] = 'FUTURES'
+                orders.extend(futures_orders)
+        except Exception as e:
+            if "Symbol is closed" not in str(e) and "Invalid symbol" not in str(e):
+                print(f"⚠️ Erro FUTURES {symbol}: {str(e)[:50]}")
+
+    except Exception as e:
+        print(f"❌ Erro geral para {symbol}: {str(e)[:50]}")
+
+    if orders:
+        print(f"✅ {symbol}: {len(orders)} ordens encontradas")
+
+    return orders
+
+async def fetch_orders_parallel(connector, symbols: List[str], start_time: Optional[int], end_time: Optional[int]) -> List[Dict]:
+    """Busca ordens para múltiplos símbolos em paralelo (chunks de 10)"""
+    all_orders = []
+
+    # 🚀 PERFORMANCE: Chunks maiores para paralelização mais eficiente
+    chunk_size = 20  # Aumentado de 10 para 20 (Binance suporta até ~50 req/s)
+    chunks = [symbols[i:i+chunk_size] for i in range(0, len(symbols), chunk_size)]
+
+    print(f"🚀 Processando {len(symbols)} símbolos em {len(chunks)} lotes paralelos de até {chunk_size} símbolos")
+
+    for i, chunk in enumerate(chunks):
+        print(f"📦 Lote {i+1}/{len(chunks)}: {len(chunk)} símbolos")
+
+        # Criar tasks para buscar em paralelo
+        tasks = [
+            fetch_orders_for_symbol(connector, symbol, start_time, end_time)
+            for symbol in chunk
+        ]
+
+        # Executar em paralelo e coletar resultados
+        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Processar resultados
+        for result in chunk_results:
+            if isinstance(result, list):
+                all_orders.extend(result)
+            elif isinstance(result, Exception):
+                print(f"⚠️ Erro em lote: {str(result)[:50]}")
+
+    return all_orders
+
 # 📊 ENDPOINTS PARA FRONTEND - VISUALIZAÇÃO DE ORDENS
 @app.get("/api/v1/orders")
 async def get_orders(
@@ -445,9 +621,9 @@ async def get_orders(
     date_from: str = Query(default=None, description="Data inicial (YYYY-MM-DD)"),
     date_to: str = Query(default=None, description="Data final (YYYY-MM-DD)")
 ):
-    """Lista ordens com filtros para o frontend - FASE 1: Dados diretos da Binance"""
+    """Lista ordens com filtros para o frontend - COM CACHE E PARALELIZAÇÃO"""
     try:
-        print(f"🔍 FASE 1: Buscando ordens direto da Binance API")
+        print(f"🔍 FASE 2: Buscando ordens com CACHE + PARALELIZAÇÃO")
         print(f"🔍 Filtros: account_id={exchange_account_id}, date_from={date_from}, date_to={date_to}, limit={limit}")
 
         # FASE 1: Se não especificar conta, usar conta principal
@@ -468,6 +644,16 @@ async def get_orders(
             account_id_to_use = exchange_account_id
 
         print(f"🏦 Usando conta: {account_id_to_use}")
+
+        # CACHE: Verificar se temos dados em cache válidos
+        cache_key = get_cache_key(account_id_to_use, date_from, date_to)
+        cached_data = orders_cache.get(cache_key)
+
+        if cached_data and is_cache_valid(cached_data):
+            print(f"✨ CACHE HIT! Retornando {len(cached_data['data'])} ordens do cache (idade: {int(time() - cached_data['timestamp'])}s)")
+            return {"success": True, "data": cached_data['data'][:limit], "total": len(cached_data['data']), "cached": True}
+
+        print(f"🔄 CACHE MISS - Buscando dados frescos da API...")
 
         # Buscar ordens direto da Binance via connector
         connector = await get_exchange_connector(account_id_to_use)
@@ -498,56 +684,111 @@ async def get_orders(
 
         # SISTEMA HÍBRIDO: Buscar símbolos dinamicamente para MÁXIMA cobertura
         all_symbols = await get_all_relevant_symbols(exchange_account_id)
-        print(f"🎯 Sistema Híbrido: {len(all_symbols)} símbolos identificados para busca completa")
-        all_raw_orders = []
 
-        for symbol in all_symbols:
-            try:
-                print(f"🔍 Buscando ordens SPOT + FUTURES para {symbol}...")
+        # Filtrar símbolos problemáticos conhecidos
+        symbols_blacklist = ['NEOUSDT', 'IOTAUSDT']  # Símbolos deslistados
+        all_symbols = [s for s in all_symbols if s not in symbols_blacklist and ' ' not in s]
 
-                # 1. BUSCAR ORDENS SPOT
-                spot_result = await connector.get_account_orders(
-                    symbol=symbol,
-                    limit=100,  # Limite alto para pegar histórico completo
-                    start_time=start_time,
-                    end_time=end_time
-                )
+        print(f"🎯 Sistema Híbrido: {len(all_symbols)} símbolos válidos para busca paralela")
 
-                spot_orders = []
-                if spot_result.get('success', True):
-                    spot_orders = spot_result.get('orders', [])
-                    # Marcar como SPOT
-                    for order in spot_orders:
-                        order['_market_type'] = 'SPOT'
-                    all_raw_orders.extend(spot_orders)
+        # 🚀 PARALELIZAÇÃO: Buscar ordens em paralelo (muito mais rápido!)
+        start_fetch_time = time()
+        all_raw_orders = await fetch_orders_parallel(connector, all_symbols, start_time, end_time)
+        fetch_duration = time() - start_fetch_time
 
-                # 2. BUSCAR ORDENS FUTURES
-                # IMPORTANTE: Binance Futures tem limitação de 7 dias sem start_time
-                # e 90 dias com start_time. Buscar últimos 7 dias apenas
-                futures_result = await connector.get_futures_orders(
-                    symbol=symbol,
-                    limit=100,  # Limite alto para pegar histórico completo
-                    start_time=None,  # None = últimos 7 dias (padrão Binance)
-                    end_time=None
-                )
-
-                futures_orders = []
-                if futures_result.get('success', True):
-                    futures_orders = futures_result.get('orders', [])
-                    # Marcar como FUTURES
-                    for order in futures_orders:
-                        order['_market_type'] = 'FUTURES'
-                    all_raw_orders.extend(futures_orders)
-
-                total_orders = len(spot_orders) + len(futures_orders)
-                print(f"✅ {symbol}: {len(spot_orders)} SPOT + {len(futures_orders)} FUTURES = {total_orders} ordens")
-
-            except Exception as e:
-                print(f"❌ Erro ao buscar {symbol}: {e}")
-                continue
+        print(f"⚡ Busca paralela completada em {fetch_duration:.2f}s (vs ~{len(all_symbols)*2}s sequencial)")
 
         # Ordenar por data (mais recentes primeiro) - CRUCIAL para mostrar ordens atuais
         all_raw_orders.sort(key=lambda x: int(x.get('updateTime', x.get('time', 0))), reverse=True)
+
+        # 🧠 BUSCA HÍBRIDA: Complementar com ordens históricas do banco se necessário
+        if len(all_raw_orders) < limit and limit > 100:
+            print(f"🔍 BUSCA HÍBRIDA: API retornou {len(all_raw_orders)} ordens, buscando {limit - len(all_raw_orders)} do banco...")
+
+            try:
+                # Buscar ordens históricas do banco (mais antigas que as da API)
+                oldest_api_time = None
+                if all_raw_orders:
+                    oldest_api_time = min([int(order.get('updateTime', order.get('time', 0))) for order in all_raw_orders])
+                    oldest_api_date = datetime.fromtimestamp(oldest_api_time / 1000)
+                    print(f"📅 Ordem mais antiga da API: {oldest_api_date}")
+
+                # Query para buscar ordens do banco anteriores às da API
+                historical_limit = min(limit - len(all_raw_orders), 500)  # Limite de segurança
+
+                if oldest_api_time:
+                    historical_orders_query = """
+                        SELECT
+                            id, symbol, side, 'market' as order_type, quantity, price, status,
+                            exchange, exchange_order_id, filled_quantity, average_price,
+                            created_at, updated_at, operation_type, entry_exit,
+                            margin_usdt, profit_loss, order_id
+                        FROM orders
+                        WHERE created_at < $1 AND exchange_account_id = $2
+                        ORDER BY created_at DESC
+                        LIMIT $3
+                    """
+                    historical_orders_db = await transaction_db.fetch(
+                        historical_orders_query,
+                        oldest_api_date,
+                        account_id_to_use,
+                        historical_limit
+                    )
+                else:
+                    # Se não há ordens da API, buscar as mais recentes do banco
+                    historical_orders_query = """
+                        SELECT
+                            id, symbol, side, 'market' as order_type, quantity, price, status,
+                            exchange, exchange_order_id, filled_quantity, average_price,
+                            created_at, updated_at, operation_type, entry_exit,
+                            margin_usdt, profit_loss, order_id
+                        FROM orders
+                        WHERE exchange_account_id = $1
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                    """
+                    historical_orders_db = await transaction_db.fetch(
+                        historical_orders_query,
+                        account_id_to_use,
+                        historical_limit
+                    )
+
+                # Converter ordens do banco para formato compatível
+                historical_orders = []
+                for order in historical_orders_db:
+                    historical_order = {
+                        'orderId': str(order['exchange_order_id']),
+                        'symbol': order['symbol'],
+                        'side': order['side'].upper(),
+                        'type': order['order_type'].upper(),
+                        'origQty': str(order['quantity']),
+                        'price': str(order['price']),
+                        'status': order['status'].upper(),
+                        'executedQty': str(order['filled_quantity']),
+                        'cummulativeQuoteQty': str(float(order['filled_quantity']) * float(order['average_price'])),
+                        'time': int(order['created_at'].timestamp() * 1000),
+                        'updateTime': int(order['updated_at'].timestamp() * 1000),
+                        '_market_type': order['operation_type'].upper(),
+                        '_source': 'DATABASE',
+                        '_order_id': order['order_id'],
+                        '_profit_loss': order['profit_loss']
+                    }
+                    historical_orders.append(historical_order)
+
+                print(f"✅ BUSCA HÍBRIDA: {len(historical_orders)} ordens históricas encontradas no banco")
+
+                # Mesclar ordens da API + banco
+                all_raw_orders.extend(historical_orders)
+
+                # Re-ordenar por data após mesclar
+                all_raw_orders.sort(key=lambda x: int(x.get('updateTime', x.get('time', 0))), reverse=True)
+
+                print(f"🔗 TOTAL APÓS BUSCA HÍBRIDA: {len(all_raw_orders)} ordens (API + Banco)")
+
+            except Exception as e:
+                print(f"⚠️ Erro na busca híbrida: {e}")
+        else:
+            print(f"✅ API forneceu {len(all_raw_orders)} ordens suficientes, sem necessidade de busca no banco")
 
         # FASE 1: Aplicar limite inteligente - se muito dados, pegar só os mais recentes
         if len(all_raw_orders) > limit and limit < 1000:
@@ -826,6 +1067,14 @@ async def get_orders(
                 order['order_id'] = f"OP_{i+1}"
 
         print(f"✅ Processadas {len(orders_list)} ordens com sucesso")
+
+        # CACHE: Salvar resultado no cache para próximas requisições
+        orders_cache[cache_key] = {
+            'data': orders_list,
+            'timestamp': time()
+        }
+        print(f"💾 Resultado salvo no cache (válido por {CACHE_DURATION}s)")
+
         return {"success": True, "data": orders_list, "total": len(orders_list)}
 
     except Exception as e:
@@ -933,6 +1182,83 @@ async def get_order_details(order_id: int):
         return JSONResponse(
             status_code=500,
             content={"error": "Failed to fetch order details", "detail": str(e)},
+        )
+
+
+@app.get("/api/v1/liquidations")
+async def get_liquidations(
+    exchangeAccountId: Optional[str] = Query(None, description="ID da conta de exchange"),
+    symbol: Optional[str] = Query(None, description="Símbolo específico"),
+    startTime: Optional[int] = Query(None, description="Timestamp de início"),
+    endTime: Optional[int] = Query(None, description="Timestamp de fim"),
+    limit: Optional[int] = Query(100, description="Limite de resultados")
+):
+    """
+    Buscar dados de liquidação (force orders) da Binance
+
+    Retorna ordens de liquidação para análise de preços reais de liquidação
+    """
+    try:
+        if not exchangeAccountId:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "exchangeAccountId é obrigatório"}
+            )
+
+        # Buscar connector da exchange
+        connector = await get_exchange_connector(exchangeAccountId)
+        if not connector:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Exchange account not found"}
+            )
+
+        # Buscar dados de liquidação da Binance
+        result = await connector.get_force_orders(
+            symbol=symbol,
+            start_time=startTime,
+            end_time=endTime,
+            limit=limit
+        )
+
+        if not result.get("success"):
+            return JSONResponse(
+                status_code=500,
+                content={"error": result.get("error", "Failed to fetch liquidations")}
+            )
+
+        force_orders = result.get("force_orders", [])
+
+        # Processar dados de liquidação para frontend
+        liquidations = []
+        for order in force_orders:
+            liquidations.append({
+                "symbol": order.get("symbol"),
+                "side": order.get("side"),
+                "orderType": order.get("orderType"),
+                "origQty": float(order.get("origQty", 0)) if order.get("origQty") else 0,
+                "price": float(order.get("price", 0)) if order.get("price") else 0,
+                "avgPrice": float(order.get("avgPrice", 0)) if order.get("avgPrice") else 0,
+                "orderStatus": order.get("orderStatus"),
+                "timeInForce": order.get("timeInForce"),
+                "time": order.get("time"),
+                "lastFillTime": order.get("lastFillTime"),
+                "executedQty": float(order.get("executedQty", 0)) if order.get("executedQty") else 0,
+                "cummulativeQuoteQty": float(order.get("cummulativeQuoteQty", 0)) if order.get("cummulativeQuoteQty") else 0,
+            })
+
+        return {
+            "success": True,
+            "data": liquidations,
+            "demo": result.get("demo", False),
+            "count": len(liquidations)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching liquidations: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to fetch liquidations", "detail": str(e)}
         )
 
 

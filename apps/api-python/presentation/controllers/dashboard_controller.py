@@ -7,8 +7,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from infrastructure.database.connection_transaction_mode import transaction_db
+from infrastructure.cache import get_positions_cache
 
 logger = structlog.get_logger(__name__)
+cache = get_positions_cache()
 
 def create_dashboard_router() -> APIRouter:
     """Create and configure the dashboard router"""
@@ -207,9 +209,19 @@ def create_dashboard_router() -> APIRouter:
 
     @router.get("/balances")
     async def get_balances_summary(request: Request):
-        """Get futures and spot balances summary"""
+        """Get futures and spot balances summary with cache"""
         try:
-            logger.info("💰 Getting balances summary")
+            # Try to get from cache first
+            # For now, we use user_id=1 as default (single-user system)
+            # TODO: Extract user_id from JWT when auth is fully implemented
+            user_id = 1
+
+            cached_data = await cache.get(user_id, "balances_summary")
+            if cached_data is not None:
+                logger.info("💰 Balances summary from CACHE")
+                return {"success": True, "data": cached_data, "from_cache": True}
+
+            logger.info("💰 Getting balances summary from DB/API")
 
             # Get exchange accounts balances
             accounts_data = await transaction_db.fetch("""
@@ -264,7 +276,7 @@ def create_dashboard_router() -> APIRouter:
                 main_account = await transaction_db.fetchrow("""
                     SELECT id, api_key, secret_key, testnet
                     FROM exchange_accounts
-                    WHERE testnet = false AND is_active = true
+                    WHERE testnet = false AND is_active = true AND is_main = true
                     LIMIT 1
                 """)
 
@@ -340,10 +352,128 @@ def create_dashboard_router() -> APIRouter:
                        spot_balance=spot_balance,
                        total_assets=len(accounts_data))
 
-            return {"success": True, "data": result}
+            # Store in cache with 3s TTL
+            await cache.set(user_id, "balances_summary", result, ttl=3)
+
+            return {"success": True, "data": result, "from_cache": False}
 
         except Exception as e:
             logger.error("Error getting balances summary", error=str(e), exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to get balances summary")
+
+    @router.get("/cache/metrics")
+    async def get_cache_metrics(request: Request):
+        """Get cache performance metrics for monitoring"""
+        try:
+            metrics = cache.get_metrics()
+            logger.info("📊 Cache metrics retrieved", **metrics)
+            return {"success": True, "data": metrics}
+        except Exception as e:
+            logger.error("Error getting cache metrics", error=str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to get cache metrics")
+
+    @router.post("/cache/invalidate")
+    async def invalidate_cache(request: Request):
+        """Invalidate all cache entries (admin endpoint)"""
+        try:
+            # TODO: Add admin authentication
+            user_id = 1
+            count = await cache.invalidate(user_id)
+            logger.warning(f"🗑️ Cache invalidated manually: {count} entries")
+            return {"success": True, "data": {"invalidated_entries": count}}
+        except Exception as e:
+            logger.error("Error invalidating cache", error=str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to invalidate cache")
+
+    @router.get("/spot-balances/{exchange_account_id}")
+    async def get_spot_balances(request: Request, exchange_account_id: str):
+        """
+        Get all SPOT balances (wallet assets) for a specific exchange account
+        Returns ALL assets with balance > 0 + USD value calculated
+        """
+        try:
+            logger.info(f"💰 Getting SPOT balances for account {exchange_account_id}")
+
+            # Get SPOT balances from Binance API in real-time
+            account_info = await transaction_db.fetchrow("""
+                SELECT id, api_key, secret_key, testnet
+                FROM exchange_accounts
+                WHERE id = $1 AND is_active = true
+            """, exchange_account_id)
+
+            if not account_info:
+                raise HTTPException(status_code=404, detail="Exchange account not found or inactive")
+
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+            from infrastructure.pricing.binance_price_service import BinancePriceService
+            import os
+
+            # Use API keys from database or fallback to environment
+            api_key = account_info['api_key'] or os.getenv('BINANCE_API_KEY')
+            secret_key = account_info['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+
+            connector = BinanceConnector(
+                api_key=api_key,
+                api_secret=secret_key,
+                testnet=account_info['testnet']
+            )
+
+            # Get SPOT account info from Binance
+            account_result = await connector.get_account_info()
+
+            if not account_result.get('success', False):
+                raise HTTPException(status_code=500, detail="Failed to fetch SPOT balances from exchange")
+
+            balances = account_result.get('balances', [])
+
+            # Initialize price service for USD conversion
+            price_service = BinancePriceService(testnet=account_info['testnet'])
+            real_prices = await price_service.get_all_ticker_prices()
+
+            # Filter only balances with value > 0 and calculate USD value
+            spot_assets = []
+            total_usd_value = 0.0
+
+            for balance in balances:
+                free = float(balance.get('free', 0))
+                locked = float(balance.get('locked', 0))
+                total = free + locked
+
+                if total > 0:
+                    asset = balance['asset']
+
+                    # Calculate USD value
+                    usd_value = await price_service.calculate_usdt_value(asset, total, real_prices)
+                    total_usd_value += usd_value
+
+                    spot_assets.append({
+                        "asset": asset,
+                        "free": free,
+                        "locked": locked,
+                        "total": total,
+                        "in_order": locked,  # Alias for locked (em ordens abertas)
+                        "usd_value": usd_value
+                    })
+
+            # Sort by USD value descending
+            spot_assets.sort(key=lambda x: x['usd_value'], reverse=True)
+
+            logger.info(f"✅ Found {len(spot_assets)} SPOT assets, Total: ${total_usd_value:.2f}")
+
+            return {
+                "success": True,
+                "data": {
+                    "exchange_account_id": exchange_account_id,
+                    "assets": spot_assets,
+                    "total_assets": len(spot_assets),
+                    "total_usd_value": total_usd_value
+                }
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting SPOT balances: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to get SPOT balances: {str(e)}")
 
     return router

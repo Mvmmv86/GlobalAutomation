@@ -10,6 +10,7 @@ import uuid
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.exchanges.unified_exchange_connector import get_unified_connector
+from presentation.controllers.websocket_controller import notify_order_update, notify_position_update
 
 logger = structlog.get_logger(__name__)
 
@@ -269,48 +270,244 @@ def create_orders_router() -> APIRouter:
                     order_request.take_profit
                 )
 
-            # 8. Criar ordem no banco de dados
-            order_id = await transaction_db.fetchval("""
-                INSERT INTO orders (
-                    exchange_account_id, exchange, symbol, side, order_type,
-                    quantity, price, stop_loss_price, take_profit_price,
-                    status, created_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING id
-            """,
-                order_request.exchange_account_id,
-                account['exchange'],
-                order_request.symbol,
-                order_request.side,
-                order_request.order_type,
-                Decimal(str(order_request.quantity)),
-                Decimal(str(order_price)) if order_price else None,
-                Decimal(str(order_request.stop_loss)) if order_request.stop_loss else None,
-                Decimal(str(order_request.take_profit)) if order_request.take_profit else None,
-                'pending',
-                datetime.utcnow()
+            # 8. Criar conector da exchange
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+
+            connector = BinanceConnector(
+                api_key=api_key,
+                api_secret=api_secret,
+                testnet=account['testnet']
             )
 
-            # 9. TODO: Enviar ordem para exchange via CCXT
-            # (Implementar integração com exchange)
+            # 9. Executar ordem na exchange (REAL)
+            if order_request.operation_type == 'futures':
+                exchange_result = await connector.create_futures_order(
+                    symbol=order_request.symbol,
+                    side=order_request.side,
+                    order_type=order_request.order_type,
+                    quantity=order_request.quantity,
+                    price=order_request.price,
+                    stop_price=order_request.stop_price,
+                    leverage=order_request.leverage or 1,
+                    stop_loss=order_request.stop_loss,
+                    take_profit=order_request.take_profit
+                )
+            else:  # SPOT
+                exchange_result = await connector.create_spot_order(
+                    symbol=order_request.symbol,
+                    side=order_request.side,
+                    order_type=order_request.order_type,
+                    quantity=order_request.quantity,
+                    price=order_request.price,
+                    stop_price=order_request.stop_price
+                )
+
+            # Verificar se ordem foi executada com sucesso
+            if not exchange_result.get('success'):
+                raise ValueError(f"Erro ao executar ordem na exchange: {exchange_result.get('error')}")
+
+            exchange_order_id = exchange_result.get('order_id')
+
+            # 10. Salvar ordem no banco de dados
+            # Gerar client_order_id único
+            client_order_id = f"platform_{uuid.uuid4().hex[:16]}"
+
+            # Buscar user_id da conta (necessário para rastreabilidade)
+            user_id = await transaction_db.fetchval("""
+                SELECT user_id FROM exchange_accounts WHERE id = $1
+            """, order_request.exchange_account_id)
+
+            order_id = await transaction_db.fetchval("""
+                INSERT INTO orders (
+                    client_order_id,
+                    source,
+                    exchange_account_id,
+                    external_id,
+                    symbol,
+                    side,
+                    type,
+                    status,
+                    quantity,
+                    price,
+                    stop_price,
+                    filled_quantity,
+                    fees_paid,
+                    time_in_force,
+                    retry_count,
+                    reduce_only,
+                    post_only,
+                    created_at,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
+                RETURNING id
+            """,
+                client_order_id,                    # $1
+                'PLATFORM',                         # $2 - SEMPRE plataforma
+                order_request.exchange_account_id,  # $3
+                exchange_order_id,                  # $4 - external_id (ID da Binance)
+                order_request.symbol,               # $5
+                order_request.side,                 # $6
+                order_request.order_type,           # $7
+                'filled',                           # $8 - Status = filled porque foi executada com sucesso
+                Decimal(str(order_request.quantity)), # $9
+                Decimal(str(order_price)) if order_price else None, # $10
+                Decimal(str(order_request.stop_loss)) if order_request.stop_loss else None, # $11
+                Decimal('0'),                       # $12 - filled_quantity (0 inicial)
+                Decimal('0'),                       # $13 - fees_paid (0 inicial)
+                'gtc',                              # $14 - time_in_force (Good Till Cancel)
+                0,                                  # $15 - retry_count
+                False,                              # $16 - reduce_only
+                False,                              # $17 - post_only
+                datetime.utcnow()                   # $18 - created_at e updated_at
+            )
 
             logger.info(
-                "Order created successfully",
+                "Order executed successfully on exchange",
                 order_id=order_id,
+                exchange_order_id=exchange_order_id,
                 symbol=order_request.symbol,
                 side=order_request.side,
                 type=order_request.order_type,
                 quantity=order_request.quantity,
-                price=order_price
+                price=order_price,
+                leverage=order_request.leverage if order_request.operation_type == 'futures' else None
             )
+
+            # ✅ NOVO: Salvar ordens de Stop Loss e Take Profit se foram criadas
+            sl_order_id = None
+            tp_order_id = None
+
+            if exchange_result.get('stop_loss_order_id'):
+                # Determinar lado reverso para SL
+                sl_side = 'sell' if order_request.side == 'buy' else 'buy'
+                sl_client_order_id = f"sl_{uuid.uuid4().hex[:16]}"
+
+                sl_order_id = await transaction_db.fetchval("""
+                    INSERT INTO orders (
+                        client_order_id,
+                        source,
+                        exchange_account_id,
+                        external_id,
+                        symbol,
+                        side,
+                        type,
+                        status,
+                        quantity,
+                        stop_price,
+                        filled_quantity,
+                        fees_paid,
+                        time_in_force,
+                        retry_count,
+                        reduce_only,
+                        post_only,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+                    RETURNING id
+                """,
+                    sl_client_order_id,
+                    'PLATFORM',
+                    order_request.exchange_account_id,
+                    exchange_result.get('stop_loss_order_id'),
+                    order_request.symbol,
+                    sl_side,
+                    'market',  # stop_market salvo como 'market' para compatibilidade com enum
+                    'new',  # Status = new (aguardando ser ativado)
+                    Decimal(str(order_request.quantity)),
+                    Decimal(str(order_request.stop_loss)),
+                    Decimal('0'),
+                    Decimal('0'),
+                    'gtc',
+                    0,
+                    True,  # reduce_only = True para fechar posição
+                    False,
+                    datetime.utcnow()
+                )
+
+                logger.info(f"✅ Stop Loss saved to DB: {sl_order_id} (external: {exchange_result.get('stop_loss_order_id')})")
+
+            if exchange_result.get('take_profit_order_id'):
+                # Determinar lado reverso para TP
+                tp_side = 'sell' if order_request.side == 'buy' else 'buy'
+                tp_client_order_id = f"tp_{uuid.uuid4().hex[:16]}"
+
+                tp_order_id = await transaction_db.fetchval("""
+                    INSERT INTO orders (
+                        client_order_id,
+                        source,
+                        exchange_account_id,
+                        external_id,
+                        symbol,
+                        side,
+                        type,
+                        status,
+                        quantity,
+                        stop_price,
+                        filled_quantity,
+                        fees_paid,
+                        time_in_force,
+                        retry_count,
+                        reduce_only,
+                        post_only,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+                    RETURNING id
+                """,
+                    tp_client_order_id,
+                    'PLATFORM',
+                    order_request.exchange_account_id,
+                    exchange_result.get('take_profit_order_id'),
+                    order_request.symbol,
+                    tp_side,
+                    'market',  # take_profit_market salvo como 'market' para compatibilidade com enum
+                    'new',  # Status = new (aguardando ser ativado)
+                    Decimal(str(order_request.quantity)),
+                    Decimal(str(order_request.take_profit)),
+                    Decimal('0'),
+                    Decimal('0'),
+                    'gtc',
+                    0,
+                    True,  # reduce_only = True para fechar posição
+                    False,
+                    datetime.utcnow()
+                )
+
+                logger.info(f"✅ Take Profit saved to DB: {tp_order_id} (external: {exchange_result.get('take_profit_order_id')})")
+
+            # ✅ NOVO: Notificar via WebSocket sobre ordem criada
+            try:
+                # Buscar user_id da conta para notificação
+                if user_id:
+                    await notify_order_update(
+                        user_id=str(user_id),
+                        order_data={
+                            "action": "order_created",
+                            "order_id": order_id,
+                            "exchange_order_id": exchange_order_id,
+                            "symbol": order_request.symbol,
+                            "side": order_request.side,
+                            "type": order_request.order_type,
+                            "quantity": order_request.quantity,
+                            "status": "filled",
+                            "has_stop_loss": bool(order_request.stop_loss),
+                            "has_take_profit": bool(order_request.take_profit)
+                        }
+                    )
+                    logger.info(f"📡 WebSocket notification sent for order {order_id}")
+            except Exception as e:
+                logger.warning(f"Failed to send WebSocket notification: {e}")
 
             return {
                 "success": True,
                 "data": {
                     "order_id": order_id,
-                    "status": "pending",
-                    "message": "Ordem criada com sucesso. Aguardando execução.",
+                    "exchange_order_id": exchange_order_id,
+                    "status": "filled",
+                    "message": f"Ordem executada com sucesso na {account['exchange'].upper()}!",
                     "estimated_cost": required_amount,
                     "current_market_price": current_price
                 }
@@ -351,31 +548,79 @@ def create_orders_router() -> APIRouter:
                 )
 
             logger.info(f"🔵 STEP 2: Posição encontrada: {position['symbol']} {position['side']} {position['size']}")
-            # 2. Calcular quantidade a fechar
-            quantity_to_close = float(position['size']) * (close_request.percentage / 100)
-            logger.info(f"🔵 STEP 3: Quantidade a fechar: {quantity_to_close}")
 
-            # 3. Determinar lado reverso (fechar LONG = sell, fechar SHORT = buy)
+            # 2. Obter regras de filtro do símbolo para normalizar quantidade
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+            temp_connector = BinanceConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+
+            # Buscar exchange info para obter LOT_SIZE
+            import asyncio
+            exchange_info = await asyncio.to_thread(
+                temp_connector.client.futures_exchange_info
+            )
+
+            symbol_info = next(
+                (s for s in exchange_info['symbols'] if s['symbol'] == position['symbol']),
+                None
+            )
+
+            if not symbol_info:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Símbolo {position['symbol']} não encontrado na Binance"
+                )
+
+            # Encontrar filtro LOT_SIZE
+            lot_size_filter = next(
+                (f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'),
+                None
+            )
+
+            if not lot_size_filter:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Filtro LOT_SIZE não encontrado para {position['symbol']}"
+                )
+
+            step_size = float(lot_size_filter['stepSize'])
+            min_qty = float(lot_size_filter['minQty'])
+
+            logger.info(f"🔵 STEP 3: Regras LOT_SIZE: stepSize={step_size}, minQty={min_qty}")
+
+            # 3. Calcular quantidade a fechar e normalizar
+            raw_quantity = float(position['size']) * (close_request.percentage / 100)
+
+            # Normalizar para step_size (arredondar para baixo)
+            import math
+            quantity_to_close = math.floor(raw_quantity / step_size) * step_size
+
+            # Verificar quantidade mínima
+            if quantity_to_close < min_qty:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Quantidade calculada ({quantity_to_close}) menor que mínimo permitido ({min_qty})"
+                )
+
+            logger.info(f"🔵 STEP 4: Quantidade normalizada: {raw_quantity} → {quantity_to_close}")
+
+            # 4. Determinar lado reverso (fechar LONG = sell, fechar SHORT = buy)
             # NOTA: BinanceConnector aceita maiúscula, mas banco precisa minúscula
             close_side_upper = 'SELL' if position['side'].upper() == 'LONG' else 'BUY'
             close_side_lower = close_side_upper.lower()
 
-            # 4. Conectar na exchange (usar connector nativo)
-            from infrastructure.exchanges.binance_connector import BinanceConnector
+            # 5. Selecionar connector baseado na exchange (reusar temp_connector para Binance)
             from infrastructure.exchanges.bybit_connector import BybitConnector
             from infrastructure.exchanges.bingx_connector import BingXConnector
             from infrastructure.exchanges.bitget_connector import BitgetConnector
 
-            # Selecionar connector baseado na exchange
             exchange = position['exchange'].lower()
-            logger.info(f"🔵 STEP 4: Criando connector para exchange: {exchange}")
+            logger.info(f"🔵 STEP 5: Usando connector para exchange: {exchange}")
             if exchange == 'binance':
-                connector = BinanceConnector(
-                    api_key=position['api_key'],
-                    api_secret=position['secret_key'],
-                    testnet=position['testnet']
-                )
-                logger.info(f"🔵 STEP 5: BinanceConnector criado")
+                connector = temp_connector  # Reusar connector criado anteriormente
             elif exchange == 'bybit':
                 connector = BybitConnector(
                     api_key=position['api_key'],
@@ -398,38 +643,72 @@ def create_orders_router() -> APIRouter:
                 raise HTTPException(status_code=400, detail=f"Exchange {exchange} não suportada")
 
             # Executar ordem MARKET de fechamento na exchange
-            logger.info(f"🔵 STEP 6: Executando ordem MARKET na Binance: {position['symbol']} {close_side_upper} {quantity_to_close}")
+            logger.info(f"🔵 STEP 6: Executando ordem MARKET REDUCE_ONLY na Binance: {position['symbol']} {close_side_upper} {quantity_to_close}")
             order_result = await connector.create_market_order(
                 symbol=position['symbol'],
                 side=close_side_upper,  # API aceita maiúscula
-                quantity=Decimal(str(quantity_to_close))
+                quantity=Decimal(str(quantity_to_close)),
+                reduce_only=True  # Apenas fechar posição existente, não abrir nova
             )
+
+            # Verificar se ordem foi executada com sucesso
+            if not order_result.get('success', False):
+                error_msg = order_result.get('error', 'Erro desconhecido')
+                logger.error(f"❌ STEP 7: Falha ao executar ordem: {error_msg}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Falha ao executar ordem na exchange: {error_msg}"
+                )
+
             logger.info(f"🔵 STEP 7: Ordem executada com sucesso! order_id={order_result.get('order_id')}")
 
             # 5. Salvar ordem no banco
-            # NOTA: orders não tem position_id nem operation_type
-            import uuid
-            client_order_id = f"close_{uuid.uuid4().hex[:16]}"  # Gerar client_order_id único
+            client_order_id = f"close_{uuid.uuid4().hex[:16]}"
+
+            # Buscar user_id da conta
+            account_user_id = await transaction_db.fetchval("""
+                SELECT user_id FROM exchange_accounts WHERE id = $1
+            """, position['exchange_account_id'])
 
             order_id = await transaction_db.fetchval("""
                 INSERT INTO orders (
-                    exchange_account_id, symbol, side, type,
-                    quantity, status, external_id, client_order_id,
-                    created_at, updated_at
+                    client_order_id,
+                    source,
+                    exchange_account_id,
+                    external_id,
+                    symbol,
+                    side,
+                    type,
+                    status,
+                    quantity,
+                    filled_quantity,
+                    fees_paid,
+                    time_in_force,
+                    retry_count,
+                    reduce_only,
+                    post_only,
+                    created_at,
+                    updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
                 RETURNING id
             """,
-                position['exchange_account_id'],
-                position['symbol'],
-                close_side_lower,  # Banco espera minúscula
-                'market',  # Banco espera minúscula
-                Decimal(str(quantity_to_close)),
-                'filled',
-                str(order_result.get('order_id')),  # create_market_order retorna 'order_id', não 'orderId'
-                client_order_id,
-                datetime.utcnow(),
-                datetime.utcnow()
+                client_order_id,                        # $1
+                'PLATFORM',                             # $2 - Fechamento via plataforma
+                position['exchange_account_id'],        # $3
+                str(order_result.get('order_id')),      # $4 - external_id
+                position['symbol'],                     # $5
+                close_side_lower,                       # $6 - buy/sell
+                'market',                               # $7 - Sempre MARKET para fechar
+                'filled',                               # $8 - Status
+                Decimal(str(quantity_to_close)),        # $9
+                Decimal(str(quantity_to_close)),        # $10 - filled_quantity (100% executado)
+                Decimal('0'),                           # $11 - fees_paid
+                'gtc',                                  # $12 - time_in_force
+                0,                                      # $13 - retry_count
+                True,                                   # $14 - reduce_only (fechar posição)
+                False,                                  # $15 - post_only
+                datetime.utcnow()                       # $16 - created_at e updated_at
             )
             logger.info(f"🔵 STEP 8: Ordem salva no banco com ID {order_id}")
 
@@ -455,6 +734,25 @@ def create_orders_router() -> APIRouter:
                 percentage=close_request.percentage,
                 order_id=order_id
             )
+
+            # ✅ NOVO: Notificar via WebSocket sobre posição fechada
+            try:
+                if account_user_id:
+                    await notify_position_update(
+                        user_id=str(account_user_id),
+                        position_data={
+                            "action": "position_closed",
+                            "position_id": close_request.position_id,
+                            "symbol": position['symbol'],
+                            "side": position['side'],
+                            "closed_percentage": close_request.percentage,
+                            "closed_quantity": quantity_to_close,
+                            "order_id": order_id
+                        }
+                    )
+                    logger.info(f"📡 WebSocket notification sent for position close {close_request.position_id}")
+            except Exception as e:
+                logger.warning(f"Failed to send WebSocket notification: {e}")
 
             return {
                 "success": True,
@@ -493,12 +791,12 @@ def create_orders_router() -> APIRouter:
         4. Cria novas ordens com os novos preços
         """
         try:
-            # 1. Buscar posição
+            # 1. Buscar posição com user_id (otimização: evitar N+1 query)
             position = await transaction_db.fetchrow("""
                 SELECT
                     p.id, p.symbol, p.side, p.entry_price, p.status, p.size,
                     p.exchange_account_id,
-                    ea.exchange, ea.testnet, ea.api_key, ea.secret_key
+                    ea.exchange, ea.testnet, ea.api_key, ea.secret_key, ea.user_id
                 FROM positions p
                 JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
                 WHERE p.id = $1 AND p.status = 'open'
@@ -564,6 +862,7 @@ def create_orders_router() -> APIRouter:
 
             canceled_orders = []
             created_orders = []
+            canceled_order_ids = []  # Otimização: coletar IDs para batch update
 
             # 5. Cancelar ordens antigas de SL/TP
             for order in existing_orders:
@@ -585,17 +884,21 @@ def create_orders_router() -> APIRouter:
                             order_id=order['external_id']
                         )
 
-                        # Atualizar status no banco
-                        await transaction_db.execute("""
-                            UPDATE orders
-                            SET status = 'canceled', updated_at = $1
-                            WHERE id = $2
-                        """, datetime.utcnow(), order['id'])
-
+                        # Coletar ID para batch update (otimização: evita múltiplos UPDATEs)
+                        canceled_order_ids.append(order['id'])
                         canceled_orders.append(order['id'])
-                        logger.info(f"Ordem {order['id']} cancelada com sucesso")
+                        logger.info(f"Ordem {order['id']} cancelada com sucesso na exchange")
                     except Exception as e:
                         logger.warning(f"Erro ao cancelar ordem {order['id']}: {e}")
+
+            # Batch update de ordens canceladas (otimização: 1 query em vez de N)
+            if canceled_order_ids:
+                await transaction_db.execute("""
+                    UPDATE orders
+                    SET status = 'canceled', updated_at = $1
+                    WHERE id = ANY($2::uuid[])
+                """, datetime.utcnow(), canceled_order_ids)
+                logger.info(f"✅ Batch update: {len(canceled_order_ids)} ordens canceladas no banco")
 
             # 6. Criar novas ordens de SL/TP
             if modify_request.stop_loss:
@@ -612,25 +915,51 @@ def create_orders_router() -> APIRouter:
                     )
 
                     # Salvar no banco
-                    # NOTA: orders não tem position_id nem operation_type
+                    # Gerar client_order_id único
+                    sl_client_order_id = f"sl_{uuid.uuid4().hex[:16]}"
+
+                    # Usar user_id já carregado da posição (otimização: evita query extra)
+                    sl_user_id = position['user_id']
+
                     await transaction_db.execute("""
                         INSERT INTO orders (
-                            exchange_account_id, symbol, side, type,
-                            quantity, price, stop_price, status,
-                            external_id, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            client_order_id,
+                            source,
+                            exchange_account_id,
+                            external_id,
+                            symbol,
+                            side,
+                            type,
+                            status,
+                            quantity,
+                            stop_price,
+                            filled_quantity,
+                            fees_paid,
+                            time_in_force,
+                            retry_count,
+                            reduce_only,
+                            post_only,
+                            created_at,
+                            updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
                     """,
-                        position['exchange_account_id'],
-                        position['symbol'],
-                        sl_side,
-                        'STOP_MARKET',
-                        Decimal(str(position['size'])),
-                        None,
-                        Decimal(str(modify_request.stop_loss)),
-                        'new',
-                        str(sl_result.get('orderId')),
-                        datetime.utcnow(),
-                        datetime.utcnow()
+                        sl_client_order_id,                     # $1
+                        'PLATFORM',                             # $2
+                        position['exchange_account_id'],        # $3
+                        str(sl_result.get('orderId')),          # $4
+                        position['symbol'],                     # $5
+                        sl_side.lower(),                        # $6
+                        'stop_market',                          # $7
+                        'new',                                  # $8 - Ordem aguardando ativação
+                        Decimal(str(position['size'])),         # $9
+                        Decimal(str(modify_request.stop_loss)), # $10
+                        Decimal('0'),                           # $11 - filled_quantity
+                        Decimal('0'),                           # $12 - fees_paid
+                        'gtc',                                  # $13 - time_in_force
+                        0,                                      # $14 - retry_count
+                        True,                                   # $15 - reduce_only
+                        False,                                  # $16 - post_only
+                        datetime.utcnow()                       # $17
                     )
 
                     created_orders.append('stop_loss')
@@ -653,25 +982,51 @@ def create_orders_router() -> APIRouter:
                     )
 
                     # Salvar no banco
-                    # NOTA: orders não tem position_id nem operation_type
+                    # Gerar client_order_id único
+                    tp_client_order_id = f"tp_{uuid.uuid4().hex[:16]}"
+
+                    # Usar user_id já carregado da posição (otimização: evita query extra)
+                    tp_user_id = position['user_id']
+
                     await transaction_db.execute("""
                         INSERT INTO orders (
-                            exchange_account_id, symbol, side, type,
-                            quantity, price, stop_price, status,
-                            external_id, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            client_order_id,
+                            source,
+                            exchange_account_id,
+                            external_id,
+                            symbol,
+                            side,
+                            type,
+                            status,
+                            quantity,
+                            stop_price,
+                            filled_quantity,
+                            fees_paid,
+                            time_in_force,
+                            retry_count,
+                            reduce_only,
+                            post_only,
+                            created_at,
+                            updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
                     """,
-                        position['exchange_account_id'],
-                        position['symbol'],
-                        tp_side,
-                        'TAKE_PROFIT_MARKET',
-                        Decimal(str(position['size'])),
-                        None,
-                        Decimal(str(modify_request.take_profit)),
-                        'new',
-                        str(tp_result.get('orderId')),
-                        datetime.utcnow(),
-                        datetime.utcnow()
+                        tp_client_order_id,                         # $1
+                        'PLATFORM',                                 # $2
+                        position['exchange_account_id'],            # $3
+                        str(tp_result.get('orderId')),              # $4
+                        position['symbol'],                         # $5
+                        tp_side.lower(),                            # $6
+                        'take_profit_market',                       # $7
+                        'new',                                      # $8 - Ordem aguardando ativação
+                        Decimal(str(position['size'])),             # $9
+                        Decimal(str(modify_request.take_profit)),   # $10
+                        Decimal('0'),                               # $11 - filled_quantity
+                        Decimal('0'),                               # $12 - fees_paid
+                        'gtc',                                      # $13 - time_in_force
+                        0,                                          # $14 - retry_count
+                        True,                                       # $15 - reduce_only
+                        False,                                      # $16 - post_only
+                        datetime.utcnow()                           # $17
                     )
 
                     created_orders.append('take_profit')

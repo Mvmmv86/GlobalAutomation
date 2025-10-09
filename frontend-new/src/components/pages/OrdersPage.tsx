@@ -6,6 +6,7 @@ import { Button } from '../atoms/Button'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 import { Input } from '../atoms/Input'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatUTCToLocal } from '@/lib/timezone'
 import { useOrders, useExchangeAccounts } from '@/hooks/useApiData'
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -27,12 +28,10 @@ const OrdersPage: React.FC = () => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // API Data hooks - FASE 1: Buscar TODAS as ordens dos últimos 6 meses (sem filtro de data)
+  // API Data hooks - só busca ordens após seleção de exchange
   const { data: ordersApi, isLoading: loadingOrders, error: ordersError } = useOrders({
-    exchangeAccountId: selectedExchange,
-    // dateFrom: dateFrom,  // Removido - fazer filtro no frontend
-    // dateTo: dateTo,      // Removido - fazer filtro no frontend
-    limit: 1000, // FASE 1: Limite alto para buscar TODAS as ordens dos últimos 6 meses
+    exchangeAccountId: selectedExchange !== 'all' ? selectedExchange : undefined,
+    limit: 1000,
   })
   const { data: exchangeAccounts, isLoading: loadingAccounts } = useExchangeAccounts()
   
@@ -515,6 +514,17 @@ const OrdersPage: React.FC = () => {
             </div>
           ) : (
             <div className="overflow-x-auto">
+              {selectedExchange === 'all' ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="text-center">
+                    <Building className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold text-foreground mb-2">Selecione uma Exchange</h3>
+                    <p className="text-sm text-muted-foreground max-w-md">
+                      Para visualizar as ordens, selecione uma conta de exchange específica nos filtros acima.
+                    </p>
+                  </div>
+                </div>
+              ) : (
               <table className="w-full">
               <thead className="bg-muted/50 border-b border-border">
                 <tr>
@@ -744,6 +754,7 @@ const OrdersPage: React.FC = () => {
                 )}
               </tbody>
               </table>
+              )}
             </div>
           )}
 

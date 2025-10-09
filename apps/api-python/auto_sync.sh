@@ -44,6 +44,13 @@ while true; do
         echo "  ❌ Erro nas positions: $POSITIONS_RESPONSE"
     fi
 
+    # Detectar posições fechadas (roda a cada 5 minutos apenas)
+    MINUTE=$(date '+%M')
+    if [ $((MINUTE % 5)) -eq 0 ]; then
+        echo "  🔍 Detectando posições fechadas..."
+        python3 detect_closed_positions.py 2>&1 | grep -E "(fechadas detectadas|DETECTADO FECHAMENTO|Erro)" | sed 's/^/     /'
+    fi
+
     if [ "$BALANCES_SUCCESS" = true ] && [ "$POSITIONS_SUCCESS" = true ]; then
         echo "✅ $TIMESTAMP - Sincronização completa realizada com sucesso!"
     else

@@ -9,6 +9,22 @@ export interface BalanceAsset {
   exchange: string
 }
 
+export interface SpotAsset {
+  asset: string
+  free: number
+  locked: number
+  total: number
+  in_order: number
+  usd_value: number
+}
+
+export interface SpotBalancesData {
+  exchange_account_id: string
+  assets: SpotAsset[]
+  total_assets: number
+  total_usd_value: number
+}
+
 export interface BalanceData {
   futures: {
     total_balance_usd: number
@@ -98,5 +114,17 @@ export const dashboardService = {
   async getPnlChart(days: number = 7): Promise<Array<{ date: string; pnl: number; positions: number }>> {
     const response = await api.get(`/dashboard/pnl-chart?days=${days}`)
     return response.data.data
+  },
+
+  async getSpotBalances(exchangeAccountId: string): Promise<SpotBalancesData> {
+    try {
+      console.log(`💰 getSpotBalances: Fetching for account ${exchangeAccountId}`)
+      const data = await api.get<SpotBalancesData>(`/dashboard/spot-balances/${exchangeAccountId}`)
+      console.log('✅ getSpotBalances: Data received:', data)
+      return data
+    } catch (error) {
+      console.error('❌ getSpotBalances: Error:', error)
+      throw error
+    }
   }
 }

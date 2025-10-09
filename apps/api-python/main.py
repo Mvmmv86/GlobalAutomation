@@ -19,6 +19,7 @@ from slowapi.errors import RateLimitExceeded
 
 from presentation.controllers.webhook_controller import create_webhook_router
 from presentation.controllers.webhooks_crud_controller import create_webhooks_crud_router
+from presentation.controllers.tradingview_webhook_secure_controller import create_secure_tradingview_webhook_router
 from presentation.controllers.health_controller import create_health_router
 from presentation.controllers.dashboard_controller import create_dashboard_router
 from presentation.controllers.positions_controller import create_positions_router
@@ -266,6 +267,7 @@ def create_app() -> FastAPI:
     app.include_router(sltp_router, prefix="/api/v1/orders")  # SL/TP modification endpoint
     app.include_router(create_websocket_router())  # WebSocket for real-time notifications
     app.include_router(create_webhooks_crud_router())  # Webhooks CRUD endpoints (já tem prefix interno)
+    app.include_router(create_secure_tradingview_webhook_router(), prefix="/api/v1")  # Secure TradingView webhooks with all security layers
 
 
     return app

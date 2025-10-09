@@ -46,6 +46,7 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 | Regra | Detalhe |
 |-------|---------|
 | **Sem comandos automáticos** | Nunca sugerir `python main.py`, `db-reset`, `DROP …` sem pedido explícito. |
+| **Git Push Manual** | **NUNCA fazer `git push` automaticamente**. Apenas fazer push quando o usuário **solicitar explicitamente**. Fazer commits locais normalmente, mas aguardar autorização para push. |
 | **Migrations transacionais** | Alembic/Prisma em modo `--sql` primeiro; aplicar após revisão. |
 | **Ambientes isolados** | `.env` define `ENV=dev/test/prod`; prod nunca hard-coded. |
 | **Backups antes de dados críticos** | Ex.: `pg_dump ... > backup_$(date +%F).sql`. |

@@ -10,6 +10,7 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 |------|-----------|
 | 2025-06-25 | Estrutura inicial (Dev Container + Docker Compose + pipelines CI) criada. |
 | 2025-09-19 | **Sistema de Trading Operacional** - Dashboard funcionando com dados reais da Binance, sincronização automática implementada, projeto limpo e otimizado. |
+| 2025-10-21 | **Limpeza Completa do Repositório** - Removidos completamente todos os vestígios Docker, diretórios legados (services/, apps/web/, apps/api/, workers, frontends antigos). Sistema 100% nativo confirmado. Backup criado em `/backups/cleanup-2025-10-21/`. |
 
 ---
 
@@ -20,7 +21,7 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 | **Backend**     | **Python 3.11** + FastAPI        | Usar Pydantic e typer. Evitar Flask/Django salvo justificativa. |
 | **Frontend**    | **React 18** (Vite)              | Components em TypeScript. Atomic-design + Tailwind. |
 | **Scripts/CLI** | Python                           | Nada de Bash para lógicas complexas; manter `.py`. |
-| **Infra**       | Docker Compose, Dev Containers   | Manifests K8s via Helm em `/k8s`. |
+| **Infra**       | **Execução Nativa** (Sem Docker) | Deploy direto no servidor. PostgreSQL via Supabase. Process manager (PM2/systemd). |
 
 ---
 
@@ -69,12 +70,15 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 **Sistema atual**: Execução **NATIVA** (sem containers)
 - ✅ **Melhor performance**: Sem overhead de containers
 - ✅ **Menos CPU**: Resolveu problemas de consumo excessivo
-- ✅ **Mais simples**: Deploy direto no ambiente WSL2
+- ✅ **Mais simples**: Deploy direto no ambiente (WSL2/Linux)
 
-**Docker Compose**: ❌ **Removido do projeto**
-- Arquivo `docker-compose.yml` → Movido para `docker-compose.backup.yml`
-- Diretórios Docker órfãos → Identificados (alguns com permissões restritas)
-- Sistema funciona 100% nativo agora
+**Docker**: ❌ **COMPLETAMENTE REMOVIDO** (21/Out/2025)
+- ✅ Todos os `Dockerfile*` removidos
+- ✅ `docker-compose.backup.yml` removido
+- ✅ `.devcontainer/` removido
+- ✅ Configs relacionadas (`Caddyfile`, `turbo.json`, `pnpm-workspace.yaml`) removidos
+- 📦 Backup completo salvo em `/backups/cleanup-2025-10-21/` (107MB)
+- **Decisão**: Sistema funciona 100% nativo, sem planos de retornar ao Docker
 
 ### 🔄 Fluxo de Dados Implementado
 
@@ -142,3 +146,81 @@ ps aux | grep auto_sync  # Sincronização
 pre-commit run --all-files              # lint + format + testes rápidos
 pytest -q                               # suíte completa
 make docs                               # gera documentação (se aplicável)
+```
+
+---
+
+## 7. Estrutura Limpa do Projeto
+
+> **Última atualização**: 21/Out/2025 (após limpeza completa)
+
+```
+GlobalAutomation/
+├── apps/
+│   └── api-python/              ✅ Backend FastAPI (ÚNICO backend ativo)
+│       ├── main.py              → Entry point
+│       ├── application/         → Services
+│       ├── domain/              → Models & Interfaces
+│       ├── infrastructure/      → DB, Exchanges, Cache, Security
+│       ├── presentation/        → Controllers (API endpoints)
+│       ├── auto_sync.sh         → Script de sincronização (30s)
+│       ├── requirements.txt     → Dependências Python
+│       └── .env                 → Configuração (não commitar)
+│
+├── frontend-new/                ✅ Frontend React (ÚNICO frontend ativo)
+│   ├── src/
+│   │   ├── components/          → Atomic Design (atoms/molecules/organisms/pages)
+│   │   ├── hooks/               → React hooks customizados
+│   │   ├── services/            → API client (axios)
+│   │   ├── contexts/            → React Context (Auth, Theme)
+│   │   └── types/               → TypeScript types
+│   ├── package.json             → Dependências Node
+│   └── .env                     → Config API URL (não commitar)
+│
+├── backups/                     ✅ Backups e histórico
+│   └── cleanup-2025-10-21/      → Backup da limpeza (107MB)
+│       ├── services_backup.tar.gz
+│       ├── apps_legados_backup.tar.gz
+│       └── frontends_antigos_backup.tar.gz
+│
+├── docs/                        ✅ Documentação do projeto
+├── packages/                    ✅ Packages compartilhados (se usado)
+├── shared/                      ✅ Utilitários compartilhados
+├── venv/                        ⚠️ Virtual env Python (não commitar)
+│
+├── CLAUDE.md                    📖 Este arquivo
+├── README.md                    📖 Documentação principal
+├── .env.example                 📝 Template de configuração
+├── .gitignore                   🚫 Arquivos ignorados
+├── package.json                 📦 Config monorepo (se usado)
+└── requirements.txt             📦 Dependências raiz (se usado)
+```
+
+### ❌ Removidos (21/Out/2025)
+
+| Diretório/Arquivo | Motivo |
+|-------------------|--------|
+| `/services/` | Microserviços antigos (era duplicado de `/apps/api-python/`) |
+| `/apps/api/` | API TypeScript antiga (substituída por FastAPI Python) |
+| `/apps/web/` | Frontend Next.js antigo (substituído por Vite) |
+| `/apps/web-trading/` | Cópia desatualizada do `/frontend-new/` |
+| `/apps/worker-exec/` | Worker de execução não usado |
+| `/apps/worker-recon/` | Worker de reconciliação não usado |
+| `/frontend/` | Frontend antigo |
+| `/frontend-backup/` | Backup de frontend |
+| `/.devcontainer/` | Dev Container (não usamos mais) |
+| Todos `Dockerfile*` | Não usamos Docker |
+| `docker-compose.backup.yml` | Config Docker antiga |
+| `Caddyfile` | Proxy reverso antigo |
+| `turbo.json` | Monorepo não configurado |
+| `pnpm-workspace.yaml` | Workspace não usado |
+
+### ✅ Mantidos e Ativos
+
+| Componente | Status | Observação |
+|------------|--------|------------|
+| `/apps/api-python/` | 🟢 ATIVO | Backend principal - Python 3.11 + FastAPI |
+| `/frontend-new/` | 🟢 ATIVO | Frontend principal - React 18 + Vite |
+| `/backups/` | 🟡 HISTÓRICO | Backups importantes preservados |
+| `/docs/` | 🟡 DOCUMENTAÇÃO | Reports e documentação técnica |
+| `/shared/` | 🟡 UTILITÁRIOS | Libs compartilhadas (se necessário) |

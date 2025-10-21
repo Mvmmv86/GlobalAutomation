@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Plus, Copy, Settings, Trash2, Wifi, Edit, AlertCircle } from 'lucide-react'
+import { Plus, Copy, Settings, Trash2, Wifi, Edit, AlertCircle, FileText } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
@@ -8,14 +8,21 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { webhookService, WebhookData } from '@/services/webhookService'
 import { CreateWebhookModalSimple, WebhookSimpleData } from '../molecules/CreateWebhookModalSimple'
 import { EditWebhookModalSimple, WebhookEditData } from '../molecules/EditWebhookModalSimple'
+import { TradeHistoryModal } from '../molecules/TradeHistoryModal'
+import { useNgrokUrl } from '@/hooks/useNgrokUrl'
 
 const WebhooksPage: React.FC = () => {
   const queryClient = useQueryClient()
 
+  // 🔗 Hook para buscar URL do ngrok dinamicamente
+  const { data: ngrokUrl, isLoading: loadingNgrokUrl } = useNgrokUrl()
+
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [isTradeHistoryModalOpen, setIsTradeHistoryModalOpen] = useState(false)
   const [selectedWebhook, setSelectedWebhook] = useState<WebhookEditData | null>(null)
+  const [selectedWebhookForTrades, setSelectedWebhookForTrades] = useState<{ id: string, name: string } | null>(null)
 
   // React Query hooks para API real
   const { data: webhooks = [], isLoading: loadingWebhooks, error: webhooksError } = useQuery({
@@ -79,10 +86,19 @@ const WebhooksPage: React.FC = () => {
     await createMutation.mutateAsync(data)
   }
 
-  const handleCopyUrl = (urlPath: string) => {
-    const fullUrl = `${import.meta.env.VITE_API_URL}/api/v1/webhooks/tradingview/${urlPath}`
+  const handleCopyUrl = (webhook: WebhookData) => {
+    // 🔗 Usa URL dinâmica do ngrok (busca em tempo real do backend)
+    const baseUrl = ngrokUrl || import.meta.env.VITE_WEBHOOK_PUBLIC_URL || import.meta.env.VITE_API_URL
+    // ✅ CORREÇÃO: Usa /tv/ (caminho correto do webhook_controller)
+    const fullUrl = `${baseUrl}/api/v1/webhooks/tv/${webhook.url_path}`
+
+    console.log('📋 Copiando URL:', fullUrl)
+    console.log('🔗 URL Path:', webhook.url_path)
+    console.log('🆔 Webhook ID (UUID):', webhook.id)
+    console.log('🔗 Ngrok URL atual:', ngrokUrl)
+
     navigator.clipboard.writeText(fullUrl)
-    alert('URL copiada para clipboard!')
+    alert(`✅ URL copiada!\n${fullUrl}`)
   }
 
   const handleEditWebhook = (webhook: WebhookData) => {
@@ -91,6 +107,7 @@ const WebhooksPage: React.FC = () => {
       name: webhook.name,
       url_path: webhook.url_path,
       status: webhook.status,
+      market_type: webhook.market_type || 'spot',
       secret: webhook.secret
     })
     setIsEditModalOpen(true)
@@ -104,6 +121,14 @@ const WebhooksPage: React.FC = () => {
     if (confirm(`Tem certeza que deseja deletar o webhook "${webhookName}"?`)) {
       deleteMutation.mutate(webhookId)
     }
+  }
+
+  const handleViewTrades = (webhook: WebhookData) => {
+    setSelectedWebhookForTrades({
+      id: webhook.id || '',
+      name: webhook.name
+    })
+    setIsTradeHistoryModalOpen(true)
   }
 
   const getStatusBadge = (status: string) => {
@@ -187,13 +212,19 @@ const WebhooksPage: React.FC = () => {
                 <div>
                   <CardTitle className="text-lg">{webhook.name}</CardTitle>
                   <CardDescription className="flex items-center space-x-2 mt-1">
-                    <code className="text-sm bg-muted px-2 py-1 rounded">
-                      {webhook.url_path}
-                    </code>
+                    {loadingNgrokUrl ? (
+                      <span className="text-xs text-muted-foreground">Carregando URL...</span>
+                    ) : (
+                      <code className="text-xs bg-muted px-2 py-1 rounded break-all max-w-2xl">
+                        {`${ngrokUrl || import.meta.env.VITE_WEBHOOK_PUBLIC_URL || import.meta.env.VITE_API_URL}/api/v1/webhooks/tv/${webhook.url_path}`}
+                      </code>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => handleCopyUrl(webhook.url_path)}
+                      onClick={() => handleCopyUrl(webhook)}
+                      title="Copiar URL completa"
+                      disabled={loadingNgrokUrl}
                     >
                       <Copy className="w-4 h-4" />
                     </Button>
@@ -204,7 +235,16 @@ const WebhooksPage: React.FC = () => {
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => handleViewTrades(webhook)}
+                    title="Ver histórico de trades"
+                  >
+                    <FileText className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => handleEditWebhook(webhook)}
+                    title="Editar webhook"
                   >
                     <Edit className="w-4 h-4" />
                   </Button>
@@ -212,6 +252,7 @@ const WebhooksPage: React.FC = () => {
                     variant="outline"
                     size="sm"
                     onClick={() => handleDeleteWebhook(webhook.id || '', webhook.name)}
+                    title="Deletar webhook"
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
@@ -219,7 +260,13 @@ const WebhooksPage: React.FC = () => {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-4 gap-4 text-sm">
+              <div className="grid grid-cols-5 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Mercado</p>
+                  <p className="font-medium">
+                    {webhook.market_type === 'futures' ? '⚡ FUTURES' : '💰 SPOT'}
+                  </p>
+                </div>
                 <div>
                   <p className="text-muted-foreground">Total Deliveries</p>
                   <p className="font-medium">{webhook.total_deliveries || 0}</p>
@@ -258,6 +305,14 @@ const WebhooksPage: React.FC = () => {
         onSubmit={handleSubmitEdit}
         isLoading={updateMutation.isPending}
         webhook={selectedWebhook}
+      />
+
+      {/* Trade History Modal */}
+      <TradeHistoryModal
+        isOpen={isTradeHistoryModalOpen}
+        onClose={() => setIsTradeHistoryModalOpen(false)}
+        webhookId={selectedWebhookForTrades?.id || null}
+        webhookName={selectedWebhookForTrades?.name || ''}
       />
     </div>
   )

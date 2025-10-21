@@ -1,24 +1,29 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
 // Configuração inteligente de Backend URL que funciona em todos os ambientes
-function getBackendUrl(): string {
+function getBackendUrl(mode: string): string {
+  // Carregar variáveis de ambiente
+  const env = loadEnv(mode, process.cwd(), '')
+
   // 1. Prioridade: variável de ambiente explícita
-  if (process.env.VITE_API_URL) {
-    return process.env.VITE_API_URL
+  if (env.VITE_API_URL) {
+    return env.VITE_API_URL
   }
-  
+
   // Sempre usar localhost para desenvolvimento
   return 'http://localhost:8000'
 }
 
-const BACKEND_URL = getBackendUrl()
-
-console.log('🔧 Vite Config: Backend URL =', BACKEND_URL)
+console.log('🔧 Vite Config: Loading with environment variables')
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const BACKEND_URL = getBackendUrl(mode)
+  console.log('🔧 Vite Config: Backend URL =', BACKEND_URL)
+
+  return {
   plugins: [react()],
   resolve: {
     alias: {
@@ -102,5 +107,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+  }
   }
 })

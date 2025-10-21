@@ -1,6 +1,6 @@
 """Webhook and WebhookDelivery models for TradingView integration"""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
@@ -48,7 +48,9 @@ class Webhook(Base):
 
     # Status and configuration
     status: Mapped[WebhookStatus] = mapped_column(
-        SQLEnum(WebhookStatus), default=WebhookStatus.ACTIVE, comment="Webhook status"
+        SQLEnum(WebhookStatus, native_enum=False, values_callable=lambda x: [e.value for e in x]),
+        default=WebhookStatus.ACTIVE,
+        comment="Webhook status"
     )
 
     is_public: Mapped[bool] = mapped_column(
@@ -120,6 +122,27 @@ class Webhook(Base):
         default=0, comment="Current consecutive error count"
     )
 
+    # Trading Parameters
+    market_type: Mapped[Optional[str]] = mapped_column(
+        String(50), default="futures", comment="Market type: futures or spot"
+    )
+
+    default_margin_usd: Mapped[float] = mapped_column(
+        default=100.00, comment="Default margin in USD to use per order (min: $10)"
+    )
+
+    default_leverage: Mapped[int] = mapped_column(
+        default=10, comment="Default leverage multiplier (1x - 125x)"
+    )
+
+    default_stop_loss_pct: Mapped[float] = mapped_column(
+        default=3.00, comment="Default stop loss percentage (0.1% - 100%)"
+    )
+
+    default_take_profit_pct: Mapped[float] = mapped_column(
+        default=5.00, comment="Default take profit percentage (0.1% - 1000%)"
+    )
+
     # Relationships
     user_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
@@ -151,6 +174,12 @@ class Webhook(Base):
         kwargs.setdefault("auto_pause_on_errors", True)
         kwargs.setdefault("error_threshold", 10)
         kwargs.setdefault("consecutive_errors", 0)
+        # Trading parameters defaults
+        kwargs.setdefault("market_type", "futures")
+        kwargs.setdefault("default_margin_usd", 100.00)
+        kwargs.setdefault("default_leverage", 10)
+        kwargs.setdefault("default_stop_loss_pct", 3.00)
+        kwargs.setdefault("default_take_profit_pct", 5.00)
         super().__init__(**kwargs)
 
     def activate(self) -> None:
@@ -173,11 +202,11 @@ class Webhook(Base):
     def increment_delivery_stats(self, success: bool) -> None:
         """Update delivery statistics"""
         self.total_deliveries += 1
-        self.last_delivery_at = datetime.now()
+        self.last_delivery_at = datetime.now(timezone.utc)
 
         if success:
             self.successful_deliveries += 1
-            self.last_success_at = datetime.now()
+            self.last_success_at = datetime.now(timezone.utc)
             self.consecutive_errors = 0
         else:
             self.failed_deliveries += 1
@@ -212,7 +241,7 @@ class WebhookDelivery(Base):
 
     # Delivery info
     status: Mapped[WebhookDeliveryStatus] = mapped_column(
-        SQLEnum(WebhookDeliveryStatus),
+        SQLEnum(WebhookDeliveryStatus, native_enum=False, values_callable=lambda x: [e.value for e in x]),
         default=WebhookDeliveryStatus.PENDING,
         comment="Delivery status",
     )
@@ -310,25 +339,25 @@ class WebhookDelivery(Base):
     def mark_processing(self) -> None:
         """Mark delivery as processing"""
         self.status = WebhookDeliveryStatus.PROCESSING
-        self.processing_started_at = datetime.now()
+        self.processing_started_at = datetime.now(timezone.utc)
 
     def mark_success(self) -> None:
         """Mark delivery as successful"""
         self.status = WebhookDeliveryStatus.SUCCESS
-        self.processing_completed_at = datetime.now()
+        self.processing_completed_at = datetime.now(timezone.utc)
         if self.processing_started_at:
-            duration = datetime.now() - self.processing_started_at
+            duration = datetime.now(timezone.utc) - self.processing_started_at
             self.processing_duration_ms = int(duration.total_seconds() * 1000)
 
     def mark_failed(self, error: str, details: Optional[dict] = None) -> None:
         """Mark delivery as failed"""
         self.status = WebhookDeliveryStatus.FAILED
-        self.processing_completed_at = datetime.now()
+        self.processing_completed_at = datetime.now(timezone.utc)
         self.error_message = error
         if details:
             self.error_details = details
         if self.processing_started_at:
-            duration = datetime.now() - self.processing_started_at
+            duration = datetime.now(timezone.utc) - self.processing_started_at
             self.processing_duration_ms = int(duration.total_seconds() * 1000)
 
     def schedule_retry(self, delay_seconds: int) -> None:
@@ -337,7 +366,7 @@ class WebhookDelivery(Base):
 
         self.status = WebhookDeliveryStatus.RETRYING
         self.retry_count += 1
-        self.next_retry_at = datetime.now() + timedelta(seconds=delay_seconds)
+        self.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
     def set_validation_results(
         self,
@@ -363,5 +392,5 @@ class WebhookDelivery(Base):
         return (
             self.status == WebhookDeliveryStatus.RETRYING
             and self.next_retry_at is not None
-            and datetime.now() >= self.next_retry_at
+            and datetime.now(timezone.utc) >= self.next_retry_at
         )

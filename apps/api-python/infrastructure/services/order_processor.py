@@ -26,7 +26,7 @@ class OrderProcessor:
         )
 
     async def process_tradingview_webhook(
-        self, webhook_payload: Dict[str, Any], webhook_delivery_id: Optional[int] = None
+        self, webhook_payload: Dict[str, Any], webhook_delivery_id: Optional[int] = None, market_type: str = "spot"
     ) -> Dict[str, Any]:
         """
         Processa webhook do TradingView e cria ordem na exchange
@@ -34,13 +34,14 @@ class OrderProcessor:
         Args:
             webhook_payload: Payload recebido do TradingView
             webhook_delivery_id: ID do webhook delivery no banco
+            market_type: Tipo de mercado ("spot" ou "futures")
 
         Returns:
             Dict com resultado do processamento
         """
 
         try:
-            # Validar payload básico
+            # Validar e normalizar payload
             validation_result = self._validate_webhook_payload(webhook_payload)
             if not validation_result["valid"]:
                 return {
@@ -49,8 +50,9 @@ class OrderProcessor:
                     "stage": "validation",
                 }
 
-            # Extrair dados do webhook
-            order_data = self._extract_order_data(webhook_payload)
+            # Usar payload normalizado para extrair dados
+            normalized_payload = validation_result.get("normalized_payload", webhook_payload)
+            order_data = self._extract_order_data(normalized_payload)
 
             # Log da ordem recebida
             logger.info(
@@ -62,8 +64,8 @@ class OrderProcessor:
                 order_data, webhook_delivery_id
             )
 
-            # Executar ordem na exchange
-            exchange_result = await self._execute_order_on_exchange(order_data)
+            # Executar ordem na exchange (passando market_type)
+            exchange_result = await self._execute_order_on_exchange(order_data, market_type)
 
             # Atualizar ordem no banco com resultado
             await self._update_order_with_result(order_id, exchange_result)
@@ -101,10 +103,14 @@ class OrderProcessor:
             return {"success": False, "error": str(e), "stage": "processing"}
 
     def _validate_webhook_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Valida payload do webhook"""
+        """Valida payload do webhook - aceita múltiplos formatos"""
 
+        # Normalizar payload para formato padrão
+        normalized_payload = self._normalize_payload(payload)
+
+        # Verificar campos obrigatórios
         required_fields = ["ticker", "action"]
-        missing_fields = [field for field in required_fields if field not in payload]
+        missing_fields = [field for field in required_fields if field not in normalized_payload]
 
         if missing_fields:
             return {
@@ -113,21 +119,96 @@ class OrderProcessor:
             }
 
         # Validar action
-        if payload["action"].lower() not in ["buy", "sell"]:
+        action = normalized_payload["action"].lower()
+        if action not in ["buy", "sell", "compra", "venda"]:
             return {
                 "valid": False,
-                "error": f"Invalid action: {payload['action']}. Must be 'buy' or 'sell'",
+                "error": f"Invalid action: {normalized_payload['action']}. Must be 'buy' or 'sell'",
             }
 
         # Validar ticker
-        ticker = payload["ticker"].upper()
+        ticker = normalized_payload["ticker"].upper()
         if not ticker.endswith("USDT"):
             return {
                 "valid": False,
                 "error": f"Only USDT pairs supported. Got: {ticker}",
             }
 
-        return {"valid": True}
+        return {"valid": True, "normalized_payload": normalized_payload}
+
+    def _normalize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normaliza payload para formato padrão, independente da origem.
+        Aceita formatos: simples (TradingView) e complexo (Indicadores customizados)
+        """
+        normalized = {}
+
+        # 1. TICKER/SYMBOL - Priorizar 'ticker', fallback para 'symbol'
+        if "ticker" in payload:
+            normalized["ticker"] = payload["ticker"]
+        elif "symbol" in payload:
+            normalized["ticker"] = payload["symbol"]
+        else:
+            # Último recurso: extrair de position.symbol
+            if "position" in payload and isinstance(payload["position"], dict):
+                # Pode estar em position como objeto ou string
+                normalized["ticker"] = payload.get("symbol", "")
+
+        # 2. ACTION - Normalizar "Compra"/"Venda" para "buy"/"sell"
+        action = payload.get("action", "").lower()
+        if action in ["compra", "buy", "long"]:
+            normalized["action"] = "buy"
+        elif action in ["venda", "sell", "short"]:
+            normalized["action"] = "sell"
+        else:
+            normalized["action"] = action
+
+        # 3. PRICE - Extrair de diferentes locais
+        if "price" in payload:
+            normalized["price"] = payload["price"]
+        elif "position" in payload and isinstance(payload["position"], dict):
+            # Tentar entry_price do position
+            pos = payload["position"]
+            if "entry_price" in pos:
+                normalized["price"] = pos["entry_price"]
+
+        # 4. QUANTITY - Extrair de diferentes locais
+        if "quantity" in payload:
+            normalized["quantity"] = payload["quantity"]
+        elif "position" in payload and isinstance(payload["position"], dict):
+            pos = payload["position"]
+            # Pode estar em quantity ou size_usdt
+            if "quantity" in pos:
+                normalized["quantity"] = pos["quantity"]
+            elif "size_usdt" in pos:
+                # Se temos size_usdt e price, calcular quantity
+                if "entry_price" in pos:
+                    size_usdt = float(pos["size_usdt"])
+                    entry_price = float(pos["entry_price"])
+                    normalized["quantity"] = size_usdt / entry_price
+
+        # 5. STOP LOSS E TAKE PROFIT - Extrair de risk_management
+        if "risk_management" in payload and isinstance(payload["risk_management"], dict):
+            rm = payload["risk_management"]
+
+            # Stop Loss
+            if "stop_loss" in rm and isinstance(rm["stop_loss"], dict):
+                normalized["stop_loss"] = rm["stop_loss"].get("price")
+
+            # Take Profit (pegar o primeiro, se houver múltiplos)
+            if "take_profit_1" in rm and isinstance(rm["take_profit_1"], dict):
+                normalized["take_profit"] = rm["take_profit_1"].get("price")
+            elif "take_profit" in rm:
+                normalized["take_profit"] = rm["take_profit"]
+
+        # 6. TIMESTAMP
+        if "timestamp" in payload:
+            normalized["timestamp"] = payload["timestamp"]
+
+        # 7. Preservar payload original para referência
+        normalized["_original_payload"] = payload
+
+        return normalized
 
     def _extract_order_data(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Extrai dados da ordem do payload"""
@@ -196,7 +277,7 @@ class OrderProcessor:
         return order_id
 
     async def _execute_order_on_exchange(
-        self, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], market_type: str = "spot"
     ) -> Dict[str, Any]:
         """Executa ordem na exchange"""
 
@@ -208,18 +289,35 @@ class OrderProcessor:
                     "error": f"Order type {order_data['order_type']} not yet supported",
                 }
 
-            # Executar ordem market na Binance
-            result = await self.binance_connector.create_market_order(
-                symbol=order_data["symbol"],
-                side=order_data["side"],
-                quantity=order_data["quantity"],
-            )
+            # Executar ordem de acordo com o market_type
+            if market_type.lower() == "futures":
+                # Executar ordem no mercado de FUTURES
+                # Extrair leverage do payload original (nested dentro de _original_payload)
+                original_payload = order_data["raw_payload"].get("_original_payload", {})
+                leverage = original_payload.get("leverage", 1)
 
-            logger.info(f"Exchange order result: {result.get('order_id', 'unknown')}")
+                logger.info(f"Creating FUTURES order: {order_data['symbol']} {order_data['side']} {order_data['quantity']} @ {leverage}x leverage")
+                result = await self.binance_connector.create_futures_order(
+                    symbol=order_data["symbol"],
+                    side=order_data["side"].upper(),
+                    order_type="MARKET",
+                    quantity=order_data["quantity"],
+                    leverage=leverage,
+                )
+            else:
+                # Executar ordem no mercado SPOT (padrão)
+                logger.info(f"Creating SPOT order: {order_data['symbol']} {order_data['side']} {order_data['quantity']}")
+                result = await self.binance_connector.create_market_order(
+                    symbol=order_data["symbol"],
+                    side=order_data["side"],
+                    quantity=order_data["quantity"],
+                )
+
+            logger.info(f"Exchange order result ({market_type}): {result.get('order_id', 'unknown')}")
             return result
 
         except Exception as e:
-            logger.error(f"Error executing order on exchange: {e}")
+            logger.error(f"Error executing order on exchange ({market_type}): {e}")
             return {"success": False, "error": str(e)}
 
     async def _update_order_with_result(

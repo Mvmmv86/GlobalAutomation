@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Callable, TypeVar, Optional
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -88,17 +89,30 @@ class Container:
         self._engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-            # Fix pgbouncer/statement cache issues
+
+            # ✅ POOL CONFIGURATION FOR HIGH CONCURRENCY WEBHOOKS
+            pool_size=20,              # Conexões persistentes (aumentado de 5)
+            max_overflow=30,           # Conexões adicionais em burst (aumentado de 10)
+            pool_timeout=60,           # Timeout aumentado para 60s (era 30s)
+            pool_recycle=3600,         # Reciclar conexões a cada 1h
+            pool_pre_ping=True,        # Verificar conexões antes de usar
+
+            # ✅ ASYNCPG OPTIMIZATIONS
             connect_args={
                 "statement_cache_size": 0,
                 "prepared_statement_cache_size": 0,
+                "command_timeout": 60,  # Timeout de comandos SQL
+                "server_settings": {
+                    "application_name": "tradingview_webhook_api",
+                    "jit": "off",  # Desabilitar JIT para melhor previsibilidade
+                },
             },
         )
 
         self._sessionmaker = async_sessionmaker(
-            self._engine, class_=AsyncSession, expire_on_commit=False
+            self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False  # ✅ CRÍTICO para operações async
         )
 
         self.register_singleton("database_engine", self._engine)
@@ -233,11 +247,22 @@ class Container:
         try:
             yield session
             await session.commit()
+        except asyncio.CancelledError:
+            # ✅ TRATAMENTO ESPECIAL para task cancellation (hot reload, etc)
+            logger.warning("Session cancelled, rolling back")
+            try:
+                await session.rollback()
+            except Exception as e:
+                logger.error(f"Error rolling back cancelled session: {e}")
+            raise
         except Exception:
             await session.rollback()
             raise
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception as e:
+                logger.error(f"Error closing session: {e}")
 
     async def close(self) -> None:
         """Close database connections"""
@@ -256,11 +281,11 @@ async def get_container() -> Container:
 
     if _container is None:
         _container = Container()
-        # DESABILITAR COMPLETAMENTE DI - usar transaction_db que já funciona
-        # await _container.initialize_database()
-        # await _container.setup_repositories()
-        # await _container.setup_security_services()
-        # await _container.setup_application_services()
+        # ✅ HABILITADO - Necessário para webhooks do TradingView funcionarem
+        await _container.initialize_database()
+        await _container.setup_repositories()
+        await _container.setup_security_services()
+        await _container.setup_application_services()
 
     return _container
 

@@ -85,24 +85,27 @@ class TradingViewWebhookService:
                 payload_keys=list(payload.keys()),
             )
 
-            # Step 1: Enhanced HMAC Validation
-            signature = headers.get("X-TradingView-Signature") or headers.get(
-                "X-Signature"
-            )
-            if webhook.secret:
-                is_valid = await self._enhanced_hmac_validation(
-                    payload=payload,
-                    signature=signature,
-                    secret=webhook.secret,
-                    headers=headers,
-                    webhook_id=webhook_id,
+            # Step 1: Enhanced HMAC Validation (skip if webhook is public)
+            if not webhook.is_public:
+                signature = headers.get("X-TradingView-Signature") or headers.get(
+                    "X-Signature"
                 )
-
-                if not is_valid:
-                    await self._record_security_violation(
-                        webhook_id, payload, headers, user_ip
+                if webhook.secret:
+                    is_valid = await self._enhanced_hmac_validation(
+                        payload=payload,
+                        signature=signature,
+                        secret=webhook.secret,
+                        headers=headers,
+                        webhook_id=webhook_id,
                     )
-                    raise ValueError("HMAC signature validation failed")
+
+                    if not is_valid:
+                        await self._record_security_violation(
+                            webhook_id, payload, headers, user_ip
+                        )
+                        raise ValueError("HMAC signature validation failed")
+            else:
+                logger.info("Public webhook - skipping HMAC validation", webhook_id=str(webhook_id))
 
             # Step 2: Validate and parse TradingView payload
             trading_signal = await self._validate_tradingview_payload(payload)
@@ -274,6 +277,46 @@ class TradingViewWebhookService:
         # For now, return True - can be enhanced with Redis rate limiting
         return True
 
+    def _normalize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normaliza payload para formato padrão, independente da origem
+        Aceita formatos: simples (TradingView) e complexo (Indicadores customizados)
+        """
+        normalized = {}
+
+        # 1. TICKER/SYMBOL - Priorizar 'ticker', fallback para 'symbol'
+        if "ticker" in payload:
+            normalized["ticker"] = payload["ticker"]
+        elif "symbol" in payload:
+            normalized["ticker"] = payload["symbol"]
+
+        # 2. ACTION - Normalizar "Compra"/"Venda" para "buy"/"sell"
+        action = payload.get("action", "").lower()
+        if action in ["compra", "buy", "long"]:
+            normalized["action"] = "buy"
+        elif action in ["venda", "sell", "short"]:
+            normalized["action"] = "sell"
+        else:
+            normalized["action"] = action
+
+        # 3. PRICE - Extrair de diferentes locais
+        if "price" in payload:
+            normalized["price"] = payload["price"]
+        elif "position" in payload and isinstance(payload["position"], dict):
+            pos = payload["position"]
+            if "entry_price" in pos:
+                normalized["price"] = float(pos["entry_price"])
+
+        # 4. QUANTITY - Extrair mas será IGNORADA (usaremos parâmetros do webhook)
+        if "quantity" in payload:
+            normalized["quantity"] = payload["quantity"]
+        elif "position" in payload and isinstance(payload["position"], dict):
+            pos = payload["position"]
+            if "quantity" in pos:
+                normalized["quantity"] = float(pos["quantity"])
+
+        return normalized
+
     async def _validate_tradingview_payload(
         self, payload: Dict[str, Any]
     ) -> TradingViewOrderWebhook:
@@ -287,8 +330,11 @@ class TradingViewWebhookService:
             Validated TradingView signal
         """
         try:
-            # Convert payload to TradingView schema
-            trading_signal = TradingViewOrderWebhook.parse_obj(payload)
+            # 🔄 NORMALIZAR payload para aceitar múltiplos formatos (simples e complexo)
+            normalized_payload = self._normalize_payload(payload)
+
+            # Convert normalized payload to TradingView schema
+            trading_signal = TradingViewOrderWebhook.parse_obj(normalized_payload)
 
             logger.info(
                 "TradingView payload validated",
@@ -357,9 +403,9 @@ class TradingViewWebhookService:
                     "No suitable exchange account found for trading signal"
                 )
 
-            # Execute the trading order
+            # Execute the trading order (passing webhook for trading parameters)
             order_result = await self._execute_trading_order(
-                account=selected_account, user_id=user_id, signal=trading_signal
+                account=selected_account, user_id=user_id, signal=trading_signal, webhook=webhook
             )
 
             # Update delivery status
@@ -444,6 +490,7 @@ class TradingViewWebhookService:
         account: Any,
         user_id: UUID,
         signal: TradingViewOrderWebhook,
+        webhook: Any = None,
     ) -> Dict[str, Any]:
         """
         Execute trading order on selected exchange
@@ -452,6 +499,7 @@ class TradingViewWebhookService:
             account: Exchange account
             user_id: User ID
             signal: TradingView signal
+            webhook: Webhook configuration with trading parameters
 
         Returns:
             Order execution result
@@ -461,7 +509,7 @@ class TradingViewWebhookService:
             if signal.action == "close":
                 return await self._close_positions(account, user_id, signal)
             else:
-                return await self._create_order(account, user_id, signal)
+                return await self._create_order(account, user_id, signal, webhook)
 
         except Exception as e:
             logger.error(
@@ -478,12 +526,43 @@ class TradingViewWebhookService:
         account: Any,
         user_id: UUID,
         signal: TradingViewOrderWebhook,
+        webhook: Any = None,
     ) -> Dict[str, Any]:
-        """Create new trading order"""
+        """Create new trading order using webhook trading parameters"""
 
-        # Default quantity if not specified
-        quantity = signal.quantity or Decimal("0.001")  # Small default for testing
+        # ✅ NOVA LÓGICA: Usar parâmetros do webhook para calcular quantidade
+        if webhook and hasattr(webhook, 'default_margin_usd') and hasattr(webhook, 'default_leverage'):
+            # Buscar preço atual do símbolo
+            try:
+                # TODO: Implementar busca de preço da exchange
+                # Por enquanto, usar preço do signal se disponível, senão usar valor default
+                current_price = float(signal.price) if signal.price else 50000.0  # Fallback
 
+                margin_usd = float(webhook.default_margin_usd)
+                leverage = int(webhook.default_leverage)
+
+                # 🎯 FÓRMULA DO TRADINGPANEL (linha 224):
+                # quantity = (margin_usd * leverage) / current_price
+                calculated_quantity = (margin_usd * leverage) / current_price
+
+                quantity = Decimal(str(calculated_quantity))
+
+                logger.info(
+                    "Quantity calculated from webhook parameters",
+                    margin_usd=margin_usd,
+                    leverage=leverage,
+                    current_price=current_price,
+                    calculated_quantity=calculated_quantity,
+                    symbol=signal.ticker
+                )
+            except Exception as e:
+                logger.warning(f"Failed to calculate quantity from webhook params: {e}, using default")
+                quantity = signal.quantity or Decimal("0.001")
+        else:
+            # Fallback: usar quantidade do signal ou valor padrão
+            quantity = signal.quantity or Decimal("0.001")
+
+        # Criar ordem principal
         order_result = await self.secure_exchange_service.create_order(
             account_id=account.id,
             user_id=user_id,
@@ -494,12 +573,69 @@ class TradingViewWebhookService:
             price=str(signal.price) if signal.price else None,
         )
 
+        entry_price = float(signal.price) if signal.price else None
+
+        # ✅ NOVO: Colocar ordens de Stop Loss e Take Profit se configurado
+        sl_order = None
+        tp_order = None
+
+        if webhook and entry_price:
+            try:
+                # Stop Loss Order
+                if hasattr(webhook, 'default_stop_loss_pct') and webhook.default_stop_loss_pct:
+                    sl_pct = float(webhook.default_stop_loss_pct)
+                    # Calcular preço de stop loss
+                    if signal.action == "buy":
+                        sl_price = entry_price * (1 - sl_pct / 100)  # Para compra: SL abaixo do entry
+                    else:
+                        sl_price = entry_price * (1 + sl_pct / 100)  # Para venda: SL acima do entry
+
+                    # Colocar ordem de stop loss
+                    # ✅ FIX: Binance Futures requer "STOP_MARKET" não "stop"
+                    sl_order = await self.secure_exchange_service.create_order(
+                        account_id=account.id,
+                        user_id=user_id,
+                        symbol=signal.ticker,
+                        side="sell" if signal.action == "buy" else "buy",  # Lado oposto
+                        order_type="STOP_MARKET",
+                        quantity=str(quantity),
+                        price=str(sl_price),  # stopPrice para STOP_MARKET
+                    )
+                    logger.info(f"Stop Loss order placed at {sl_price} ({sl_pct}%)")
+
+                # Take Profit Order
+                if hasattr(webhook, 'default_take_profit_pct') and webhook.default_take_profit_pct:
+                    tp_pct = float(webhook.default_take_profit_pct)
+                    # Calcular preço de take profit
+                    if signal.action == "buy":
+                        tp_price = entry_price * (1 + tp_pct / 100)  # Para compra: TP acima do entry
+                    else:
+                        tp_price = entry_price * (1 - tp_pct / 100)  # Para venda: TP abaixo do entry
+
+                    # Colocar ordem de take profit
+                    # ✅ FIX: Binance Futures requer "TAKE_PROFIT_MARKET" não "limit"
+                    tp_order = await self.secure_exchange_service.create_order(
+                        account_id=account.id,
+                        user_id=user_id,
+                        symbol=signal.ticker,
+                        side="sell" if signal.action == "buy" else "buy",  # Lado oposto
+                        order_type="TAKE_PROFIT_MARKET",
+                        quantity=str(quantity),
+                        price=str(tp_price),  # stopPrice para TAKE_PROFIT_MARKET
+                    )
+                    logger.info(f"Take Profit order placed at {tp_price} ({tp_pct}%)")
+
+            except Exception as e:
+                logger.warning(f"Failed to place SL/TP orders: {e}")
+
         logger.info(
             "Order created successfully",
             account_id=str(account.id),
             order_id=order_result.get("order_id"),
             symbol=signal.ticker,
             side=signal.action,
+            has_stop_loss=sl_order is not None,
+            has_take_profit=tp_order is not None,
         )
 
         return {
@@ -507,6 +643,8 @@ class TradingViewWebhookService:
             "order_id": order_result.get("order_id"),
             "order_type": "new_order",
             "details": order_result,
+            "stop_loss_order": sl_order,
+            "take_profit_order": tp_order,
         }
 
     async def _close_positions(

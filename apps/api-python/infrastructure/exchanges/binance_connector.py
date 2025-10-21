@@ -105,8 +105,11 @@ class BinanceConnector:
             step_size = float(lot_size_filter['stepSize'])
             min_qty = float(lot_size_filter['minQty'])
 
+            # ✅ CORRIGIDO: Converter quantity para float antes de calcular
+            quantity_float = float(quantity)
+
             # Normalizar para stepSize (arredondar para baixo)
-            normalized = math.floor(quantity / step_size) * step_size
+            normalized = math.floor(quantity_float / step_size) * step_size
 
             # Verificar quantidade mínima
             if normalized < min_qty:
@@ -204,11 +207,29 @@ class BinanceConnector:
                     "ETHUSDT": "2500.00",
                     "ADAUSDT": "0.35",
                     "SOLUSDT": "100.00",
+                    "DRIFTUSDT": "0.50",
                 }
                 price = demo_prices.get(symbol.upper(), "1.00")
                 return Decimal(price)
 
-            # Real price
+            # Real price - use correct API based on market type
+            # For futures, we need to use the futures API endpoint
+            import requests
+
+            # Try futures API first (since most of our trading is futures)
+            try:
+                resp = requests.get(
+                    f'https://fapi.binance.com/fapi/v1/ticker/price',
+                    params={'symbol': symbol.upper()},
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return Decimal(data['price'])
+            except:
+                pass
+
+            # Fallback to spot API
             ticker = self.client.get_symbol_ticker(symbol=symbol.upper())
             return Decimal(ticker["price"])
 
@@ -895,6 +916,168 @@ class BinanceConnector:
             return {"success": False, "error": f"Binance error: {e.message}"}
         except Exception as e:
             logger.error(f"❌ Error creating FUTURES order: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def create_stop_loss_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float
+    ) -> Dict[str, Any]:
+        """
+        Create STOP_MARKET order for stop loss
+
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            side: SELL (for long) or BUY (for short)
+            quantity: Quantity to close
+            stop_price: Price to trigger stop loss
+
+        Returns:
+            Dict with order result
+        """
+        try:
+            if self.is_demo_mode():
+                logger.info(f"🛑 Demo mode: would create Stop Loss at {stop_price}")
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orderId": "DEMO_SL_" + str(int(asyncio.get_event_loop().time() * 1000))
+                }
+
+            params = {
+                'symbol': symbol.upper(),
+                'side': side.upper(),
+                'type': 'STOP_MARKET',
+                'quantity': quantity,
+                'stopPrice': stop_price,
+                'timeInForce': 'GTC'
+            }
+
+            logger.info(f"🛑 Creating Stop Loss order: {params}")
+
+            result = await asyncio.to_thread(
+                self.client.futures_create_order,
+                **params
+            )
+
+            logger.info(f"✅ Stop Loss order created: {result.get('orderId')}")
+
+            return {
+                "success": True,
+                "demo": False,
+                "orderId": str(result.get('orderId')),
+                "symbol": symbol,
+                "stopPrice": stop_price
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API error creating Stop Loss: {e}")
+            return {"success": False, "error": f"Binance error: {e.message}"}
+        except Exception as e:
+            logger.error(f"❌ Error creating Stop Loss: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def create_take_profit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float
+    ) -> Dict[str, Any]:
+        """
+        Create TAKE_PROFIT_MARKET order
+
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            side: SELL (for long) or BUY (for short)
+            quantity: Quantity to close
+            stop_price: Price to trigger take profit
+
+        Returns:
+            Dict with order result
+        """
+        try:
+            if self.is_demo_mode():
+                logger.info(f"🎯 Demo mode: would create Take Profit at {stop_price}")
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orderId": "DEMO_TP_" + str(int(asyncio.get_event_loop().time() * 1000))
+                }
+
+            params = {
+                'symbol': symbol.upper(),
+                'side': side.upper(),
+                'type': 'TAKE_PROFIT_MARKET',
+                'quantity': quantity,
+                'stopPrice': stop_price,
+                'timeInForce': 'GTC'
+            }
+
+            logger.info(f"🎯 Creating Take Profit order: {params}")
+
+            result = await asyncio.to_thread(
+                self.client.futures_create_order,
+                **params
+            )
+
+            logger.info(f"✅ Take Profit order created: {result.get('orderId')}")
+
+            return {
+                "success": True,
+                "demo": False,
+                "orderId": str(result.get('orderId')),
+                "symbol": symbol,
+                "stopPrice": stop_price
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API error creating Take Profit: {e}")
+            return {"success": False, "error": f"Binance error: {e.message}"}
+        except Exception as e:
+            logger.error(f"❌ Error creating Take Profit: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """
+        Set leverage for a futures symbol
+
+        Args:
+            symbol: Trading pair (e.g., BTCUSDT)
+            leverage: Leverage level (1-125x)
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            if self.is_demo_mode():
+                logger.info(f"🔧 Demo mode: would set leverage to {leverage}x for {symbol}")
+                return {"success": True, "demo": True, "leverage": leverage}
+
+            logger.info(f"🔧 Setting leverage to {leverage}x for {symbol}")
+
+            result = await asyncio.to_thread(
+                self.client.futures_change_leverage,
+                symbol=symbol.upper(),
+                leverage=leverage
+            )
+
+            logger.info(f"✅ Leverage set successfully for {symbol}: {leverage}x")
+
+            return {
+                "success": True,
+                "demo": False,
+                "leverage": result.get("leverage", leverage),
+                "symbol": symbol
+            }
+
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API error setting leverage: {e}")
+            return {"success": False, "error": f"Binance error: {e.message}"}
+        except Exception as e:
+            logger.error(f"❌ Error setting leverage: {e}")
             return {"success": False, "error": str(e)}
 
 

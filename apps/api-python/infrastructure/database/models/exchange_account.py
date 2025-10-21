@@ -34,27 +34,29 @@ class ExchangeAccount(Base):
     # Basic info
     name: Mapped[str] = mapped_column(String(255), comment="User-friendly account name")
 
-    exchange_type: Mapped[ExchangeType] = mapped_column(
-        SQLEnum(ExchangeType), comment="Exchange platform type"
+    # ✅ FIX: Map to correct column name 'exchange' (not 'exchange_type')
+    exchange_type: Mapped[str] = mapped_column(
+        "exchange", String(50), comment="Exchange platform type"
     )
 
-    environment: Mapped[ExchangeEnvironment] = mapped_column(
-        SQLEnum(ExchangeEnvironment),
-        default=ExchangeEnvironment.TESTNET,
-        comment="Trading environment (testnet/mainnet)",
+    testnet: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        comment="Whether this is a testnet account"
     )
 
     # API credentials (encrypted)
     api_key_encrypted: Mapped[str] = mapped_column(
-        Text, comment="Encrypted exchange API key"
+        "api_key", Text, comment="Encrypted exchange API key"
     )
 
+    # ✅ FIX: Map to correct column name 'secret_key' (not 'secret_key_encrypted')
     api_secret_encrypted: Mapped[str] = mapped_column(
-        Text, comment="Encrypted exchange API secret"
+        "secret_key", Text, comment="Exchange API secret"
     )
 
     passphrase_encrypted: Mapped[Optional[str]] = mapped_column(
-        Text, comment="Encrypted passphrase (for exchanges that require it)"
+        "passphrase", Text, comment="Encrypted passphrase (for exchanges that require it)"
     )
 
     # Status and configuration
@@ -62,65 +64,14 @@ class ExchangeAccount(Base):
         Boolean, default=True, comment="Account active status"
     )
 
+    # ✅ FIX: Map to correct column name 'is_main' (not 'is_default')
     is_default: Mapped[bool] = mapped_column(
-        Boolean, default=False, comment="Default account for this exchange"
+        "is_main", Boolean, default=False, comment="Main account for dashboard"
     )
 
-    # Trading configuration
-    max_position_size: Mapped[Optional[str]] = mapped_column(
-        String(50), comment="Maximum position size (decimal string)"
-    )
-
-    max_daily_volume: Mapped[Optional[str]] = mapped_column(
-        String(50), comment="Maximum daily trading volume (decimal string)"
-    )
-
-    allowed_symbols: Mapped[Optional[str]] = mapped_column(
-        Text, comment="JSON array of allowed trading symbols"
-    )
-
-    risk_level: Mapped[str] = mapped_column(
-        String(20), default="medium", comment="Risk level: low, medium, high"
-    )
-
-    # Health and monitoring
-    last_health_check: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), comment="Last successful health check"
-    )
-
-    health_status: Mapped[str] = mapped_column(
-        String(20),
-        default="unknown",
-        comment="Health status: healthy, warning, error, unknown",
-    )
-
-    last_error: Mapped[Optional[str]] = mapped_column(
-        Text, comment="Last API error message"
-    )
-
-    # Usage statistics
-    total_orders: Mapped[int] = mapped_column(
-        default=0, comment="Total orders placed through this account"
-    )
-
-    successful_orders: Mapped[int] = mapped_column(
-        default=0, comment="Successful orders count"
-    )
-
-    failed_orders: Mapped[int] = mapped_column(default=0, comment="Failed orders count")
-
-    last_trade_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), comment="Last successful trade timestamp"
-    )
-
-    # Rate limiting
-    rate_limit_window: Mapped[int] = mapped_column(
-        default=60, comment="Rate limit window in seconds"
-    )
-
-    rate_limit_requests: Mapped[int] = mapped_column(
-        default=1200, comment="Max requests per window"
-    )
+    # ⚠️ CAMPOS NÃO EXISTEM NO BANCO - Mantidos como @property para compatibilidade
+    # Estes campos são usados pelo código mas não existem na tabela real
+    # Retornam valores default para não quebrar código existente
 
     # Relationships
     user_id: Mapped[str] = mapped_column(
@@ -139,18 +90,75 @@ class ExchangeAccount(Base):
         "Position", back_populates="exchange_account", cascade="all, delete-orphan"
     )
 
+    # ==================== COMPUTED PROPERTIES ====================
+    # Campos que não existem no banco mas são usados pelo código
+
+    @property
+    def environment(self) -> ExchangeEnvironment:
+        """Get environment as enum"""
+        return ExchangeEnvironment.TESTNET if self.testnet else ExchangeEnvironment.MAINNET
+
+    @property
+    def health_status(self) -> str:
+        """Health status - default 'healthy' se conta ativa"""
+        return "healthy" if self.is_active else "unknown"
+
+    @property
+    def last_health_check(self) -> Optional[datetime]:
+        """Last health check - sempre None (campo não existe)"""
+        return None
+
+    @property
+    def total_orders(self) -> int:
+        """Total orders - sempre 0 (campo não existe)"""
+        return 0
+
+    @property
+    def successful_orders(self) -> int:
+        """Successful orders - sempre 0 (campo não existe)"""
+        return 0
+
+    @property
+    def failed_orders(self) -> int:
+        """Failed orders - sempre 0 (campo não existe)"""
+        return 0
+
+    @property
+    def last_trade_at(self) -> Optional[datetime]:
+        """Last trade timestamp - sempre None (campo não existe)"""
+        return None
+
+    @property
+    def max_position_size(self) -> Optional[str]:
+        """Max position size - sempre None (campo não existe)"""
+        return None
+
+    @property
+    def max_daily_volume(self) -> Optional[str]:
+        """Max daily volume - sempre None (campo não existe)"""
+        return None
+
+    @property
+    def risk_level(self) -> str:
+        """Risk level - sempre 'medium' (campo não existe)"""
+        return "medium"
+
+    @property
+    def rate_limit_window(self) -> int:
+        """Rate limit window - sempre 60s (campo não existe)"""
+        return 60
+
+    @property
+    def rate_limit_requests(self) -> int:
+        """Rate limit requests - sempre 1200 (campo não existe)"""
+        return 1200
+
     def __init__(self, **kwargs):
         """Initialize ExchangeAccount with default values"""
-        # Set defaults
-        kwargs.setdefault("environment", ExchangeEnvironment.TESTNET)
+        # ✅ Apenas defaults para campos REAIS no banco
+        kwargs.setdefault("testnet", True)
         kwargs.setdefault("is_active", True)
-        kwargs.setdefault("is_default", False)
-        kwargs.setdefault("health_status", "unknown")
-        kwargs.setdefault("total_orders", 0)
-        kwargs.setdefault("successful_orders", 0)
-        kwargs.setdefault("failed_orders", 0)
-        kwargs.setdefault("rate_limit_window", 60)
-        kwargs.setdefault("rate_limit_requests", 1200)
+        # Remover defaults de campos que não existem no banco
         super().__init__(**kwargs)
 
     def activate(self) -> None:
@@ -170,26 +178,20 @@ class ExchangeAccount(Base):
         self.is_default = False
 
     def update_health_status(self, status: str, error: Optional[str] = None) -> None:
-        """Update account health status"""
-        self.health_status = status
-        self.last_health_check = datetime.now()
-        if error:
-            self.last_error = error
+        """Update account health status - NO-OP (campos não existem no banco)"""
+        # ⚠️ Método mantido para compatibilidade mas não faz nada
+        # Campos health_status, last_health_check, last_error não existem no banco
+        pass
 
     def increment_order_stats(self, success: bool) -> None:
-        """Update order statistics"""
-        self.total_orders += 1
-        if success:
-            self.successful_orders += 1
-            self.last_trade_at = datetime.now()
-        else:
-            self.failed_orders += 1
+        """Update order statistics - NO-OP (campos não existem no banco)"""
+        # ⚠️ Método mantido para compatibilidade mas não faz nada
+        # Campos total_orders, successful_orders, failed_orders não existem no banco
+        pass
 
     def get_success_rate(self) -> float:
-        """Calculate order success rate"""
-        if self.total_orders == 0:
-            return 0.0
-        return (self.successful_orders / self.total_orders) * 100
+        """Calculate order success rate - sempre 0 (campos não existem)"""
+        return 0.0
 
     def is_healthy(self) -> bool:
         """Check if account is healthy"""

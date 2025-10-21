@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-from sqlalchemy import and_, select, func, or_
+from sqlalchemy import and_, select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -50,8 +50,9 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
             "is_active": True,
         }
 
+        # ✅ FIX: environment é @property (derivado de testnet)
         if environment:
-            filters["environment"] = environment
+            filters["testnet"] = (environment == ExchangeEnvironment.TESTNET)
 
         return await self.get_multi(filters=filters)
 
@@ -62,12 +63,15 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         environment: ExchangeEnvironment = ExchangeEnvironment.TESTNET,
     ) -> Optional[ExchangeAccount]:
         """Get default account for specific exchange and environment"""
+        # ✅ FIX: environment é @property (derivado de testnet)
+        is_testnet = (environment == ExchangeEnvironment.TESTNET)
+
         result = await self.session.execute(
             select(ExchangeAccount).where(
                 and_(
                     ExchangeAccount.user_id == str(user_id),
                     ExchangeAccount.exchange_type == exchange_type,
-                    ExchangeAccount.environment == environment,
+                    ExchangeAccount.testnet == is_testnet,
                     ExchangeAccount.is_default == True,
                     ExchangeAccount.is_active == True,
                 )
@@ -96,7 +100,9 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         exchange_type: Optional[ExchangeType] = None,
     ) -> List[ExchangeAccount]:
         """Get accounts with healthy status"""
-        filters = {"is_active": True, "health_status": "healthy"}
+        # ✅ FIX: health_status é @property (sempre 'healthy' se is_active)
+        # Apenas checar is_active é suficiente
+        filters = {"is_active": True}
 
         if user_id:
             filters["user_id"] = str(user_id)
@@ -109,18 +115,18 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         self, user_id: Union[str, UUID], exchange_type: Optional[ExchangeType] = None
     ) -> List[ExchangeAccount]:
         """Get accounts that can execute trades"""
+        # ✅ FIX: health_status é @property (sempre 'healthy' se is_active)
+        conditions = [
+            ExchangeAccount.user_id == str(user_id),
+            ExchangeAccount.is_active == True,
+        ]
+
+        if exchange_type:
+            conditions.append(ExchangeAccount.exchange_type == exchange_type)
+
         result = await self.session.execute(
             select(ExchangeAccount)
-            .where(
-                and_(
-                    ExchangeAccount.user_id == str(user_id),
-                    ExchangeAccount.is_active == True,
-                    ExchangeAccount.health_status == "healthy",
-                    ExchangeAccount.exchange_type == exchange_type
-                    if exchange_type
-                    else True,
-                )
-            )
+            .where(and_(*conditions))
             .order_by(
                 ExchangeAccount.is_default.desc(), ExchangeAccount.created_at.desc()
             )
@@ -135,6 +141,9 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         environment: ExchangeEnvironment,
     ) -> bool:
         """Set account as default and unset others"""
+        # ✅ FIX: environment é @property (derivado de testnet)
+        is_testnet = (environment == ExchangeEnvironment.TESTNET)
+
         # First, unset all other default accounts for this exchange/environment
         await self.session.execute(
             update(ExchangeAccount)
@@ -142,7 +151,7 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
                 and_(
                     ExchangeAccount.user_id == str(user_id),
                     ExchangeAccount.exchange_type == exchange_type,
-                    ExchangeAccount.environment == environment,
+                    ExchangeAccount.testnet == is_testnet,
                     ExchangeAccount.id != str(account_id),
                 )
             )
@@ -179,30 +188,25 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         self, health_status: str, skip: int = 0, limit: int = 100
     ) -> List[ExchangeAccount]:
         """Get accounts by health status"""
-        return await self.get_multi(
-            filters={"health_status": health_status}, skip=skip, limit=limit
-        )
+        # ✅ FIX: health_status é @property (derivado de is_active)
+        # 'healthy' = is_active True, 'unknown' = is_active False
+        if health_status == "healthy":
+            filters = {"is_active": True}
+        elif health_status == "unknown":
+            filters = {"is_active": False}
+        else:
+            # Status inválido, retornar lista vazia
+            return []
+
+        return await self.get_multi(filters=filters, skip=skip, limit=limit)
 
     async def get_accounts_needing_health_check(
         self, max_age_minutes: int = 60
     ) -> List[ExchangeAccount]:
         """Get accounts that need health check"""
-        from datetime import datetime, timedelta
-
-        cutoff_time = datetime.now() - timedelta(minutes=max_age_minutes)
-
-        result = await self.session.execute(
-            select(ExchangeAccount).where(
-                and_(
-                    ExchangeAccount.is_active == True,
-                    or_(
-                        ExchangeAccount.last_health_check.is_(None),
-                        ExchangeAccount.last_health_check < cutoff_time,
-                    ),
-                )
-            )
-        )
-        return list(result.scalars().all())
+        # ✅ FIX: last_health_check é @property (sempre None)
+        # Já que não rastreamos health check, retornar todas contas ativas
+        return await self.get_multi(filters={"is_active": True})
 
     async def get_performance_stats(
         self,
@@ -210,6 +214,8 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         exchange_type: Optional[ExchangeType] = None,
     ) -> Dict[str, Any]:
         """Get performance statistics for accounts"""
+        # ✅ FIX: total_orders, successful_orders, failed_orders, health_status são @property
+        # Não podemos agregá-los no banco. Retornar estatísticas básicas apenas.
         base_query = select(ExchangeAccount)
 
         conditions = [ExchangeAccount.is_active == True]
@@ -222,39 +228,36 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         if conditions:
             base_query = base_query.where(and_(*conditions))
 
-        # Get statistics
+        # Get basic statistics (apenas count de contas)
         stats_result = await self.session.execute(
             base_query.with_only_columns(
                 func.count(ExchangeAccount.id).label("total_accounts"),
-                func.sum(ExchangeAccount.total_orders).label("total_orders"),
-                func.sum(ExchangeAccount.successful_orders).label("successful_orders"),
-                func.sum(ExchangeAccount.failed_orders).label("failed_orders"),
-                func.avg(
-                    ExchangeAccount.successful_orders
-                    * 100.0
-                    / func.nullif(ExchangeAccount.total_orders, 0)
-                ).label("avg_success_rate"),
             )
         )
 
         stats = stats_result.first()
 
-        # Get health distribution
-        health_result = await self.session.execute(
-            base_query.with_only_columns(
-                ExchangeAccount.health_status,
-                func.count(ExchangeAccount.id).label("count"),
-            ).group_by(ExchangeAccount.health_status)
-        )
+        # Health distribution baseado em is_active
+        # healthy = is_active True, unknown = is_active False
+        active_count = stats.total_accounts or 0
 
-        health_distribution = {row.health_status: row.count for row in health_result}
+        inactive_result = await self.session.execute(
+            select(func.count(ExchangeAccount.id))
+            .where(ExchangeAccount.is_active == False)
+        )
+        inactive_count = inactive_result.scalar() or 0
+
+        health_distribution = {
+            "healthy": active_count,
+            "unknown": inactive_count,
+        }
 
         return {
-            "total_accounts": stats.total_accounts or 0,
-            "total_orders": stats.total_orders or 0,
-            "successful_orders": stats.successful_orders or 0,
-            "failed_orders": stats.failed_orders or 0,
-            "average_success_rate": float(stats.avg_success_rate or 0),
+            "total_accounts": active_count,
+            "total_orders": 0,  # Sempre 0 (campo não existe no banco)
+            "successful_orders": 0,  # Sempre 0 (campo não existe no banco)
+            "failed_orders": 0,  # Sempre 0 (campo não existe no banco)
+            "average_success_rate": 0.0,  # Sempre 0 (campos não existem no banco)
             "health_distribution": health_distribution,
         }
 
@@ -284,6 +287,7 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         self, user_id: Optional[Union[str, UUID]] = None
     ) -> Dict[str, Dict[str, int]]:
         """Get distribution of accounts by exchange and environment"""
+        # ✅ FIX: environment é @property (derivado de testnet)
         base_query = select(ExchangeAccount).where(ExchangeAccount.is_active == True)
 
         if user_id:
@@ -292,15 +296,16 @@ class ExchangeAccountRepository(BaseRepository[ExchangeAccount]):
         result = await self.session.execute(
             base_query.with_only_columns(
                 ExchangeAccount.exchange_type,
-                ExchangeAccount.environment,
+                ExchangeAccount.testnet,
                 func.count(ExchangeAccount.id).label("count"),
-            ).group_by(ExchangeAccount.exchange_type, ExchangeAccount.environment)
+            ).group_by(ExchangeAccount.exchange_type, ExchangeAccount.testnet)
         )
 
         distribution = {}
         for row in result:
             exchange = row.exchange_type.value
-            environment = row.environment.value
+            # Converter testnet boolean para environment string
+            environment = "testnet" if row.testnet else "mainnet"
 
             if exchange not in distribution:
                 distribution[exchange] = {}

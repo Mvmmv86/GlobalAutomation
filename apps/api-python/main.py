@@ -30,6 +30,9 @@ from presentation.controllers.market_controller import router as market_router
 from presentation.controllers.orders_controller import create_orders_router
 from presentation.controllers.sltp_update_controller import router as sltp_router
 from presentation.controllers.websocket_controller import create_websocket_router
+from presentation.controllers.bots_controller import router as bots_router
+from presentation.controllers.bot_subscriptions_controller import router as bot_subscriptions_router
+from presentation.controllers.admin_controller import router as admin_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -247,7 +250,7 @@ def create_app() -> FastAPI:
     # Include routers with /api/v1 prefix
     # Routers will use dependency injection via FastAPI Depends
     # auth_router = create_auth_router()  # Comentado temporariamente - problema na DI
-    # webhook_router = create_webhook_router()  # Comentado temporariamente para usar asyncpg
+    webhook_router = create_webhook_router()  # ✅ DESCOMENTADO - Webhooks TradingView
     health_router = create_health_router()
     dashboard_router = create_dashboard_router()
     positions_router = create_positions_router()
@@ -255,7 +258,7 @@ def create_app() -> FastAPI:
     sync_router = create_sync_router()
 
     # app.include_router(auth_router, prefix="/api/v1")  # Comentado temporariamente
-    # app.include_router(webhook_router, prefix="/api/v1")  # Comentado temporariamente
+    app.include_router(webhook_router, prefix="/api/v1")  # ✅ DESCOMENTADO - Webhooks TradingView
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(dashboard_router)
     app.include_router(positions_router)
@@ -268,6 +271,9 @@ def create_app() -> FastAPI:
     app.include_router(create_websocket_router())  # WebSocket for real-time notifications
     app.include_router(create_webhooks_crud_router())  # Webhooks CRUD endpoints (já tem prefix interno)
     app.include_router(create_secure_tradingview_webhook_router(), prefix="/api/v1")  # Secure TradingView webhooks with all security layers
+    app.include_router(bots_router)  # Bots management (copy-trading)
+    app.include_router(bot_subscriptions_router)  # Bot subscriptions
+    app.include_router(admin_router)  # Admin management (dashboard, users, bots CRUD)
 
 
     return app
@@ -317,56 +323,20 @@ async def test_webhook(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# Webhook endpoint para TradingView real
-@app.post("/api/v1/webhooks/tradingview")
-async def tradingview_webhook(request: Request):
-    """Real TradingView webhook endpoint"""
-    try:
-        body = await request.body()
-        body_str = body.decode("utf-8")
-
-        # TradingView pode enviar JSON ou texto plano
-        try:
-            payload = json.loads(body_str)
-            logger.info(f"📊 TradingView JSON webhook: {payload}")
-        except:
-            # Se não for JSON, é texto plano
-            logger.info(f"📊 TradingView text webhook: {body_str}")
-            payload = {"message": body_str}
-
-        # Processar o webhook
-        print("\n" + "=" * 60)
-        print("🚨 WEBHOOK RECEBIDO DO TRADINGVIEW!")
-        print(f"📅 Time: {datetime.utcnow().isoformat()}")
-        print(f"📦 Payload: {payload}")
-        print("=" * 60 + "\n")
-
-        # Salvar em arquivo para debug
-        with open("tradingview_webhooks.log", "a") as f:
-            f.write(f"\n{datetime.utcnow().isoformat()} - {json.dumps(payload)}\n")
-
-        # 🎯 PROCESSAR ORDEM REAL
-        print("⚙️ Processando ordem na exchange...")
-        order_result = await order_processor.process_tradingview_webhook(payload)
-
-        if order_result["success"]:
-            print(f"✅ Ordem criada: ID {order_result['order_id']}")
-            print(f"🏭 Exchange Order: {order_result.get('exchange_order_id', 'N/A')}")
-            print(f"📊 Status: {order_result.get('status', 'unknown')}")
-        else:
-            print(f"❌ Erro na ordem: {order_result.get('error', 'Unknown error')}")
-
-        return {
-            "success": True,
-            "message": "TradingView webhook received and processed",
-            "timestamp": datetime.utcnow().isoformat(),
-            "payload": payload,
-            "order_result": order_result,
-        }
-
-    except Exception as e:
-        logger.error(f"TradingView webhook error: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+# 🔄 REDIRECT: Rota antiga mantida para compatibilidade (zero downtime)
+# Redireciona para /api/v1/webhooks/tv/{id} que tem tracking completo
+@app.post("/api/v1/webhooks/tradingview/{webhook_id}")
+async def tradingview_webhook_redirect(request: Request, webhook_id: str):
+    """
+    REDIRECT: Mantido para compatibilidade com URLs antigas.
+    Encaminha para a rota nova /api/v1/webhooks/tv/ que tem tracking completo.
+    """
+    # Simplesmente redireciona para a rota nova usando RedirectResponse
+    # Status 307 mantém o método POST e o body
+    return RedirectResponse(
+        url=f"/api/v1/webhooks/tv/{webhook_id}",
+        status_code=307
+    )
 
 
 # Função helper reutilizada do sync controller
@@ -1473,6 +1443,55 @@ async def get_exchange_accounts():
 # O endpoint GET /api/v1/webhooks agora é fornecido pelo create_webhooks_crud_router()
 # que busca dados reais do banco de dados
 
+
+# 🔗 ENDPOINT DINÂMICO: Retorna URL atual do ngrok
+@app.get("/api/v1/ngrok/url")
+async def get_ngrok_url():
+    """
+    Retorna a URL pública atual do ngrok
+
+    O frontend usa este endpoint para gerar URLs de webhook dinamicamente,
+    eliminando a necessidade de atualizar manualmente o .env quando o ngrok reinicia.
+    """
+    try:
+        import aiohttp
+
+        # Consultar API local do ngrok
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://localhost:4040/api/tunnels") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    tunnels = data.get("tunnels", [])
+
+                    if tunnels:
+                        # Pegar primeiro tunnel (normalmente só há um)
+                        public_url = tunnels[0].get("public_url")
+
+                        return {
+                            "success": True,
+                            "ngrok_url": public_url,
+                            "updated_at": datetime.now().isoformat()
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": "No ngrok tunnels found",
+                            "ngrok_url": None
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "error": "Ngrok API not accessible",
+                        "ngrok_url": None
+                    }
+
+    except Exception as e:
+        logger.error(f"Error fetching ngrok URL: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "ngrok_url": None
+        }
 
 
 if __name__ == "__main__":

@@ -25,10 +25,15 @@ class WebhookRepository(BaseRepository[Webhook]):
 
     async def get_by_url_path(self, url_path: str) -> Optional[Webhook]:
         """Get webhook by URL path"""
+        print(f"🔍 DEBUG: Searching webhook with url_path='{url_path}'")
         result = await self.session.execute(
             select(Webhook).where(Webhook.url_path == url_path)
         )
-        return result.scalar_one_or_none()
+        webhook = result.scalar_one_or_none()
+        print(f"🔍 DEBUG: Found webhook: {webhook is not None}")
+        if webhook:
+            print(f"🔍 DEBUG: Webhook details: id={webhook.id}, name={webhook.name}, status={webhook.status}")
+        return webhook
 
     async def get_user_webhooks(
         self, user_id: Union[str, UUID], status: Optional[WebhookStatus] = None

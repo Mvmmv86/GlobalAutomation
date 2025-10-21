@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+import { apiClient } from '@/lib/api'
 
 export interface WebhookData {
   id?: string
@@ -6,6 +6,7 @@ export interface WebhookData {
   url_path: string
   secret?: string
   status: 'active' | 'paused' | 'disabled' | 'error'
+  market_type?: 'spot' | 'futures'
   is_public?: boolean
   rate_limit_per_minute?: number
   rate_limit_per_hour?: number
@@ -20,6 +21,11 @@ export interface WebhookData {
   auto_pause_on_errors?: boolean
   error_threshold?: number
   consecutive_errors?: number
+  // Trading parameters
+  default_margin_usd?: number
+  default_leverage?: number
+  default_stop_loss_pct?: number
+  default_take_profit_pct?: number
   user_id?: string
   created_at?: string
   updated_at?: string
@@ -30,16 +36,23 @@ export interface WebhookCreateData {
   url_path: string
   secret?: string
   status?: 'active' | 'paused'
+  market_type?: 'spot' | 'futures'
   is_public?: boolean
   rate_limit_per_minute?: number
   rate_limit_per_hour?: number
   max_retries?: number
   retry_delay_seconds?: number
+  // Trading parameters
+  default_margin_usd?: number
+  default_leverage?: number
+  default_stop_loss_pct?: number
+  default_take_profit_pct?: number
 }
 
 export interface WebhookUpdateData {
   name?: string
   status?: 'active' | 'paused' | 'disabled' | 'error'
+  market_type?: 'spot' | 'futures'
   is_public?: boolean
   rate_limit_per_minute?: number
   rate_limit_per_hour?: number
@@ -47,6 +60,11 @@ export interface WebhookUpdateData {
   retry_delay_seconds?: number
   auto_pause_on_errors?: boolean
   error_threshold?: number
+  // Trading parameters
+  default_margin_usd?: number
+  default_leverage?: number
+  default_stop_loss_pct?: number
+  default_take_profit_pct?: number
 }
 
 class WebhookService {
@@ -56,7 +74,7 @@ class WebhookService {
    */
   async getWebhooks(status?: string): Promise<WebhookData[]> {
     const params = status ? { status } : {}
-    const response = await api.get('/api/v1/webhooks', { params })
+    const response = await apiClient.instance.get('/webhooks', { params })
 
     // Backend retorna { success: true, data: [...] }
     if (response.data?.success && response.data?.data) {
@@ -76,7 +94,7 @@ class WebhookService {
    * GET /api/v1/webhooks/{webhook_id}
    */
   async getWebhook(webhookId: string): Promise<WebhookData> {
-    const response = await api.get(`/api/v1/webhooks/${webhookId}`)
+    const response = await apiClient.instance.get(`/webhooks/${webhookId}`)
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -90,7 +108,7 @@ class WebhookService {
    * POST /api/v1/webhooks
    */
   async createWebhook(data: WebhookCreateData): Promise<WebhookData> {
-    const response = await api.post('/api/v1/webhooks', data)
+    const response = await apiClient.instance.post('/webhooks', data)
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -104,7 +122,7 @@ class WebhookService {
    * PUT /api/v1/webhooks/{webhook_id}
    */
   async updateWebhook(webhookId: string, data: WebhookUpdateData): Promise<void> {
-    await api.put(`/api/v1/webhooks/${webhookId}`, data)
+    await apiClient.instance.put(`/webhooks/${webhookId}`, data)
   }
 
   /**
@@ -112,7 +130,7 @@ class WebhookService {
    * DELETE /api/v1/webhooks/{webhook_id}
    */
   async deleteWebhook(webhookId: string): Promise<void> {
-    await api.delete(`/api/v1/webhooks/${webhookId}`)
+    await apiClient.instance.delete(`/webhooks/${webhookId}`)
   }
 
   /**
@@ -135,6 +153,45 @@ class WebhookService {
   async disableWebhook(webhookId: string): Promise<void> {
     await this.updateWebhook(webhookId, { status: 'disabled' })
   }
+
+  /**
+   * Buscar trades executados por um webhook específico
+   * GET /api/v1/webhooks/{webhook_id}/trades
+   */
+  async getWebhookTrades(webhookId: string, limit: number = 50): Promise<WebhookTradeData> {
+    const response = await apiClient.instance.get(`/webhooks/${webhookId}/trades`, {
+      params: { limit }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    return response.data
+  }
+}
+
+export interface WebhookTradeData {
+  webhook_name: string
+  trades: TradeItem[]
+  total: number
+}
+
+export interface TradeItem {
+  id: number
+  date: string
+  symbol: string
+  side: string
+  price: number
+  quantity: number
+  filled_quantity: number
+  leverage: number
+  margin_usd: number  // ✅ NEW: Margin in USDT
+  status: 'open' | 'closed'
+  order_status: string
+  pnl: number
+  exchange_order_id: string | null
+  error: string | null
 }
 
 export const webhookService = new WebhookService()

@@ -1,0 +1,34 @@
+# ========================================
+# VARIÁVEIS DE AMBIENTE - APP PLATFORM
+# Cole estas variáveis no painel do App Platform
+# ========================================
+
+# 1. AMBIENTE
+ENV=production
+DEBUG=false
+PORT=8000
+
+# 2. SECRETS DE SEGURANÇA (marque como "Encrypted" no painel!)
+SECRET_KEY=OnGOkDPK-O18FeP0MzdPSKa84EsJxpD7powP1iA68CnUmenTs8Y3Eow71vvfFoOW87DLDqMXT8O_wtNmDQuSvg
+ENCRYPTION_KEY=Y6Jp4iWJhzHfztHiiyQDYwtAHvD6h2kI8G_ryEvhhIQ=
+TV_WEBHOOK_SECRET=ee656c6000fd0a568bbfed36560ea48c7971928f40873b14fafe59baab920166
+
+# 3. DATABASE (SUBSTITUA COM SEU DATABASE_URL DO SUPABASE!)
+DATABASE_URL=postgresql+asyncpg://postgres.XXXXX:SUA_SENHA@aws-0-sa-east-1.pooler.supabase.com:6543/postgres
+
+# 4. JWT
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# 5. RATE LIMITING
+RATE_LIMIT_PER_MINUTE=100
+WEBHOOK_RATE_LIMIT_PER_MINUTE=200
+
+# 6. LOGS
+LOG_LEVEL=INFO
+
+# ========================================
+# IMPORTANTE:
+# - Marque SECRET_KEY, ENCRYPTION_KEY, TV_WEBHOOK_SECRET e DATABASE_URL como "Encrypted"
+# - CORS_ORIGINS será atualizado após o primeiro deploy (quando souber o domínio do frontend)
+# ========================================

@@ -3,10 +3,12 @@ import { LoginRequest, LoginResponse, RegisterRequest, User } from '@/types/auth
 
 class AuthService {
   async login(credentials: LoginRequest): Promise<LoginResponse> {
-    // Usar proxy do Vite para conectar ao backend
-    const fullUrl = '/api/v1/auth/login'
-    
+    // Em produção, usar VITE_API_URL. Em dev, usar proxy do Vite
+    const baseURL = import.meta.env.VITE_API_URL || ''
+    const fullUrl = baseURL ? `${baseURL}/api/v1/auth/login` : '/api/v1/auth/login'
+
     console.log('🌐 AuthService: Making request to:', fullUrl)
+    console.log('📋 AuthService: Base URL:', baseURL)
     console.log('📋 AuthService: Credentials:', { email: credentials.email, password: '***' })
     
     try {
@@ -68,19 +70,23 @@ class AuthService {
     if (!token) {
       throw new Error('No access token')
     }
-    
-    const response = await fetch('/api/v1/auth/me', {
+
+    // Em produção, usar VITE_API_URL. Em dev, usar proxy do Vite
+    const baseURL = import.meta.env.VITE_API_URL || ''
+    const fullUrl = baseURL ? `${baseURL}/api/v1/auth/me` : '/api/v1/auth/me'
+
+    const response = await fetch(fullUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
     })
-    
+
     if (!response.ok) {
       throw new Error('Failed to get user')
     }
-    
+
     return response.json()
   }
 

@@ -5,8 +5,15 @@ class ApiClient {
   private instance: AxiosInstance
 
   constructor() {
+    // Em produção, usar VITE_API_URL. Em dev, usar proxy do Vite
+    const baseURL = import.meta.env.VITE_API_URL
+      ? `${import.meta.env.VITE_API_URL}/api/v1`
+      : '/api/v1'
+
+    console.log('🔧 ApiClient: Using baseURL:', baseURL)
+
     this.instance = axios.create({
-      baseURL: '/api/v1', // Usar proxy do Vite
+      baseURL,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',

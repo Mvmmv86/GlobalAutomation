@@ -1,0 +1,6 @@
+# Slugignore - files to ignore during Digital Ocean build
+*.env
+.env
+.env.local
+.env.*.local
+apps/api-python/.env

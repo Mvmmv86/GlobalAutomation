@@ -4,3 +4,4 @@
 .env.local
 .env.*.local
 apps/api-python/.env
+frontend-new/Dockerfile

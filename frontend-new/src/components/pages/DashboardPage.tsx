@@ -39,13 +39,71 @@ const DashboardPage: React.FC = () => {
   const testApiConnection = async () => {
     setApiStatus('testing')
     try {
-      const response = await fetch('/api/v1/../')  // Usar proxy do Vite
+      // Test health endpoint
+      const baseUrl = import.meta.env.VITE_API_URL || ''
+      const url = baseUrl ? `${baseUrl}/api/v1/health` : '/api/v1/health'
+
+      console.log('🧪 Testing API connection to:', url)
+      const response = await fetch(url)
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
       const data = await response.json()
       setApiResponse(JSON.stringify(data, null, 2))
       setApiStatus('success')
     } catch (error) {
+      console.error('❌ API test failed:', error)
       setApiResponse(error instanceof Error ? error.message : 'Erro desconhecido')
       setApiStatus('error')
+    }
+  }
+
+  const handleRefreshData = async () => {
+    try {
+      console.log('🔄 Starting data refresh...')
+
+      // Se tiver contas, sincronizar cada uma
+      if (exchangeAccounts && exchangeAccounts.length > 0) {
+        const baseUrl = import.meta.env.VITE_API_URL || ''
+        const token = localStorage.getItem('accessToken')
+
+        for (const account of exchangeAccounts) {
+          try {
+            const syncUrl = baseUrl
+              ? `${baseUrl}/api/v1/sync/balances/${account.id}`
+              : `/api/v1/sync/balances/${account.id}`
+
+            console.log('🔄 Syncing account:', account.name)
+            const response = await fetch(syncUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              }
+            })
+
+            if (response.ok) {
+              console.log('✅ Account synced:', account.name)
+            } else {
+              console.warn('⚠️ Failed to sync account:', account.name)
+            }
+          } catch (err) {
+            console.error('❌ Error syncing account:', account.name, err)
+          }
+        }
+
+        // Aguardar 1 segundo para sincronização completar
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+
+      // Agora fazer refetch dos dados
+      console.log('📡 Refetching balances...')
+      await refetchBalances()
+      console.log('✅ Data refresh completed')
+    } catch (error) {
+      console.error('❌ Error refreshing data:', error)
     }
   }
 
@@ -146,7 +204,7 @@ const DashboardPage: React.FC = () => {
         </div>
         <div className="flex space-x-2">
           <Button
-            onClick={() => refetchBalances()}
+            onClick={handleRefreshData}
             variant="primary"
             disabled={loadingBalances}
           >

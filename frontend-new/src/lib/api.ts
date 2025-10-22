@@ -14,7 +14,7 @@ class ApiClient {
 
     this.instance = axios.create({
       baseURL,
-      timeout: 30000,
+      timeout: 60000, // 60 seconds timeout (increased from 30s for exchange account creation)
       headers: {
         'Content-Type': 'application/json',
       },

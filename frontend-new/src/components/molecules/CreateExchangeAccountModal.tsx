@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { X, Eye, EyeOff, AlertCircle, AlertTriangle } from 'lucide-react'
+import { X, Eye, EyeOff, AlertCircle, AlertTriangle, Copy, Check } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../atoms/Dialog'
 import { Button } from '../atoms/Button'
 import { FormField } from './FormField'
@@ -58,9 +58,53 @@ export const CreateExchangeAccountModal: React.FC<CreateExchangeAccountModalProp
   const [currentMainAccount, setCurrentMainAccount] = useState<{ name: string; exchange: string } | null>(null)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingSubmitData, setPendingSubmitData] = useState<ExchangeAccountData | null>(null)
+  const [publicIPs, setPublicIPs] = useState<string[]>([])
+  const [loadingIPs, setLoadingIPs] = useState(false)
+  const [copiedIP, setCopiedIP] = useState<string | null>(null)
 
   const selectedExchange = EXCHANGES.find(ex => ex.value === formData.exchange)
   const requiresPassphrase = selectedExchange?.requiresPassphrase || false
+
+  // Fetch public IPs when modal opens
+  useEffect(() => {
+    if (isOpen && publicIPs.length === 0) {
+      fetchPublicIPs()
+    }
+  }, [isOpen])
+
+  const fetchPublicIPs = async () => {
+    setLoadingIPs(true)
+    try {
+      const baseUrl = import.meta.env.VITE_API_URL || ''
+      const url = baseUrl ? `${baseUrl}/api/v1/health/public-ips` : '/api/v1/health/public-ips'
+
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await response.json()
+        setPublicIPs(data.ips || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch public IPs:', error)
+      setPublicIPs(['Unable to detect - Please contact support'])
+    } finally {
+      setLoadingIPs(false)
+    }
+  }
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedIP(text)
+      setTimeout(() => setCopiedIP(null), 2000)
+    } catch (error) {
+      console.error('Failed to copy:', error)
+    }
+  }
+
+  const copyAllIPs = async () => {
+    const ipsText = publicIPs.join('\n')
+    await copyToClipboard(ipsText)
+  }
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
@@ -311,15 +355,59 @@ export const CreateExchangeAccountModal: React.FC<CreateExchangeAccountModalProp
             )}
           </div>
 
-          {/* Security Warning */}
-          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+          {/* Security Warning & IP Information */}
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 space-y-3">
             <div className="flex">
-              <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 mr-2 mt-0.5" />
-              <div>
+              <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 mr-2 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 space-y-3">
                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                  <strong>Importante:</strong> Suas chaves de API são criptografadas e armazenadas com segurança. 
+                  <strong>Importante:</strong> Suas chaves de API são criptografadas e armazenadas com segurança.
                   Recomendamos usar API Keys apenas com permissão de trading (sem withdraw).
                 </p>
+
+                {/* IP Whitelist for production (non-testnet) */}
+                {formData.exchange && !formData.testnet && (
+                  <div className="space-y-2 pt-2 border-t border-yellow-200 dark:border-yellow-700">
+                    <p className="text-sm font-medium text-yellow-900 dark:text-yellow-100">
+                      📍 Configure estes IPs na {selectedExchange?.label}:
+                    </p>
+                    {loadingIPs ? (
+                      <div className="text-xs text-yellow-700 dark:text-yellow-300">
+                        Carregando IPs...
+                      </div>
+                    ) : (
+                      <>
+                        <div className="space-y-1">
+                          {publicIPs.map((ip, index) => (
+                            <div
+                              key={index}
+                              className="flex items-center justify-between bg-white dark:bg-gray-800 rounded px-2 py-1.5 text-xs"
+                            >
+                              <code className="font-mono text-gray-900 dark:text-gray-100">
+                                {ip}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(ip)}
+                                className="text-yellow-600 dark:text-yellow-400 hover:text-yellow-800 dark:hover:text-yellow-200 p-1"
+                                title="Copiar IP"
+                              >
+                                {copiedIP === ip ? (
+                                  <Check className="w-3 h-3" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                          💡 Na {selectedExchange?.label}: API Management → Edit Restrictions → Restrict access to trusted IPs
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

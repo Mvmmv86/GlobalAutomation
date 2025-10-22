@@ -44,8 +44,8 @@ def create_secure_tradingview_webhook_router() -> APIRouter:
     # Initialize security components
     try:
         rate_limiter = RedisRateLimiter(redis_url=settings.redis_url)
-        replay_prevention = ReplayAttackPrevention()
-        distributed_lock = DistributedLock()
+        replay_prevention = ReplayAttackPrevention(redis_url=settings.redis_url)
+        distributed_lock = DistributedLock(redis_url=settings.redis_url)
         error_sanitizer = get_error_sanitizer(environment="production")
 
         # Circuit breakers for different exchanges

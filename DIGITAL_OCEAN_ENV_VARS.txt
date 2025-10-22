@@ -1,0 +1,132 @@
+# ===================================================================
+# VARIÁVEIS DE AMBIENTE PARA DIGITAL OCEAN
+# ===================================================================
+# INSTRUÇÕES:
+# 1. Gere os secrets usando os comandos no arquivo DIGITAL_OCEAN_DEPLOY_GUIDE.md
+# 2. Substitua os valores "CHANGE_THIS_..." pelos valores reais
+# 3. Copie e cole no Digital Ocean App Platform → Settings → Environment Variables
+# ===================================================================
+
+# ===================================================================
+# 1. APLICAÇÃO
+# ===================================================================
+ENV=production
+DEBUG=false
+PORT=8000
+VERSION=1.0.0
+
+# ===================================================================
+# 2. SEGURANÇA E JWT (GERAR NOVOS VALORES)
+# ===================================================================
+# Gerar com: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+SECRET_KEY=CHANGE_THIS_RUN_COMMAND_ABOVE
+
+# Gerar com: python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+TV_WEBHOOK_SECRET=CHANGE_THIS_RUN_COMMAND_ABOVE
+
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# ===================================================================
+# 3. ENCRYPTION (CRÍTICO - FAZER BACKUP DESTAS CHAVES)
+# ===================================================================
+# Gerar com: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+ENCRYPTION_MASTER_KEY=CHANGE_THIS_RUN_COMMAND_ABOVE
+
+# Gerar com: python3 -c "import secrets; print(secrets.token_hex(16))"
+ENCRYPTION_KEY=CHANGE_THIS_RUN_COMMAND_ABOVE
+
+# ===================================================================
+# 4. DATABASE (SUPABASE)
+# ===================================================================
+# Formato: postgresql+asyncpg://postgres.PROJECT:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres
+DATABASE_URL=postgresql+asyncpg://postgres.zmdqmrugotfftxvrwdsd:Wzg0kBvtrSbclQ9V@aws-1-us-east-2.pooler.supabase.com:5432/postgres
+
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=10
+DB_POOL_TIMEOUT=30
+DB_POOL_RECYCLE=3600
+DATABASE_ECHO=false
+
+# ===================================================================
+# 5. REDIS (CRIAR NA DIGITAL OCEAN OU UPSTASH)
+# ===================================================================
+# Digital Ocean Managed Redis:
+# redis://default:PASSWORD@db-redis-XXXXX-do-user-XXXXX.ondigitalocean.com:25061
+#
+# OU Upstash Free Tier:
+# redis://default:PASSWORD@REGION.upstash.io:PORT
+REDIS_URL=CHANGE_THIS_CREATE_REDIS_DATABASE_FIRST
+REDIS_MAX_CONNECTIONS=10
+
+# Celery (usa mesmo Redis)
+CELERY_BROKER_URL=CHANGE_THIS_SAME_AS_REDIS_URL_ABOVE/1
+CELERY_RESULT_BACKEND=CHANGE_THIS_SAME_AS_REDIS_URL_ABOVE/1
+
+# ===================================================================
+# 6. CORS E DOMÍNIOS (AJUSTAR PARA SEU DOMÍNIO)
+# ===================================================================
+# IMPORTANTE: Formato JSON array, com protocolo completo
+# Exemplo: ["https://app.globalautomation.com","https://www.globalautomation.com"]
+CORS_ORIGINS=["https://CHANGE_THIS_YOUR_FRONTEND_DOMAIN.com"]
+
+# Incluir domínio da Digital Ocean
+# Exemplo: ["globalautomation-api.ondigitalocean.app","globalautomation-api-xxxxx.ondigitalocean.app"]
+ALLOWED_HOSTS=["CHANGE_THIS_YOUR_APP_NAME.ondigitalocean.app"]
+
+# ===================================================================
+# 7. WEBHOOK URL PÚBLICA (IMPORTANTE PARA TRADINGVIEW)
+# ===================================================================
+# Será o domínio da sua aplicação na Digital Ocean
+# Exemplo: https://globalautomation-api.ondigitalocean.app
+API_BASE_URL=https://CHANGE_THIS_YOUR_APP_NAME.ondigitalocean.app
+VITE_WEBHOOK_PUBLIC_URL=https://CHANGE_THIS_YOUR_APP_NAME.ondigitalocean.app
+
+# ===================================================================
+# 8. RATE LIMITING
+# ===================================================================
+RATE_LIMIT_PER_MINUTE=100
+WEBHOOK_RATE_LIMIT_PER_MINUTE=200
+AUTH_RATE_LIMIT_PER_MINUTE=500
+
+# ===================================================================
+# 9. BINANCE API (OPCIONAL - FALLBACK)
+# ===================================================================
+# Usuários devem cadastrar suas próprias chaves na plataforma
+# Estas são apenas fallback global (opcional)
+BINANCE_API_KEY=OPTIONAL_YOUR_BINANCE_API_KEY
+BINANCE_API_SECRET=OPTIONAL_YOUR_BINANCE_SECRET_KEY
+
+# ===================================================================
+# 10. MONITORAMENTO (OPCIONAL MAS RECOMENDADO)
+# ===================================================================
+# Criar conta grátis em sentry.io
+SENTRY_DSN=OPTIONAL_https://your-sentry-dsn@sentry.io/project-id
+
+# ===================================================================
+# FIM DAS VARIÁVEIS
+# ===================================================================
+#
+# PRÓXIMOS PASSOS:
+# 1. Substituir todos os valores "CHANGE_THIS_..."
+# 2. Gerar secrets usando comandos do guia
+# 3. Criar Redis database (Digital Ocean ou Upstash)
+# 4. Adicionar variáveis no Digital Ocean App Platform
+# 5. Fazer deploy
+# 6. Verificar logs
+#
+# COMANDOS PARA GERAR SECRETS:
+#
+# SECRET_KEY (32+ chars):
+# python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+#
+# ENCRYPTION_MASTER_KEY (Fernet 44 chars):
+# python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# ENCRYPTION_KEY (32 bytes hex):
+# python3 -c "import secrets; print(secrets.token_hex(16))"
+#
+# TV_WEBHOOK_SECRET:
+# python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+#
+# ===================================================================

@@ -89,8 +89,7 @@ export interface DashboardMetrics {
 
 export const dashboardService = {
   async getDashboardMetrics(): Promise<DashboardMetrics> {
-    const response = await api.get('/dashboard/metrics')
-    return response.data.data
+    return await api.get<DashboardMetrics>('/dashboard/metrics')
   },
 
   async getBalancesSummary(): Promise<BalanceData> {
@@ -112,8 +111,7 @@ export const dashboardService = {
   },
 
   async getPnlChart(days: number = 7): Promise<Array<{ date: string; pnl: number; positions: number }>> {
-    const response = await api.get(`/dashboard/pnl-chart?days=${days}`)
-    return response.data.data
+    return await api.get<Array<{ date: string; pnl: number; positions: number }>>(`/dashboard/pnl-chart?days=${days}`)
   },
 
   async getSpotBalances(exchangeAccountId: string): Promise<SpotBalancesData> {

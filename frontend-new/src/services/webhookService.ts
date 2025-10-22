@@ -74,7 +74,7 @@ class WebhookService {
    */
   async getWebhooks(status?: string): Promise<WebhookData[]> {
     const params = status ? { status } : {}
-    const response = await apiClient.instance.get('/webhooks', { params })
+    const response = await apiClient.getAxiosInstance().get('/webhooks', { params })
 
     // Backend retorna { success: true, data: [...] }
     if (response.data?.success && response.data?.data) {
@@ -94,7 +94,7 @@ class WebhookService {
    * GET /api/v1/webhooks/{webhook_id}
    */
   async getWebhook(webhookId: string): Promise<WebhookData> {
-    const response = await apiClient.instance.get(`/webhooks/${webhookId}`)
+    const response = await apiClient.getAxiosInstance().get(`/webhooks/${webhookId}`)
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -108,7 +108,7 @@ class WebhookService {
    * POST /api/v1/webhooks
    */
   async createWebhook(data: WebhookCreateData): Promise<WebhookData> {
-    const response = await apiClient.instance.post('/webhooks', data)
+    const response = await apiClient.getAxiosInstance().post('/webhooks', data)
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -122,7 +122,7 @@ class WebhookService {
    * PUT /api/v1/webhooks/{webhook_id}
    */
   async updateWebhook(webhookId: string, data: WebhookUpdateData): Promise<void> {
-    await apiClient.instance.put(`/webhooks/${webhookId}`, data)
+    await apiClient.getAxiosInstance().put(`/webhooks/${webhookId}`, data)
   }
 
   /**
@@ -130,7 +130,7 @@ class WebhookService {
    * DELETE /api/v1/webhooks/{webhook_id}
    */
   async deleteWebhook(webhookId: string): Promise<void> {
-    await apiClient.instance.delete(`/webhooks/${webhookId}`)
+    await apiClient.getAxiosInstance().delete(`/webhooks/${webhookId}`)
   }
 
   /**
@@ -159,7 +159,7 @@ class WebhookService {
    * GET /api/v1/webhooks/{webhook_id}/trades
    */
   async getWebhookTrades(webhookId: string, limit: number = 50): Promise<WebhookTradeData> {
-    const response = await apiClient.instance.get(`/webhooks/${webhookId}/trades`, {
+    const response = await apiClient.getAxiosInstance().get(`/webhooks/${webhookId}/trades`, {
       params: { limit }
     })
 

@@ -74,8 +74,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.log('🔍 Response keys:', Object.keys(response))
       
       // Verificar se temos os tokens na resposta
-      const accessToken = response.access_token || response.accessToken
-      const refreshToken = response.refresh_token || response.refreshToken
+      const accessToken = (response as any).access_token || response.accessToken
+      const refreshToken = (response as any).refresh_token || response.refreshToken
       
       console.log('🔑 Access token found:', !!accessToken)
       console.log('🔄 Refresh token found:', !!refreshToken)

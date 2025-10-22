@@ -102,6 +102,11 @@ class ApiClient {
     const response = await this.instance.patch<ApiResponse<T>>(url, data)
     return response.data as T
   }
+
+  // Método público para acessar a instância do Axios (necessário para headers customizados)
+  getAxiosInstance(): AxiosInstance {
+    return this.instance
+  }
 }
 
 export const apiClient = new ApiClient()
@@ -150,7 +155,7 @@ export const updatePositionSLTP = async (
   const idempotencyKey = generateIdempotencyKey(positionId, type, price)
 
   try {
-    const response = await apiClient.instance.patch<UpdateSLTPResponse>(
+    const response = await apiClient.getAxiosInstance().patch<UpdateSLTPResponse>(
       `/orders/positions/${positionId}/sltp`,
       { position_id: positionId, type, price },
       {

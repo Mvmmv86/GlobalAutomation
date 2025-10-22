@@ -101,7 +101,7 @@ class BotsService {
    * Get all available bots (active bots that clients can subscribe to)
    */
   async getAvailableBots(): Promise<Bot[]> {
-    const response = await apiClient.instance.get('/bot-subscriptions/available-bots')
+    const response = await apiClient.getAxiosInstance().get('/bot-subscriptions/available-bots')
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -114,7 +114,7 @@ class BotsService {
    * Get all bots (admin view - includes all statuses)
    */
   async getAllBots(): Promise<Bot[]> {
-    const response = await apiClient.instance.get('/bots')
+    const response = await apiClient.getAxiosInstance().get('/bots')
 
     if (response.data?.success && response.data?.data) {
       return response.data.data
@@ -128,7 +128,7 @@ class BotsService {
    */
   async getBotById(botId: string): Promise<Bot | null> {
     try {
-      const response = await apiClient.instance.get(`/bots/${botId}`)
+      const response = await apiClient.getAxiosInstance().get(`/bots/${botId}`)
 
       if (response.data?.success && response.data?.data) {
         return response.data.data
@@ -145,7 +145,7 @@ class BotsService {
    * Get user's bot subscriptions
    */
   async getMySubscriptions(userId: string): Promise<BotSubscription[]> {
-    const response = await apiClient.instance.get('/bot-subscriptions/my-subscriptions', {
+    const response = await apiClient.getAxiosInstance().get('/bot-subscriptions/my-subscriptions', {
       params: { user_id: userId }
     })
 
@@ -160,7 +160,7 @@ class BotsService {
    * Get subscription details
    */
   async getSubscriptionById(subscriptionId: string, userId: string): Promise<any> {
-    const response = await apiClient.instance.get(`/bot-subscriptions/${subscriptionId}`, {
+    const response = await apiClient.getAxiosInstance().get(`/bot-subscriptions/${subscriptionId}`, {
       params: { user_id: userId }
     })
 
@@ -175,7 +175,7 @@ class BotsService {
    * Subscribe to a bot
    */
   async subscribeToBot(userId: string, data: CreateSubscriptionData): Promise<{ subscription_id: string }> {
-    const response = await apiClient.instance.post('/bot-subscriptions', data, {
+    const response = await apiClient.getAxiosInstance().post('/bot-subscriptions', data, {
       params: { user_id: userId }
     })
 
@@ -194,7 +194,7 @@ class BotsService {
     userId: string,
     data: UpdateSubscriptionData
   ): Promise<void> {
-    await apiClient.instance.patch(`/bot-subscriptions/${subscriptionId}`, data, {
+    await apiClient.getAxiosInstance().patch(`/bot-subscriptions/${subscriptionId}`, data, {
       params: { user_id: userId }
     })
   }
@@ -203,7 +203,7 @@ class BotsService {
    * Unsubscribe from bot
    */
   async unsubscribeFromBot(subscriptionId: string, userId: string): Promise<void> {
-    await apiClient.instance.delete(`/bot-subscriptions/${subscriptionId}`, {
+    await apiClient.getAxiosInstance().delete(`/bot-subscriptions/${subscriptionId}`, {
       params: { user_id: userId }
     })
   }

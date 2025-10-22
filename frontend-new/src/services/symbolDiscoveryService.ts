@@ -110,7 +110,7 @@ export const symbolDiscoveryService = {
     unrealizedPnl: number
   }>> {
     try {
-      const response = await apiClient.get('/positions?status=open')
+      const response = await apiClient.get<any[]>('/positions?status=open')
 
       return response.map((position: any) => ({
         symbol: position.symbol,

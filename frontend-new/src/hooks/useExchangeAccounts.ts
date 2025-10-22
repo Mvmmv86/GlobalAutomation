@@ -24,7 +24,7 @@ export const useExchangeAccounts = () => {
   return useQuery<ExchangeAccount[]>({
     queryKey: ['exchange-accounts'],
     queryFn: async () => {
-      const response = await apiClient.instance.get('/api/v1/exchange-accounts')
+      const response = await apiClient.getAxiosInstance().get('/api/v1/exchange-accounts')
 
       // Backend pode retornar array direto ou objeto com data
       if (Array.isArray(response.data)) {
@@ -61,7 +61,7 @@ export const useExchangeAccount = (accountId: string | undefined) => {
         throw new Error('Account ID is required')
       }
 
-      const response = await apiClient.instance.get(`/api/v1/exchange-accounts/${accountId}`)
+      const response = await apiClient.getAxiosInstance().get(`/api/v1/exchange-accounts/${accountId}`)
       return response.data?.data || response.data
     },
     enabled: !!accountId,

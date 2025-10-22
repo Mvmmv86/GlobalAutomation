@@ -3,8 +3,6 @@
  * Ensures only one connection exists at a time and handles reconnection logic
  */
 
-import { useQueryClient } from '@tanstack/react-query'
-
 export interface WSMessage {
   type: 'connected' | 'ping' | 'order_update' | 'position_update' | 'balance_update' | 'subscribed'
   timestamp: string

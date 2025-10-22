@@ -59,22 +59,23 @@ class PositionService {
         symbol: pos.symbol,
         side: pos.side.toUpperCase(), // Garantir uppercase (LONG/SHORT)
         status: pos.status,
-        quantity: pos.size, // Quantidade da posição
+        size: pos.size, // Quantidade da posição (corrigido de quantity para size)
         entryPrice: pos.entry_price,
         markPrice: pos.mark_price,
-        exitPrice: pos.exit_price, // Preço de saída para posições fechadas
         unrealizedPnl: pos.unrealized_pnl,
         realizedPnl: pos.realized_pnl,
-        margin: pos.initial_margin,
+        initialMargin: pos.initial_margin, // Corrigido de margin para initialMargin
+        maintenanceMargin: pos.maintenance_margin || 0, // Adicionado maintenanceMargin
         leverage: pos.leverage,
+        liquidationPrice: pos.liquidation_price, // Adicionado liquidationPrice
         exchangeAccountId: pos.exchange_account_id,
-        openedAt: pos.opened_at,
+        openedAt: pos.opened_at || pos.created_at,
         closedAt: pos.closed_at,
         createdAt: pos.created_at,
         updatedAt: pos.updated_at,
 
         // Campos adicionais específicos
-        operationType: 'futures' // Sempre FUTURES para esta implementação
+        operation_type: 'futures' // Corrigido de operationType para operation_type
       }))
     } catch (error) {
       console.error('Error fetching positions from Python API:', error)

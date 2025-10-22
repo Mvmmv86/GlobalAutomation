@@ -56,11 +56,12 @@ def create_secure_tradingview_webhook_router() -> APIRouter:
                     failure_threshold=5,
                     success_threshold=2,
                     timeout=60
-                )
+                ),
+                redis_url=settings.redis_url
             ),
-            "bybit": ExchangeCircuitBreaker(name="bybit"),
-            "bingx": ExchangeCircuitBreaker(name="bingx"),
-            "bitget": ExchangeCircuitBreaker(name="bitget"),
+            "bybit": ExchangeCircuitBreaker(name="bybit", redis_url=settings.redis_url),
+            "bingx": ExchangeCircuitBreaker(name="bingx", redis_url=settings.redis_url),
+            "bitget": ExchangeCircuitBreaker(name="bitget", redis_url=settings.redis_url),
         }
 
         logger.info("Security components initialized successfully")

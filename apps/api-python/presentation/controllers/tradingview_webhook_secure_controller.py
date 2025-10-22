@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 import structlog
 
 from infrastructure.di.container import get_container
+from infrastructure.config.settings import get_settings
 from application.services.tradingview_webhook_service import TradingViewWebhookService
 
 # Security components
@@ -37,9 +38,12 @@ def create_secure_tradingview_webhook_router() -> APIRouter:
     """Create secure TradingView webhook router with all security layers"""
     router = APIRouter(tags=["TradingView Webhooks (Secure)"])
 
+    # Get settings
+    settings = get_settings()
+
     # Initialize security components
     try:
-        rate_limiter = RedisRateLimiter()
+        rate_limiter = RedisRateLimiter(redis_url=settings.redis_url)
         replay_prevention = ReplayAttackPrevention()
         distributed_lock = DistributedLock()
         error_sanitizer = get_error_sanitizer(environment="production")

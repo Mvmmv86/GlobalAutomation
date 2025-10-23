@@ -13,6 +13,7 @@ logger = structlog.get_logger(__name__)
 def create_exchange_account_router() -> APIRouter:
     """Create and configure the exchange account router"""
     router = APIRouter(prefix="/api/v1/exchange-accounts", tags=["Exchange Accounts"])
+    encryption_service = EncryptionService()
 
     @router.get("")
     async def get_exchange_accounts(request: Request):
@@ -139,8 +140,11 @@ def create_exchange_account_router() -> APIRouter:
                     WHERE exchange = $1 AND user_id = $2
                 """, exchange, user_id)
 
-            # Store API credentials directly (simplified for now)
-            # In production, you might want to encrypt these
+            # Encrypt API credentials before storing
+            encrypted_api_key = encryption_service.encrypt_string(api_key)
+            encrypted_secret_key = encryption_service.encrypt_string(secret_key)
+
+            logger.info("API credentials encrypted successfully")
 
             # Create the exchange account
             account_id = await transaction_db.fetchval("""
@@ -150,7 +154,7 @@ def create_exchange_account_router() -> APIRouter:
                     created_at, updated_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
                 RETURNING id
-            """, name, exchange, testnet, True, api_key, secret_key, user_id, is_main)
+            """, name, exchange, testnet, True, encrypted_api_key, encrypted_secret_key, user_id, is_main)
             
             logger.info("Exchange account created", 
                        account_id=account_id, name=name, exchange=exchange, testnet=testnet)

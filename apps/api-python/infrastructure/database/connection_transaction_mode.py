@@ -48,14 +48,14 @@ class TransactionModeDatabase:
         try:
             # Criar pool de conexões asyncpg
             # statement_cache_size=0 é CRÍTICO para pgBouncer transaction mode
-            # 🚀 PERFORMANCE: Pool otimizado para alta concorrência
+            # 🚀 PERFORMANCE: Pool otimizado para Gunicorn workers
             self._pool = await asyncpg.create_pool(
                 database_url,
                 ssl=ssl_ctx,
                 statement_cache_size=0,  # CRÍTICO: Sem cache de statements
-                command_timeout=30,      # Timeout mais rápido (antes: 60s)
-                min_size=10,             # Mais conexões pré-alocadas (antes: 1)
-                max_size=50,             # Suporta mais concorrência (antes: 10)
+                command_timeout=60,      # Timeout aumentado para exchange account creation
+                min_size=2,              # Otimizado: menos conexões ociosas (antes: 10)
+                max_size=10,             # Otimizado: previne esgotar Supabase limit (antes: 50)
                 max_queries=50000,       # Rotação menos frequente de conexões
                 max_inactive_connection_lifetime=300,  # Mantém conexões por 5min
             )

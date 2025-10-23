@@ -498,11 +498,29 @@ def create_webhooks_crud_router() -> APIRouter:
 
                 if main_account:
                     from infrastructure.exchanges.binance_connector import BinanceConnector
-                    import os
+                    from infrastructure.security.encryption_service import EncryptionService
 
-                    # Use API keys from database or fallback to environment
-                    api_key = main_account['api_key'] or os.getenv('BINANCE_API_KEY')
-                    secret_key = main_account['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+                    # Descriptografar as chaves API do banco de dados
+                    encryption_service = EncryptionService()
+
+                    try:
+                        api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
+                        secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
+                        logger.info(f"✅ API keys decrypted successfully for webhook test")
+                    except Exception as decrypt_error:
+                        logger.error(f"❌ Failed to decrypt API keys: {decrypt_error}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Cannot decrypt exchange API keys. Please check your exchange account configuration."
+                        )
+
+                    # Validar que as chaves foram descriptografadas
+                    if not api_key or not secret_key:
+                        logger.error(f"❌ API keys are empty after decryption")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Exchange API keys are not configured correctly"
+                        )
 
                     connector = BinanceConnector(
                         api_key=api_key,

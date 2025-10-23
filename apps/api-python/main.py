@@ -333,18 +333,28 @@ async def get_exchange_connector(account_id: str):
         if not account:
             raise HTTPException(status_code=404, detail=f"Exchange account {account_id} not found or inactive")
 
-        # Decrypt API credentials - FASE 1: Fallback para env vars se descriptografia falhar
+        # Decrypt API credentials - CRÍTICO: Não usar fallback (escalabilidade)
         try:
             api_key = encryption_service.decrypt_string(account['api_key']) if account['api_key'] else None
             secret_key = encryption_service.decrypt_string(account['secret_key']) if account['secret_key'] else None
             passphrase = encryption_service.decrypt_string(account['passphrase']) if account['passphrase'] else None
+            print(f"✅ API keys decrypted successfully for account {account['id']}")
         except Exception as decrypt_error:
-            print(f"⚠️ Erro na descriptografia, usando fallback: {decrypt_error}")
-            # Fallback para variáveis de ambiente (igual dashboard)
-            import os
-            api_key = account['api_key'] or os.getenv('BINANCE_API_KEY')
-            secret_key = account['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
-            passphrase = account['passphrase']
+            # ERRO CRÍTICO: Não usar fallback para variáveis de ambiente
+            # Cada cliente deve ter suas próprias chaves descriptografadas
+            print(f"❌ CRITICAL: Failed to decrypt API keys for account {account['id']}: {decrypt_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cannot decrypt exchange API keys. Please check your exchange account configuration."
+            )
+
+        # Validar que as chaves foram descriptografadas
+        if not api_key or not secret_key:
+            print(f"❌ CRITICAL: API keys are empty after decryption for account {account['id']}")
+            raise HTTPException(
+                status_code=500,
+                detail="Exchange API keys are not configured correctly"
+            )
 
         # Create appropriate connector
         exchange = account['exchange'].lower()

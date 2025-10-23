@@ -22,7 +22,7 @@ worker_tmp_dir = "/dev/shm"
 
 # Timeout settings
 # Graceful timeout for workers
-timeout = 120  # 2 minutes (increased from default 30s for exchange account creation)
+timeout = 300  # 2 minutes (increased from default 30s for exchange account creation)
 graceful_timeout = 30
 keepalive = 5
 

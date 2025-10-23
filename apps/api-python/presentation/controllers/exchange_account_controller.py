@@ -126,27 +126,38 @@ def create_exchange_account_router() -> APIRouter:
             
             # TODO: Get user_id from JWT token
             # For now, use a default user (first user in database)
+            logger.info("🔍 STEP 1: Buscando usuário no banco...")
             user = await transaction_db.fetchrow("SELECT id FROM users LIMIT 1")
             if not user:
                 raise HTTPException(status_code=400, detail="No users found. Please create a user first.")
-            
+
             user_id = user["id"]
+            logger.info("✅ STEP 1: Usuário encontrado", user_id=str(user_id))
 
             # Se esta conta está sendo marcada como principal, desmarcar todas as outras
             if is_main:
+                logger.info("🔍 STEP 2: Desmarcando contas principais anteriores...")
                 await transaction_db.execute("""
                     UPDATE exchange_accounts
                     SET is_main = false
                     WHERE exchange = $1 AND user_id = $2
                 """, exchange, user_id)
+                logger.info("✅ STEP 2: Contas desmarcadas")
+            else:
+                logger.info("⏭️ STEP 2: Pulado (is_main=False)")
 
             # Encrypt API credentials before storing
+            logger.info("🔍 STEP 3: Criptografando credenciais API...")
+            import time
+            start_encrypt = time.time()
             encrypted_api_key = encryption_service.encrypt_string(api_key)
             encrypted_secret_key = encryption_service.encrypt_string(secret_key)
-
-            logger.info("API credentials encrypted successfully")
+            encrypt_time = (time.time() - start_encrypt) * 1000
+            logger.info("✅ STEP 3: Credenciais criptografadas", encrypt_time_ms=f"{encrypt_time:.2f}ms")
 
             # Create the exchange account
+            logger.info("🔍 STEP 4: Inserindo no banco de dados...")
+            start_insert = time.time()
             account_id = await transaction_db.fetchval("""
                 INSERT INTO exchange_accounts (
                     name, exchange, testnet, is_active,
@@ -155,6 +166,8 @@ def create_exchange_account_router() -> APIRouter:
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
                 RETURNING id
             """, name, exchange, testnet, True, encrypted_api_key, encrypted_secret_key, user_id, is_main)
+            insert_time = (time.time() - start_insert) * 1000
+            logger.info("✅ STEP 4: Conta inserida no banco", insert_time_ms=f"{insert_time:.2f}ms")
             
             logger.info("Exchange account created", 
                        account_id=account_id, name=name, exchange=exchange, testnet=testnet)

@@ -171,30 +171,8 @@ def create_app() -> FastAPI:
             client_ip=get_remote_address(request),
         )
 
-        # Special logging for exchange-accounts POST requests
-        if request.method == "POST" and "exchange-accounts" in request.url.path:
-            try:
-                # Read body for debugging (this consumes the body once)
-                body = await request.body()
-                logger.info("🚨 EXCHANGE ACCOUNT POST REQUEST",
-                           body_length=len(body),
-                           content_type=request.headers.get("content-type"),
-                           headers=dict(request.headers))
-
-                # We need to reconstruct the request with the body
-                from fastapi import Request as FastAPIRequest
-                from starlette.requests import Request as StarletteRequest
-
-                # Create a new request with the same body
-                scope = request.scope.copy()
-                receive = request.receive.__class__(lambda: {"type": "http.request", "body": body})
-
-                # Create new request
-                new_request = StarletteRequest(scope, receive)
-                request._body = body  # Cache the body for later use
-
-            except Exception as e:
-                logger.error("Error reading POST body", error=str(e))
+        # REMOVIDO: Middleware que consumia o body e causava timeout
+        # O body agora é lido diretamente no controller sem interferência
 
         try:
             response = await call_next(request)

@@ -119,21 +119,33 @@ class SyncScheduler:
             try:
                 if api_key and len(api_key) > 10:
                     api_key = encryption_service.decrypt_string(api_key)
+                    logger.debug(f"✅ API key decrypted successfully for account {account['id']}")
                 if secret_key and len(secret_key) > 10:
                     secret_key = encryption_service.decrypt_string(secret_key)
+                    logger.debug(f"✅ Secret key decrypted successfully for account {account['id']}")
             except Exception as e:
-                # Se falhar a descriptografia, usar fallback do .env
-                logger.warning(f"Decryption failed for account {account['id']}, using env vars")
-                import os
-                api_key = os.getenv('BINANCE_API_KEY')
-                secret_key = os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+                # ERRO CRÍTICO: Não conseguiu descriptografar as chaves do cliente
+                # Isso significa que a conta não vai funcionar para este cliente
+                logger.error(
+                    f"❌ CRITICAL: Failed to decrypt API keys for account {account['id']}",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    account_name=account.get('name', 'Unknown'),
+                    user_id=account.get('user_id', 'Unknown')
+                )
+                # NÃO fazer fallback para variáveis de ambiente - isso quebraria a escalabilidade
+                # Cada cliente deve ter suas próprias chaves descriptografadas corretamente
+                from infrastructure.security.encryption_service import EncryptionError
+                raise EncryptionError(f"Cannot decrypt API keys for account {account['id']}: {str(e)}")
 
-            # Se as chaves são inválidas ou vazias, usar as do .env como fallback
-            import os
+            # Validar que as chaves foram descriptografadas corretamente
             if not api_key or len(api_key) < 10:
-                api_key = os.getenv('BINANCE_API_KEY')
-                secret_key = os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
-                logger.warning(f"Using fallback API keys from environment for account {account['id']}")
+                logger.error(
+                    f"❌ CRITICAL: API key is empty or invalid after decryption for account {account['id']}",
+                    account_name=account.get('name', 'Unknown'),
+                    user_id=account.get('user_id', 'Unknown')
+                )
+                raise ValueError(f"Invalid API key for account {account['id']} - cannot access exchange API")
 
             # Usar as chaves reais
             return BinanceConnector(

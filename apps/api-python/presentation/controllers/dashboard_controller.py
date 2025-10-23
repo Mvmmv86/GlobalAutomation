@@ -282,11 +282,30 @@ def create_dashboard_router() -> APIRouter:
 
                 if main_account:
                     from infrastructure.exchanges.binance_connector import BinanceConnector
-                    import os
+                    from infrastructure.security.encryption_service import EncryptionService
 
-                    # Use API keys from database or fallback to environment
-                    api_key = main_account['api_key'] or os.getenv('BINANCE_API_KEY')
-                    secret_key = main_account['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+                    # Descriptografar as chaves API do banco de dados
+                    encryption_service = EncryptionService()
+
+                    try:
+                        api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
+                        secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
+                        logger.info(f"✅ API keys decrypted successfully for main account {main_account['id']}")
+                    except Exception as decrypt_error:
+                        logger.error(f"❌ Failed to decrypt API keys for main account: {decrypt_error}")
+                        # Se falhar a descriptografia, não pode puxar dados reais
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Cannot decrypt exchange API keys. Please check your exchange account configuration."
+                        )
+
+                    # Validar que as chaves foram descriptografadas
+                    if not api_key or not secret_key:
+                        logger.error(f"❌ API keys are empty after decryption for main account")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Exchange API keys are not configured correctly"
+                        )
 
                     connector = BinanceConnector(
                         api_key=api_key,
@@ -406,11 +425,29 @@ def create_dashboard_router() -> APIRouter:
 
             from infrastructure.exchanges.binance_connector import BinanceConnector
             from infrastructure.pricing.binance_price_service import BinancePriceService
-            import os
+            from infrastructure.security.encryption_service import EncryptionService
 
-            # Use API keys from database or fallback to environment
-            api_key = account_info['api_key'] or os.getenv('BINANCE_API_KEY')
-            secret_key = account_info['secret_key'] or os.getenv('BINANCE_SECRET_KEY') or os.getenv('BINANCE_API_SECRET')
+            # Descriptografar as chaves API do banco de dados
+            encryption_service = EncryptionService()
+
+            try:
+                api_key = encryption_service.decrypt_string(account_info['api_key']) if account_info['api_key'] else None
+                secret_key = encryption_service.decrypt_string(account_info['secret_key']) if account_info['secret_key'] else None
+                logger.info(f"✅ API keys decrypted successfully for account {exchange_account_id}")
+            except Exception as decrypt_error:
+                logger.error(f"❌ Failed to decrypt API keys for account {exchange_account_id}: {decrypt_error}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Cannot decrypt exchange API keys. Please check your exchange account configuration."
+                )
+
+            # Validar que as chaves foram descriptografadas
+            if not api_key or not secret_key:
+                logger.error(f"❌ API keys are empty after decryption for account {exchange_account_id}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Exchange API keys are not configured correctly"
+                )
 
             connector = BinanceConnector(
                 api_key=api_key,

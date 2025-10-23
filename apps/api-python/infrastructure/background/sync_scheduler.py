@@ -14,6 +14,9 @@ load_dotenv()
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.exchanges.binance_connector import BinanceConnector
+from infrastructure.exchanges.bybit_connector import BybitConnector
+from infrastructure.exchanges.bingx_connector import BingXConnector
+from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.security.encryption_service import EncryptionService
 from infrastructure.pricing.binance_price_service import BinancePriceService
 
@@ -102,57 +105,60 @@ class SyncScheduler:
             logger.error(f"Error syncing account {account_id}: {e}")
 
     async def _get_exchange_connector(self, account):
-        """Cria connector para a exchange"""
+        """Cria connector para a exchange (MULTI-EXCHANGE SUPPORT)"""
         exchange = account['exchange'].lower()
 
-        if exchange == 'binance':
-            from infrastructure.security.encryption_service import EncryptionService
-            encryption_service = EncryptionService()
+        from infrastructure.security.encryption_service import EncryptionService
+        encryption_service = EncryptionService()
 
-            # Usar as chaves do banco de dados
-            api_key = account['api_key']
-            secret_key = account['secret_key']
-            # IMPORTANTE: Usar False como default para REAL trading
-            testnet = account.get('testnet', False)
+        # Usar as chaves do banco de dados
+        api_key = account['api_key']
+        secret_key = account['secret_key']
+        passphrase = account.get('passphrase')
+        testnet = account.get('testnet', False)
 
-            # Tentar descriptografar as credenciais
-            try:
-                if api_key and len(api_key) > 10:
-                    api_key = encryption_service.decrypt_string(api_key)
-                    logger.debug(f"✅ API key decrypted successfully for account {account['id']}")
-                if secret_key and len(secret_key) > 10:
-                    secret_key = encryption_service.decrypt_string(secret_key)
-                    logger.debug(f"✅ Secret key decrypted successfully for account {account['id']}")
-            except Exception as e:
-                # ERRO CRÍTICO: Não conseguiu descriptografar as chaves do cliente
-                # Isso significa que a conta não vai funcionar para este cliente
-                logger.error(
-                    f"❌ CRITICAL: Failed to decrypt API keys for account {account['id']}",
-                    error_type=type(e).__name__,
-                    error_message=str(e),
-                    account_name=account.get('name', 'Unknown'),
-                    user_id=account.get('user_id', 'Unknown')
-                )
-                # NÃO fazer fallback para variáveis de ambiente - isso quebraria a escalabilidade
-                # Cada cliente deve ter suas próprias chaves descriptografadas corretamente
-                from infrastructure.security.encryption_service import EncryptionError
-                raise EncryptionError(f"Cannot decrypt API keys for account {account['id']}: {str(e)}")
-
-            # Validar que as chaves foram descriptografadas corretamente
-            if not api_key or len(api_key) < 10:
-                logger.error(
-                    f"❌ CRITICAL: API key is empty or invalid after decryption for account {account['id']}",
-                    account_name=account.get('name', 'Unknown'),
-                    user_id=account.get('user_id', 'Unknown')
-                )
-                raise ValueError(f"Invalid API key for account {account['id']} - cannot access exchange API")
-
-            # Usar as chaves reais
-            return BinanceConnector(
-                api_key=api_key,
-                api_secret=secret_key,
-                testnet=testnet
+        # Tentar descriptografar as credenciais
+        try:
+            if api_key and len(api_key) > 10:
+                api_key = encryption_service.decrypt_string(api_key)
+                logger.debug(f"✅ API key decrypted successfully for account {account['id']}")
+            if secret_key and len(secret_key) > 10:
+                secret_key = encryption_service.decrypt_string(secret_key)
+                logger.debug(f"✅ Secret key decrypted successfully for account {account['id']}")
+            if passphrase and len(passphrase) > 10:
+                passphrase = encryption_service.decrypt_string(passphrase)
+                logger.debug(f"✅ Passphrase decrypted successfully for account {account['id']}")
+        except Exception as e:
+            # ERRO CRÍTICO: Não conseguiu descriptografar as chaves do cliente
+            logger.error(
+                f"❌ CRITICAL: Failed to decrypt API keys for account {account['id']}",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                account_name=account.get('name', 'Unknown'),
+                user_id=account.get('user_id', 'Unknown')
             )
+            # NÃO fazer fallback para variáveis de ambiente - isso quebraria a escalabilidade
+            from infrastructure.security.encryption_service import EncryptionError
+            raise EncryptionError(f"Cannot decrypt API keys for account {account['id']}: {str(e)}")
+
+        # Validar que as chaves foram descriptografadas corretamente
+        if not api_key or len(api_key) < 10:
+            logger.error(
+                f"❌ CRITICAL: API key is empty or invalid after decryption for account {account['id']}",
+                account_name=account.get('name', 'Unknown'),
+                user_id=account.get('user_id', 'Unknown')
+            )
+            raise ValueError(f"Invalid API key for account {account['id']} - cannot access exchange API")
+
+        # Create connector based on exchange type (MULTI-EXCHANGE)
+        if exchange == 'binance':
+            return BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+        elif exchange == 'bybit':
+            return BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+        elif exchange == 'bingx':
+            return BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+        elif exchange == 'bitget':
+            return BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
         else:
             raise ValueError(f"Unsupported exchange: {exchange}")
 

@@ -8,6 +8,10 @@ from decimal import Decimal
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.cache import get_positions_cache
+from infrastructure.exchanges.binance_connector import BinanceConnector
+from infrastructure.exchanges.bybit_connector import BybitConnector
+from infrastructure.exchanges.bingx_connector import BingXConnector
+from infrastructure.exchanges.bitget_connector import BitgetConnector
 
 logger = structlog.get_logger(__name__)
 cache = get_positions_cache()
@@ -272,16 +276,15 @@ def create_dashboard_router() -> APIRouter:
             spot_pnl = 0.0
 
             try:
-                # Get main account for real-time P&L
+                # Get main account for real-time P&L (MULTI-EXCHANGE SUPPORT)
                 main_account = await transaction_db.fetchrow("""
-                    SELECT id, api_key, secret_key, testnet
+                    SELECT id, exchange, api_key, secret_key, testnet, passphrase
                     FROM exchange_accounts
                     WHERE testnet = false AND is_active = true AND is_main = true
                     LIMIT 1
                 """)
 
                 if main_account:
-                    from infrastructure.exchanges.binance_connector import BinanceConnector
                     from infrastructure.security.encryption_service import EncryptionService
 
                     # Descriptografar as chaves API do banco de dados
@@ -290,6 +293,7 @@ def create_dashboard_router() -> APIRouter:
                     try:
                         api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
                         secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
+                        passphrase = encryption_service.decrypt_string(main_account['passphrase']) if main_account.get('passphrase') else None
                         logger.info(f"✅ API keys decrypted successfully for main account {main_account['id']}")
                     except Exception as decrypt_error:
                         logger.error(f"❌ Failed to decrypt API keys for main account: {decrypt_error}")
@@ -307,11 +311,20 @@ def create_dashboard_router() -> APIRouter:
                             detail="Exchange API keys are not configured correctly"
                         )
 
-                    connector = BinanceConnector(
-                        api_key=api_key,
-                        api_secret=secret_key,
-                        testnet=False
-                    )
+                    # Create connector based on exchange type (MULTI-EXCHANGE)
+                    exchange = main_account['exchange'].lower()
+                    testnet = main_account['testnet']
+
+                    if exchange == 'binance':
+                        connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bybit':
+                        connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bingx':
+                        connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bitget':
+                        connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
                     # Get real-time futures positions and P&L
                     positions_result = await connector.get_futures_positions()
@@ -413,9 +426,9 @@ def create_dashboard_router() -> APIRouter:
         try:
             logger.info(f"💰 Getting SPOT balances for account {exchange_account_id}")
 
-            # Get SPOT balances from Binance API in real-time
+            # Get SPOT balances from exchange API in real-time (MULTI-EXCHANGE SUPPORT)
             account_info = await transaction_db.fetchrow("""
-                SELECT id, api_key, secret_key, testnet
+                SELECT id, exchange, api_key, secret_key, testnet, passphrase
                 FROM exchange_accounts
                 WHERE id = $1 AND is_active = true
             """, exchange_account_id)
@@ -423,7 +436,6 @@ def create_dashboard_router() -> APIRouter:
             if not account_info:
                 raise HTTPException(status_code=404, detail="Exchange account not found or inactive")
 
-            from infrastructure.exchanges.binance_connector import BinanceConnector
             from infrastructure.pricing.binance_price_service import BinancePriceService
             from infrastructure.security.encryption_service import EncryptionService
 
@@ -433,6 +445,7 @@ def create_dashboard_router() -> APIRouter:
             try:
                 api_key = encryption_service.decrypt_string(account_info['api_key']) if account_info['api_key'] else None
                 secret_key = encryption_service.decrypt_string(account_info['secret_key']) if account_info['secret_key'] else None
+                passphrase = encryption_service.decrypt_string(account_info['passphrase']) if account_info.get('passphrase') else None
                 logger.info(f"✅ API keys decrypted successfully for account {exchange_account_id}")
             except Exception as decrypt_error:
                 logger.error(f"❌ Failed to decrypt API keys for account {exchange_account_id}: {decrypt_error}")
@@ -449,11 +462,20 @@ def create_dashboard_router() -> APIRouter:
                     detail="Exchange API keys are not configured correctly"
                 )
 
-            connector = BinanceConnector(
-                api_key=api_key,
-                api_secret=secret_key,
-                testnet=account_info['testnet']
-            )
+            # Create connector based on exchange type (MULTI-EXCHANGE)
+            exchange = account_info['exchange'].lower()
+            testnet = account_info['testnet']
+
+            if exchange == 'binance':
+                connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bybit':
+                connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bingx':
+                connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bitget':
+                connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+            else:
+                raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
             # Get SPOT account info from Binance
             account_result = await connector.get_account_info()

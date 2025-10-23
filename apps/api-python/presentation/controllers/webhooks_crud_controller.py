@@ -488,9 +488,9 @@ def create_webhooks_crud_router() -> APIRouter:
             # 🎯 Buscar dados REAIS da Binance (posições, P&L, alavancagem)
             binance_positions = {}
             try:
-                # Get main account for real-time data
+                # Get main account for real-time data (MULTI-EXCHANGE SUPPORT)
                 main_account = await transaction_db.fetchrow("""
-                    SELECT id, api_key, secret_key, testnet
+                    SELECT id, exchange, api_key, secret_key, testnet, passphrase
                     FROM exchange_accounts
                     WHERE testnet = false AND is_active = true AND is_main = true
                     LIMIT 1
@@ -498,6 +498,9 @@ def create_webhooks_crud_router() -> APIRouter:
 
                 if main_account:
                     from infrastructure.exchanges.binance_connector import BinanceConnector
+                    from infrastructure.exchanges.bybit_connector import BybitConnector
+                    from infrastructure.exchanges.bingx_connector import BingXConnector
+                    from infrastructure.exchanges.bitget_connector import BitgetConnector
                     from infrastructure.security.encryption_service import EncryptionService
 
                     # Descriptografar as chaves API do banco de dados
@@ -506,6 +509,7 @@ def create_webhooks_crud_router() -> APIRouter:
                     try:
                         api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
                         secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
+                        passphrase = encryption_service.decrypt_string(main_account['passphrase']) if main_account.get('passphrase') else None
                         logger.info(f"✅ API keys decrypted successfully for webhook test")
                     except Exception as decrypt_error:
                         logger.error(f"❌ Failed to decrypt API keys: {decrypt_error}")
@@ -522,11 +526,20 @@ def create_webhooks_crud_router() -> APIRouter:
                             detail="Exchange API keys are not configured correctly"
                         )
 
-                    connector = BinanceConnector(
-                        api_key=api_key,
-                        api_secret=secret_key,
-                        testnet=False
-                    )
+                    # Create connector based on exchange type (MULTI-EXCHANGE)
+                    exchange = main_account['exchange'].lower()
+                    testnet = main_account['testnet']
+
+                    if exchange == 'binance':
+                        connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bybit':
+                        connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bingx':
+                        connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                    elif exchange == 'bitget':
+                        connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
                     # Get real-time futures positions
                     positions_result = await connector.get_futures_positions()

@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../at
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
-import { useExchangeAccounts, useCreateExchangeAccount } from '@/hooks/useApiData'
+import { useExchangeAccounts, useCreateExchangeAccount, useDeleteExchangeAccount } from '@/hooks/useApiData'
 import { CreateExchangeAccountModal, ExchangeAccountData } from '../molecules/CreateExchangeAccountModal'
 import { ConfigureAccountModal, AccountConfiguration } from '../molecules/ConfigureAccountModal'
 import { ConfirmationModal } from '../molecules/ConfirmationModal'
@@ -23,6 +23,7 @@ const ExchangeAccountsPage: React.FC = () => {
   // API Data hooks
   const { data: accountsApi, isLoading: loadingAccounts, error: accountsError, refetch } = useExchangeAccounts()
   const createAccountMutation = useCreateExchangeAccount()
+  const deleteAccountMutation = useDeleteExchangeAccount()
 
   const testApiConnection = async () => {
     setApiStatus('testing')
@@ -118,9 +119,16 @@ const ExchangeAccountsPage: React.FC = () => {
     }
   }
 
-  const handleDeleteAccount = (accountId: string) => {
-    if (confirm('Tem certeza que deseja deletar esta conta?')) {
-      alert(`Conta ${accountId} deletada - implementação em breve!`)
+  const handleDeleteAccount = async (accountId: string) => {
+    const account = accounts.find(acc => acc.id === accountId)
+    if (confirm(`Tem certeza que deseja deletar a conta "${account?.name}"? Esta ação não pode ser desfeita.`)) {
+      try {
+        await deleteAccountMutation.mutateAsync(accountId)
+        alert(`✅ Conta "${account?.name}" deletada com sucesso!`)
+        refetch()
+      } catch (error: any) {
+        alert(`❌ Erro ao deletar conta: ${error.message || "Não foi possível deletar"}`)
+      }
     }
   }
 

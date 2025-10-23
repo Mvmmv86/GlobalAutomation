@@ -28,6 +28,16 @@ export const useCreateExchangeAccount = () => {
   })
 }
 
+export const useDeleteExchangeAccount = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: exchangeAccountService.deleteExchangeAccount,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['exchange-accounts'] })
+    },
+  })
+}
+
 // Webhooks hooks
 export const useWebhooks = () => {
   return useQuery({

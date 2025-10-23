@@ -6,6 +6,7 @@
 
 import { useEffect, useRef } from 'react'
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
 const POPULAR_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
 const DEFAULT_INTERVALS = ['1h', '4h']  // Intervalos mais comuns
 
@@ -48,7 +49,7 @@ export const useCandlesPrefetch = () => {
 
           // Criar promise de prefetch com limite dinâmico
           const promise = fetch(
-            `http://localhost:8000/api/v1/market/candles?symbol=${symbol}&interval=${interval}&limit=${optimalLimit}`,
+            `${API_URL}/api/v1/market/candles?symbol=${symbol}&interval=${interval}&limit=${optimalLimit}`,
             { method: 'GET', cache: 'default' }
           )
             .then(() => {

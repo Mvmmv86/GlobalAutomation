@@ -1,18 +1,44 @@
 #!/bin/bash
 # Script de sincronização automática a cada 30 segundos
 # Mantém os dados sempre atualizados
+# Busca automaticamente a conta principal (is_main=true)
 
-ACCOUNT_ID="0bad440b-f800-46ff-812f-5c359969885e"
 API_URL="http://localhost:8000/api/v1/sync/balances"
+API_BASE="http://localhost:8000/api/v1"
 
 echo "🚀 Iniciando sincronização automática a cada 30 segundos..."
 echo "📝 Para parar, pressione Ctrl+C"
-echo "🎯 Conta: $ACCOUNT_ID"
+echo ""
+
+# Função para buscar a conta principal
+get_main_account() {
+    ACCOUNTS_RESPONSE=$(curl -s "$API_BASE/exchange-accounts")
+    ACCOUNT_ID=$(echo "$ACCOUNTS_RESPONSE" | grep -o '"id":"[^"]*"' | grep -B1 '"is_main":true' | head -1 | cut -d'"' -f4)
+
+    if [ -z "$ACCOUNT_ID" ]; then
+        # Se não encontrar conta principal, pegar a primeira conta ativa
+        ACCOUNT_ID=$(echo "$ACCOUNTS_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
+
+    echo "$ACCOUNT_ID"
+}
+
+# Buscar conta principal na primeira execução
+ACCOUNT_ID=$(get_main_account)
+echo "🎯 Conta Principal ID: $ACCOUNT_ID"
 echo ""
 
 while true; do
     # Timestamp atual
     TIMESTAMP=$(date '+%H:%M:%S')
+
+    # A cada ciclo, verificar se a conta principal mudou
+    NEW_ACCOUNT_ID=$(get_main_account)
+    if [ "$NEW_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
+        ACCOUNT_ID="$NEW_ACCOUNT_ID"
+        echo "🔄 Conta principal atualizada: $ACCOUNT_ID"
+        echo ""
+    fi
 
     echo "🔄 $TIMESTAMP - Sincronizando dados da Binance..."
 

@@ -86,7 +86,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
 
   const calculatePnlPercentage = (position: Position, pnl: number): number => {
     // P&L % = (P&L / (Entry Price * Quantity)) * 100
-    const investmentValue = position.entryPrice * position.quantity
+    const investmentValue = position.entryPrice * position.size
     if (investmentValue === 0) return 0
     return (pnl / investmentValue) * 100
   }
@@ -128,7 +128,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
       } else if (position.exitPrice) {
         const direction = position.side.toUpperCase() === 'LONG' ? 1 : -1
         const priceDiff = position.exitPrice - position.entryPrice
-        return priceDiff * position.quantity * direction
+        return priceDiff * position.size * direction
       }
       return 0
     }
@@ -140,7 +140,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
     // Cálculo P&L: (Preço Atual - Preço Entrada) × Quantidade × Direção
     const direction = position.side.toUpperCase() === 'LONG' ? 1 : -1
     const priceDiff = currentPrice - position.entryPrice
-    const unrealizedPnl = priceDiff * position.quantity * direction
+    const unrealizedPnl = priceDiff * position.size * direction
 
     return unrealizedPnl
   }
@@ -367,7 +367,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
                           {position.side.toUpperCase()}
                         </Badge>
                       </td>
-                      <td className="px-2 py-1 text-right">{position.quantity}</td>
+                      <td className="px-2 py-1 text-right">{position.size}</td>
                       <td className="px-2 py-1 text-right">{formatPrice(position.entryPrice)}</td>
 
                       {/* Preço atual ou de saída */}

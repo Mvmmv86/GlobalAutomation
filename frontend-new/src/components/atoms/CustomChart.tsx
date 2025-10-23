@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
 import type { ChartPosition } from '@/hooks/useChartPositions'
 
+// Get API URL from environment variable
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+
 interface DraggableLine {
   id: string
   positionId: string
@@ -312,7 +315,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         // 🚀 PERFORMANCE: Limite dinâmico baseado no timeframe (optimized with cache)
         // 1m/5m = 500 candles | 1h = 720 | 1D = 730 (2 anos) | 1W = 520 (10 anos)
         const response = await fetch(
-          `http://localhost:8000/api/v1/market/candles?symbol=${symbol}&interval=${binanceInterval}&limit=${optimalLimit}`
+          `${API_URL}/api/v1/market/candles?symbol=${symbol}&interval=${binanceInterval}&limit=${optimalLimit}`
         )
 
         const data = await response.json()

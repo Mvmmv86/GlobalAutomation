@@ -18,40 +18,29 @@ class BinanceConnector:
     """Connector para Binance API"""
 
     def __init__(
-        self, api_key: str = None, api_secret: str = None, testnet: bool = False
+        self, api_key: str, api_secret: str, testnet: bool = False
     ):
         """
         Initialize Binance connector
 
         Args:
-            api_key: Binance API key
-            api_secret: Binance API secret
+            api_key: Binance API key (REQUIRED)
+            api_secret: Binance API secret (REQUIRED)
             testnet: Use testnet (default False for production)
         """
-        # Se não fornecidas, tentar pegar do ambiente
-        if not api_key:
-            api_key = os.getenv("BINANCE_API_KEY")
-        if not api_secret:
-            api_secret = os.getenv("BINANCE_SECRET_KEY") or os.getenv("BINANCE_API_SECRET")
+        # SECURITY: API keys são obrigatórias - SEM fallback para ambiente
+        if not api_key or not api_secret:
+            raise ValueError("API key and secret are required. No demo mode available.")
 
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
 
-        # Configurar client
-        if api_key and api_secret:
-            self.client = Client(
-                api_key=api_key, api_secret=api_secret, testnet=testnet
-            )
-            logger.info("✅ Binance connector initialized with REAL credentials", testnet=testnet)
-        else:
-            # Modo demo (sem API keys)
-            self.client = None
-            logger.warning("Binance connector initialized in DEMO mode (no API keys)")
-
-    def is_demo_mode(self) -> bool:
-        """Check if running in demo mode"""
-        return self.client is None
+        # Configurar client com credenciais reais
+        self.client = Client(
+            api_key=api_key, api_secret=api_secret, testnet=testnet
+        )
+        logger.info("✅ Binance connector initialized", testnet=testnet)
 
     async def normalize_quantity(self, symbol: str, quantity: float, is_futures: bool = False) -> float:
         """

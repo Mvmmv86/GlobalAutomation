@@ -17,7 +17,6 @@ from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
-from infrastructure.security.encryption_service import EncryptionService
 from infrastructure.pricing.binance_price_service import BinancePriceService
 
 logger = structlog.get_logger(__name__)
@@ -27,7 +26,6 @@ class SyncScheduler:
     """Scheduler para sincronização automática de dados das exchanges"""
 
     def __init__(self):
-        self.encryption_service = EncryptionService()
         self.is_running = False
         self._task = None
 
@@ -108,47 +106,20 @@ class SyncScheduler:
         """Cria connector para a exchange (MULTI-EXCHANGE SUPPORT)"""
         exchange = account['exchange'].lower()
 
-        from infrastructure.security.encryption_service import EncryptionService
-        encryption_service = EncryptionService()
-
-        # Usar as chaves do banco de dados
+        # API keys estão em PLAIN TEXT no banco (Supabase encryption at rest)
         api_key = account['api_key']
         secret_key = account['secret_key']
         passphrase = account.get('passphrase')
         testnet = account.get('testnet', False)
 
-        # Tentar descriptografar as credenciais
-        try:
-            if api_key and len(api_key) > 10:
-                api_key = encryption_service.decrypt_string(api_key)
-                logger.debug(f"✅ API key decrypted successfully for account {account['id']}")
-            if secret_key and len(secret_key) > 10:
-                secret_key = encryption_service.decrypt_string(secret_key)
-                logger.debug(f"✅ Secret key decrypted successfully for account {account['id']}")
-            if passphrase and len(passphrase) > 10:
-                passphrase = encryption_service.decrypt_string(passphrase)
-                logger.debug(f"✅ Passphrase decrypted successfully for account {account['id']}")
-        except Exception as e:
-            # ERRO CRÍTICO: Não conseguiu descriptografar as chaves do cliente
+        # Validar que as chaves existem
+        if not api_key or not secret_key:
             logger.error(
-                f"❌ CRITICAL: Failed to decrypt API keys for account {account['id']}",
-                error_type=type(e).__name__,
-                error_message=str(e),
+                f"❌ CRITICAL: API key or secret key is missing for account {account['id']}",
                 account_name=account.get('name', 'Unknown'),
                 user_id=account.get('user_id', 'Unknown')
             )
-            # NÃO fazer fallback para variáveis de ambiente - isso quebraria a escalabilidade
-            from infrastructure.security.encryption_service import EncryptionError
-            raise EncryptionError(f"Cannot decrypt API keys for account {account['id']}: {str(e)}")
-
-        # Validar que as chaves foram descriptografadas corretamente
-        if not api_key or len(api_key) < 10:
-            logger.error(
-                f"❌ CRITICAL: API key is empty or invalid after decryption for account {account['id']}",
-                account_name=account.get('name', 'Unknown'),
-                user_id=account.get('user_id', 'Unknown')
-            )
-            raise ValueError(f"Invalid API key for account {account['id']} - cannot access exchange API")
+            raise ValueError(f"Missing API credentials for account {account['id']}")
 
         # Create connector based on exchange type (MULTI-EXCHANGE)
         if exchange == 'binance':

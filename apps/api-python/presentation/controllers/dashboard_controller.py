@@ -264,7 +264,9 @@ def create_dashboard_router() -> APIRouter:
                     "exchange": balance["exchange_name"]
                 }
 
-                if account_type in ["FUTURES", "LINEAR", "UNIFIED"]:
+                # Case-insensitive comparison for account_type
+                account_type_upper = account_type.upper() if account_type else "SPOT"
+                if account_type_upper in ["FUTURES", "LINEAR", "UNIFIED"]:
                     futures_balance += usd_value
                     futures_assets.append(asset_info)
                 else:

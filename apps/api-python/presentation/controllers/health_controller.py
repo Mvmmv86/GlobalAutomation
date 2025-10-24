@@ -132,4 +132,36 @@ def create_health_router() -> APIRouter:
             "message": "Configure these IPs in your exchange API key settings"
         }
 
+    @router.get("/whitelist-ips")
+    async def get_whitelist_ips():
+        """
+        Get FIXED list of IPs for exchange API key whitelisting
+
+        Similar to Insilico Terminal, this provides a fixed list of IPs
+        that clients should add to their Binance/Bybit API key whitelist.
+
+        These IPs represent all possible server IPs (current + backups).
+        """
+        # Fixed list of IPs from our infrastructure
+        # Includes current + historical IPs to prevent breaking if IP changes
+        fixed_ips = [
+            "159.223.46.195",   # Singapore primary
+            "143.198.80.231",   # Singapore backup
+            "134.199.194.84",   # USA backup 1
+            "129.212.187.46",   # USA backup 2
+            "134.199.195.235",  # USA backup 3
+        ]
+
+        return {
+            "success": True,
+            "ips": fixed_ips,
+            "count": len(fixed_ips),
+            "message": "Add ALL these IPs to your exchange API key whitelist (separated by commas or spaces)",
+            "instructions": {
+                "binance": "Go to Binance → API Management → Edit Key → Restrict access to trusted IPs only → Paste all IPs separated by spaces",
+                "bybit": "Go to Bybit → API Management → Edit Key → IP restriction → Paste all IPs separated by commas",
+                "tip": "Whitelisting ALL IPs ensures your connection works even if our server IP changes"
+            }
+        }
+
     return router

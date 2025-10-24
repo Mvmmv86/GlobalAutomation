@@ -225,62 +225,20 @@ def create_dashboard_router() -> APIRouter:
                 logger.info("💰 Balances summary from CACHE")
                 return {"success": True, "data": cached_data, "from_cache": True}
 
-            logger.info("💰 Getting balances summary from DB/API")
+            logger.info("💰 Getting balances summary from BINANCE API (real-time)")
 
-            # Get exchange accounts balances
-            accounts_data = await transaction_db.fetch("""
-                SELECT
-                    ea.name as exchange_name,
-                    eab.account_type,
-                    eab.asset,
-                    eab.free_balance,
-                    eab.locked_balance,
-                    eab.total_balance,
-                    eab.usd_value
-                FROM exchange_account_balances eab
-                LEFT JOIN exchange_accounts ea ON eab.exchange_account_id = ea.id
-                WHERE ea.testnet = false
-                  AND ea.is_active = true
-                  AND eab.total_balance > 0
-                ORDER BY eab.usd_value DESC
-            """)
-
-            # Separate futures and spot balances
+            # Initialize variables
             futures_balance = 0
             spot_balance = 0
             futures_assets = []
             spot_assets = []
-
-            for balance in accounts_data:
-                account_type = balance["account_type"] or "SPOT"
-                usd_value = float(balance["usd_value"] or 0)
-
-                asset_info = {
-                    "asset": balance["asset"],
-                    "free": float(balance["free_balance"] or 0),
-                    "locked": float(balance["locked_balance"] or 0),
-                    "total": float(balance["total_balance"] or 0),
-                    "usd_value": usd_value,
-                    "exchange": balance["exchange_name"]
-                }
-
-                # Case-insensitive comparison for account_type
-                account_type_upper = account_type.upper() if account_type else "SPOT"
-                if account_type_upper in ["FUTURES", "LINEAR", "UNIFIED"]:
-                    futures_balance += usd_value
-                    futures_assets.append(asset_info)
-                else:
-                    spot_balance += usd_value
-                    spot_assets.append(asset_info)
-
-            # Get P&L from Binance API in real-time (like we do for balances)
             futures_pnl = 0.0
             spot_pnl = 0.0
 
             try:
-                # Get main account for real-time P&L (MULTI-EXCHANGE SUPPORT)
+                # Get main account for real-time data (MULTI-EXCHANGE SUPPORT)
                 main_account = await transaction_db.fetchrow("""
-                    SELECT id, exchange, api_key, secret_key, testnet, passphrase
+                    SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
                     FROM exchange_accounts
                     WHERE testnet = false AND is_active = true AND is_main = true
                     LIMIT 1
@@ -291,6 +249,7 @@ def create_dashboard_router() -> APIRouter:
                     api_key = main_account.get('api_key')
                     secret_key = main_account.get('secret_key')
                     passphrase = main_account.get('passphrase')
+                    exchange_name = main_account.get('name')
 
                     # Validate that keys exist
                     if not api_key or not secret_key:
@@ -317,7 +276,56 @@ def create_dashboard_router() -> APIRouter:
                     else:
                         raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
-                    # Get real-time futures positions and P&L
+                    # 1. GET SPOT BALANCES IN REAL-TIME
+                    logger.info("📊 Fetching SPOT balances from exchange...")
+                    spot_result = await connector.get_account_info()
+                    if spot_result.get('success'):
+                        balances = spot_result.get('balances', [])
+                        for balance in balances:
+                            free = float(balance.get('free', 0))
+                            locked = float(balance.get('locked', 0))
+                            total = free + locked
+
+                            # Only include assets with balance
+                            if total > 0:
+                                spot_assets.append({
+                                    "asset": balance.get('asset'),
+                                    "free": free,
+                                    "locked": locked,
+                                    "total": total,
+                                    "usd_value": 0.0,  # TODO: Calculate USD value
+                                    "exchange": exchange_name
+                                })
+                                spot_balance += total  # TODO: Calculate in USD
+
+                        logger.info(f"✅ SPOT: {len(spot_assets)} assets retrieved")
+
+                    # 2. GET FUTURES ACCOUNT IN REAL-TIME
+                    logger.info("🚀 Fetching FUTURES account from exchange...")
+                    futures_result = await connector.get_futures_account()
+                    if futures_result.get('success'):
+                        assets = futures_result.get('assets', [])
+                        for asset_data in assets:
+                            wallet_balance = float(asset_data.get('walletBalance', 0))
+                            unrealized_profit = float(asset_data.get('unrealizedProfit', 0))
+                            available_balance = float(asset_data.get('availableBalance', 0))
+
+                            # Only include assets with balance
+                            if wallet_balance != 0:
+                                futures_assets.append({
+                                    "asset": asset_data.get('asset'),
+                                    "free": available_balance,
+                                    "locked": wallet_balance - available_balance,
+                                    "total": wallet_balance,
+                                    "usd_value": wallet_balance + unrealized_profit,
+                                    "exchange": exchange_name
+                                })
+                                futures_balance += (wallet_balance + unrealized_profit)
+
+                        logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved")
+
+                    # 3. GET FUTURES POSITIONS P&L IN REAL-TIME
+                    logger.info("📈 Fetching FUTURES positions P&L...")
                     positions_result = await connector.get_futures_positions()
                     if positions_result.get('success', True):
                         positions = positions_result.get('positions', [])
@@ -329,7 +337,7 @@ def create_dashboard_router() -> APIRouter:
                             except (ValueError, TypeError):
                                 continue
 
-                    logger.info(f"Real-time futures P&L: ${futures_pnl:.2f}")
+                    logger.info(f"✅ Real-time futures P&L: ${futures_pnl:.2f}")
 
             except Exception as e:
                 logger.error(f"Error getting real-time P&L: {e}")
@@ -355,13 +363,13 @@ def create_dashboard_router() -> APIRouter:
                     "total_balance_usd": futures_balance,
                     "unrealized_pnl": futures_pnl,
                     "net_balance": futures_balance + futures_pnl,
-                    "assets": futures_assets[:5]  # Top 5 assets
+                    "assets": futures_assets  # ALL assets (no limit)
                 },
                 "spot": {
                     "total_balance_usd": spot_balance,
                     "unrealized_pnl": spot_pnl,
                     "net_balance": spot_balance + spot_pnl,
-                    "assets": spot_assets[:5]  # Top 5 assets
+                    "assets": spot_assets  # ALL assets (no limit)
                 },
                 "total": {
                     "balance_usd": futures_balance + spot_balance,
@@ -370,10 +378,12 @@ def create_dashboard_router() -> APIRouter:
                 }
             }
 
-            logger.info(f"💰 Balances calculated",
+            logger.info(f"💰 Real-time balances from exchange API",
                        futures_balance=futures_balance,
+                       futures_assets_count=len(futures_assets),
                        spot_balance=spot_balance,
-                       total_assets=len(accounts_data))
+                       spot_assets_count=len(spot_assets),
+                       total_pnl=futures_pnl + spot_pnl)
 
             # Store in cache with 3s TTL
             await cache.set(user_id, "balances_summary", result, ttl=3)

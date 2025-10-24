@@ -76,7 +76,8 @@ export const CreateExchangeAccountModal: React.FC<CreateExchangeAccountModalProp
     setLoadingIPs(true)
     try {
       const baseUrl = import.meta.env.VITE_API_URL || ''
-      const url = baseUrl ? `${baseUrl}/api/v1/health/public-ips` : '/api/v1/health/public-ips'
+      // Use /whitelist-ips instead of /public-ips to get FIXED list (like Insilico Terminal)
+      const url = baseUrl ? `${baseUrl}/api/v1/health/whitelist-ips` : '/api/v1/health/whitelist-ips'
 
       const response = await fetch(url)
       if (response.ok) {
@@ -84,7 +85,7 @@ export const CreateExchangeAccountModal: React.FC<CreateExchangeAccountModalProp
         setPublicIPs(data.ips || [])
       }
     } catch (error) {
-      console.error('Failed to fetch public IPs:', error)
+      console.error('Failed to fetch whitelist IPs:', error)
       setPublicIPs(['Unable to detect - Please contact support'])
     } finally {
       setLoadingIPs(false)

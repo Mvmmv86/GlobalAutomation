@@ -42,6 +42,10 @@ class BinanceConnector:
         )
         logger.info("✅ Binance connector initialized", testnet=testnet)
 
+    def is_demo_mode(self) -> bool:
+        """Legacy method - always returns False (demo mode removed)"""
+        return False
+
     async def normalize_quantity(self, symbol: str, quantity: float, is_futures: bool = False) -> float:
         """
         Normaliza quantidade baseado no stepSize do símbolo

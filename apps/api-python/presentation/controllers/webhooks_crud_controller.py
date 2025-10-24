@@ -501,30 +501,21 @@ def create_webhooks_crud_router() -> APIRouter:
                     from infrastructure.exchanges.bybit_connector import BybitConnector
                     from infrastructure.exchanges.bingx_connector import BingXConnector
                     from infrastructure.exchanges.bitget_connector import BitgetConnector
-                    from infrastructure.security.encryption_service import EncryptionService
 
-                    # Descriptografar as chaves API do banco de dados
-                    encryption_service = EncryptionService()
+                    # Get API keys from database (plain text - Supabase encryption at rest)
+                    api_key = main_account.get('api_key')
+                    secret_key = main_account.get('secret_key')
+                    passphrase = main_account.get('passphrase')
 
-                    try:
-                        api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
-                        secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
-                        passphrase = encryption_service.decrypt_string(main_account['passphrase']) if main_account.get('passphrase') else None
-                        logger.info(f"✅ API keys decrypted successfully for webhook test")
-                    except Exception as decrypt_error:
-                        logger.error(f"❌ Failed to decrypt API keys: {decrypt_error}")
-                        raise HTTPException(
-                            status_code=500,
-                            detail="Cannot decrypt exchange API keys. Please check your exchange account configuration."
-                        )
-
-                    # Validar que as chaves foram descriptografadas
+                    # Validate that keys exist
                     if not api_key or not secret_key:
-                        logger.error(f"❌ API keys are empty after decryption")
+                        logger.error(f"❌ API keys are empty for webhook test")
                         raise HTTPException(
                             status_code=500,
                             detail="Exchange API keys are not configured correctly"
                         )
+
+                    logger.info(f"✅ API keys retrieved for webhook test")
 
                     # Create connector based on exchange type (MULTI-EXCHANGE)
                     exchange = main_account['exchange'].lower()

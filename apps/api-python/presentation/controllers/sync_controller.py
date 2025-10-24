@@ -14,7 +14,6 @@ from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.pricing.binance_price_service import BinancePriceService
-from infrastructure.security.encryption_service import EncryptionService
 
 logger = structlog.get_logger(__name__)
 
@@ -22,7 +21,6 @@ logger = structlog.get_logger(__name__)
 def create_sync_router() -> APIRouter:
     """Create and configure the sync router"""
     router = APIRouter(prefix="/api/v1/sync", tags=["Sync"])
-    encryption_service = EncryptionService()
 
     def _calculate_unrealized_pnl(position, side):
         """Calculate unrealized PnL based on entry price, mark price, and position size"""
@@ -64,16 +62,8 @@ def create_sync_router() -> APIRouter:
             passphrase = account.get('passphrase')
             testnet = account.get('testnet', True)
 
-            # Try to decrypt credentials if they exist
-            if api_key and secret_key:
-                try:
-                    api_key = encryption_service.decrypt_string(api_key)
-                    secret_key = encryption_service.decrypt_string(secret_key)
-                    if passphrase:
-                        passphrase = encryption_service.decrypt_string(passphrase)
-                except Exception:
-                    # Fallback to plain text (backward compatibility)
-                    pass
+            # API keys are stored in plain text (Supabase encryption at rest)
+            # No decryption needed
 
             # Create appropriate connector
             if exchange == 'binance':

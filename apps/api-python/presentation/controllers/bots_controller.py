@@ -15,15 +15,11 @@ from slowapi.util import get_remote_address
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.services.bot_broadcast_service import BotBroadcastService
-from infrastructure.security.encryption_service import EncryptionService
 
 logger = structlog.get_logger(__name__)
 
 # Initialize rate limiter for webhook endpoints
 limiter = Limiter(key_func=get_remote_address)
-
-# Initialize encryption service
-encryption_service = EncryptionService()
 
 router = APIRouter(prefix="/api/v1/bots", tags=["bots"])
 

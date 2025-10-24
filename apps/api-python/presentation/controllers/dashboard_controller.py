@@ -285,31 +285,20 @@ def create_dashboard_router() -> APIRouter:
                 """)
 
                 if main_account:
-                    from infrastructure.security.encryption_service import EncryptionService
+                    # Get API keys from database (plain text - Supabase encryption at rest)
+                    api_key = main_account.get('api_key')
+                    secret_key = main_account.get('secret_key')
+                    passphrase = main_account.get('passphrase')
 
-                    # Descriptografar as chaves API do banco de dados
-                    encryption_service = EncryptionService()
-
-                    try:
-                        api_key = encryption_service.decrypt_string(main_account['api_key']) if main_account['api_key'] else None
-                        secret_key = encryption_service.decrypt_string(main_account['secret_key']) if main_account['secret_key'] else None
-                        passphrase = encryption_service.decrypt_string(main_account['passphrase']) if main_account.get('passphrase') else None
-                        logger.info(f"✅ API keys decrypted successfully for main account {main_account['id']}")
-                    except Exception as decrypt_error:
-                        logger.error(f"❌ Failed to decrypt API keys for main account: {decrypt_error}")
-                        # Se falhar a descriptografia, não pode puxar dados reais
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"Cannot decrypt exchange API keys. Please check your exchange account configuration."
-                        )
-
-                    # Validar que as chaves foram descriptografadas
+                    # Validate that keys exist
                     if not api_key or not secret_key:
-                        logger.error(f"❌ API keys are empty after decryption for main account")
+                        logger.error(f"❌ API keys are empty for main account {main_account['id']}")
                         raise HTTPException(
                             status_code=500,
                             detail="Exchange API keys are not configured correctly"
                         )
+
+                    logger.info(f"✅ API keys retrieved for main account {main_account['id']}")
 
                     # Create connector based on exchange type (MULTI-EXCHANGE)
                     exchange = main_account['exchange'].lower()
@@ -437,30 +426,21 @@ def create_dashboard_router() -> APIRouter:
                 raise HTTPException(status_code=404, detail="Exchange account not found or inactive")
 
             from infrastructure.pricing.binance_price_service import BinancePriceService
-            from infrastructure.security.encryption_service import EncryptionService
 
-            # Descriptografar as chaves API do banco de dados
-            encryption_service = EncryptionService()
+            # Get API keys from database (plain text - Supabase encryption at rest)
+            api_key = account_info.get('api_key')
+            secret_key = account_info.get('secret_key')
+            passphrase = account_info.get('passphrase')
 
-            try:
-                api_key = encryption_service.decrypt_string(account_info['api_key']) if account_info['api_key'] else None
-                secret_key = encryption_service.decrypt_string(account_info['secret_key']) if account_info['secret_key'] else None
-                passphrase = encryption_service.decrypt_string(account_info['passphrase']) if account_info.get('passphrase') else None
-                logger.info(f"✅ API keys decrypted successfully for account {exchange_account_id}")
-            except Exception as decrypt_error:
-                logger.error(f"❌ Failed to decrypt API keys for account {exchange_account_id}: {decrypt_error}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Cannot decrypt exchange API keys. Please check your exchange account configuration."
-                )
-
-            # Validar que as chaves foram descriptografadas
+            # Validate that keys exist
             if not api_key or not secret_key:
-                logger.error(f"❌ API keys are empty after decryption for account {exchange_account_id}")
+                logger.error(f"❌ API keys are empty for account {exchange_account_id}")
                 raise HTTPException(
                     status_code=500,
                     detail="Exchange API keys are not configured correctly"
                 )
+
+            logger.info(f"✅ API keys retrieved for account {exchange_account_id}")
 
             # Create connector based on exchange type (MULTI-EXCHANGE)
             exchange = account_info['exchange'].lower()

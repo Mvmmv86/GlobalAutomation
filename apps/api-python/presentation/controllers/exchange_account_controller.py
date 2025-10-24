@@ -6,14 +6,12 @@ import structlog
 from datetime import datetime
 
 from infrastructure.database.connection_transaction_mode import transaction_db
-from infrastructure.security.encryption_service import EncryptionService
 
 logger = structlog.get_logger(__name__)
 
 def create_exchange_account_router() -> APIRouter:
     """Create and configure the exchange account router"""
     router = APIRouter(prefix="/api/v1/exchange-accounts", tags=["Exchange Accounts"])
-    encryption_service = EncryptionService()
 
     @router.get("")
     async def get_exchange_accounts(request: Request):
@@ -146,17 +144,12 @@ def create_exchange_account_router() -> APIRouter:
             else:
                 logger.info("⏭️ STEP 2: Pulado (is_main=False)")
 
-            # Encrypt API credentials before storing
-            logger.info("🔍 STEP 3: Criptografando credenciais API...")
-            import time
-            start_encrypt = time.time()
-            encrypted_api_key = encryption_service.encrypt_string(api_key)
-            encrypted_secret_key = encryption_service.encrypt_string(secret_key)
-            encrypt_time = (time.time() - start_encrypt) * 1000
-            logger.info("✅ STEP 3: Credenciais criptografadas", encrypt_time_ms=f"{encrypt_time:.2f}ms")
+            # Store API credentials in plain text (Supabase encryption at rest)
+            logger.info("🔍 STEP 3: Armazenando credenciais (plain text - Supabase encryption)")
 
             # Create the exchange account
             logger.info("🔍 STEP 4: Inserindo no banco de dados...")
+            import time
             start_insert = time.time()
             account_id = await transaction_db.fetchval("""
                 INSERT INTO exchange_accounts (
@@ -165,7 +158,7 @@ def create_exchange_account_router() -> APIRouter:
                     created_at, updated_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
                 RETURNING id
-            """, name, exchange, testnet, True, encrypted_api_key, encrypted_secret_key, user_id, is_main)
+            """, name, exchange, testnet, True, api_key, secret_key, user_id, is_main)
             insert_time = (time.time() - start_insert) * 1000
             logger.info("✅ STEP 4: Conta inserida no banco", insert_time_ms=f"{insert_time:.2f}ms")
             

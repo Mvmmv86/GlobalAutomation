@@ -20,10 +20,9 @@ class OrderProcessor:
     """Processa ordens do TradingView para exchanges"""
 
     def __init__(self):
-        # IMPORTANTE: Usar REAL trading (testnet=False)
-        self.binance_connector = create_binance_connector(
-            testnet=False
-        )
+        # NOTE: Connector será criado dinamicamente para cada webhook
+        # baseado na conta do usuário que enviou o webhook
+        pass
 
     async def process_tradingview_webhook(
         self, webhook_payload: Dict[str, Any], webhook_delivery_id: Optional[int] = None, market_type: str = "spot"
@@ -441,4 +440,7 @@ class OrderProcessor:
 
 
 # Instância global do processador
-order_processor = OrderProcessor()
+# NOTE: Desabilitado temporariamente - requer refatoração para buscar
+# credenciais da conta do usuário ao invés de usar connector global
+# order_processor = OrderProcessor()
+order_processor = None  # Será criado sob demanda quando necessário

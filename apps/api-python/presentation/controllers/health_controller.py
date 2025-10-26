@@ -145,6 +145,7 @@ def create_health_router() -> APIRouter:
         # Fixed list of IPs from our infrastructure
         # Includes current + historical IPs to prevent breaking if IP changes
         fixed_ips = [
+            "178.128.19.69",    # Digital Ocean production (current)
             "159.223.46.195",   # Singapore primary
             "143.198.80.231",   # Singapore backup
             "134.199.194.84",   # USA backup 1

@@ -12,6 +12,7 @@ from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
+from infrastructure.pricing.binance_price_service import BinancePriceService
 
 logger = structlog.get_logger(__name__)
 cache = get_positions_cache()
@@ -276,6 +277,12 @@ def create_dashboard_router() -> APIRouter:
                     else:
                         raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
+                    # Initialize price service for USD conversion
+                    logger.info("💱 Initializing price service for USD conversion...")
+                    price_service = BinancePriceService(testnet=testnet)
+                    real_prices = await price_service.get_all_ticker_prices()
+                    logger.info(f"✅ Loaded {len(real_prices)} price pairs from Binance")
+
                     # 1. GET SPOT BALANCES IN REAL-TIME
                     logger.info("📊 Fetching SPOT balances from exchange...")
                     spot_result = await connector.get_account_info()
@@ -288,17 +295,22 @@ def create_dashboard_router() -> APIRouter:
 
                             # Only include assets with balance
                             if total > 0:
+                                asset = balance.get('asset')
+
+                                # Calculate USD value using price service
+                                usd_value = await price_service.calculate_usdt_value(asset, total, real_prices)
+
                                 spot_assets.append({
-                                    "asset": balance.get('asset'),
+                                    "asset": asset,
                                     "free": free,
                                     "locked": locked,
                                     "total": total,
-                                    "usd_value": 0.0,  # TODO: Calculate USD value
+                                    "usd_value": usd_value,
                                     "exchange": exchange_name
                                 })
-                                spot_balance += total  # TODO: Calculate in USD
+                                spot_balance += usd_value  # Sum in USD
 
-                        logger.info(f"✅ SPOT: {len(spot_assets)} assets retrieved")
+                        logger.info(f"✅ SPOT: {len(spot_assets)} assets retrieved, Total: ${spot_balance:.2f}")
 
                     # 2. GET FUTURES ACCOUNT IN REAL-TIME
                     logger.info("🚀 Fetching FUTURES account from exchange...")
@@ -312,17 +324,27 @@ def create_dashboard_router() -> APIRouter:
 
                             # Only include assets with balance
                             if wallet_balance != 0:
+                                asset = asset_data.get('asset')
+
+                                # Calculate USD value using price service
+                                # wallet_balance já é a quantidade do asset
+                                wallet_usd = await price_service.calculate_usdt_value(asset, wallet_balance, real_prices)
+
+                                # unrealized_profit em FUTURES já vem em USD (geralmente)
+                                # mas vamos garantir conversão se necessário
+                                total_usd = wallet_usd + unrealized_profit
+
                                 futures_assets.append({
-                                    "asset": asset_data.get('asset'),
+                                    "asset": asset,
                                     "free": available_balance,
                                     "locked": wallet_balance - available_balance,
                                     "total": wallet_balance,
-                                    "usd_value": wallet_balance + unrealized_profit,
+                                    "usd_value": total_usd,
                                     "exchange": exchange_name
                                 })
-                                futures_balance += (wallet_balance + unrealized_profit)
+                                futures_balance += total_usd
 
-                        logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved")
+                        logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved, Total: ${futures_balance:.2f}")
 
                     # 3. GET FUTURES POSITIONS P&L IN REAL-TIME
                     logger.info("📈 Fetching FUTURES positions P&L...")

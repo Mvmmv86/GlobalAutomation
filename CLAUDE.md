@@ -121,6 +121,21 @@ positions_result = await connector.get_futures_positions()
 # Calcula P&L em tempo real das posições
 ```
 
+### 🌐 URLs de Produção (Digital Ocean)
+
+| Serviço | URL | Descrição |
+|---------|-----|-----------|
+| **Frontend** | https://globalautomation-frontend-g9gmr.ondigitalocean.app | Interface Web (React) |
+| **Backend API** | https://globalautomation-tqu2m.ondigitalocean.app | API FastAPI |
+| **API Docs** | https://globalautomation-tqu2m.ondigitalocean.app/docs | Documentação Swagger |
+| **Health Check** | https://globalautomation-tqu2m.ondigitalocean.app/health | Status da API |
+| **Login** | https://globalautomation-frontend-g9gmr.ondigitalocean.app/login | Página de Login |
+
+**Endpoints Principais**:
+- Dashboard: `/api/v1/dashboard/balances`
+- Autenticação: `/api/v1/auth/login`
+- Sincronização: `/api/v1/sync/balances/{id}`
+
 ---
 
 ## 6. Comandos Essenciais

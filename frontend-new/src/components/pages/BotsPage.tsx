@@ -17,7 +17,7 @@ const BotsPage: React.FC = () => {
   const [isSubscribeModalOpen, setIsSubscribeModalOpen] = useState(false)
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false)
 
-  const userId = '550e8400-e29b-41d4-a716-446655440002'
+  const userId = 'd89ebba5-acfb-44b3-921e-8448dda599ba'
 
   const { data: availableBots = [], isLoading: loadingBots } = useQuery({
     queryKey: ['bots-available'],

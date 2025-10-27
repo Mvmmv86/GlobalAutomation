@@ -316,33 +316,32 @@ def create_dashboard_router() -> APIRouter:
                     logger.info("🚀 Fetching FUTURES account from exchange...")
                     futures_result = await connector.get_futures_account()
                     if futures_result.get('success'):
-                        assets = futures_result.get('assets', [])
+                        # FIX: Assets estão dentro de 'account' na resposta
+                        assets = futures_result.get('account', {}).get('assets', [])
                         for asset_data in assets:
                             wallet_balance = float(asset_data.get('walletBalance', 0))
                             unrealized_profit = float(asset_data.get('unrealizedProfit', 0))
                             available_balance = float(asset_data.get('availableBalance', 0))
 
-                            # Only include assets with balance
-                            if wallet_balance != 0:
+                            # Only include assets with balance (usar available ao invés de wallet)
+                            if available_balance != 0:
                                 asset = asset_data.get('asset')
 
-                                # Calculate USD value using price service
-                                # wallet_balance já é a quantidade do asset
-                                wallet_usd = await price_service.calculate_usdt_value(asset, wallet_balance, real_prices)
-
-                                # unrealized_profit em FUTURES já vem em USD (geralmente)
-                                # mas vamos garantir conversão se necessário
-                                total_usd = wallet_usd + unrealized_profit
+                                # FIX: Usar availableBalance (saldo realizado) ao invés de walletBalance
+                                # walletBalance = $357.70 (JÁ INCLUI P&L!)
+                                # availableBalance = $305.15 (SALDO REAL sem P&L)
+                                # O P&L ($53.95) é calculado separadamente em get_futures_positions
+                                balance_usd = await price_service.calculate_usdt_value(asset, available_balance, real_prices)
 
                                 futures_assets.append({
                                     "asset": asset,
                                     "free": available_balance,
                                     "locked": wallet_balance - available_balance,
                                     "total": wallet_balance,
-                                    "usd_value": total_usd,
+                                    "usd_value": balance_usd,  # Apenas saldo realizado
                                     "exchange": exchange_name
                                 })
-                                futures_balance += total_usd
+                                futures_balance += balance_usd  # Apenas saldo realizado
 
                         logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved, Total: ${futures_balance:.2f}")
 

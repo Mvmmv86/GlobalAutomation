@@ -21,7 +21,7 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename="/dashboard-admin">
         <ThemeProvider defaultTheme="dark">
           <AuthProvider>
             <AppRouter />

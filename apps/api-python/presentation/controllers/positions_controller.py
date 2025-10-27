@@ -23,9 +23,15 @@ def create_positions_router() -> APIRouter:
         operation_type: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        include_closed_from_api: Optional[bool] = False  # NOVO: buscar fechadas da API
     ):
-        """Get all positions with optional filtering"""
+        """
+        Get all positions with optional filtering
+
+        Se include_closed_from_api=true, busca posições fechadas diretamente da Binance API
+        e combina com as posições do banco de dados.
+        """
         try:
             # Build query with optional filters
             where_conditions = []
@@ -124,15 +130,118 @@ def create_positions_router() -> APIRouter:
                     "updated_at": position["updated_at"].isoformat() if position["updated_at"] else None
                 })
             
+            # NOVO: Se solicitado, buscar posições fechadas da API Binance
+            closed_from_api = []
+            if include_closed_from_api and (status == 'closed' or status is None):
+                try:
+                    # Se exchange_account_id especificado, buscar só dele
+                    if exchange_account_id:
+                        accounts_to_fetch = [exchange_account_id]
+                    else:
+                        # Buscar todas as contas ativas
+                        accounts_result = await transaction_db.fetch("""
+                            SELECT id, exchange, api_key, secret_key, testnet
+                            FROM exchange_accounts
+                            WHERE is_active = true
+                        """)
+                        accounts_to_fetch = [acc['id'] for acc in accounts_result]
+
+                    # Buscar posições fechadas de cada conta
+                    for account_id in accounts_to_fetch:
+                        account_data = await transaction_db.fetchrow("""
+                            SELECT id, exchange, api_key, secret_key, testnet, name
+                            FROM exchange_accounts
+                            WHERE id = $1
+                        """, account_id)
+
+                        if not account_data or account_data['exchange'].lower() != 'binance':
+                            continue
+
+                        # Criar connector
+                        from infrastructure.exchanges.binance_connector import BinanceConnector
+
+                        connector = BinanceConnector(
+                            api_key=account_data['api_key'],
+                            api_secret=account_data['secret_key'],
+                            testnet=account_data['testnet']
+                        )
+
+                        # Buscar posições fechadas
+                        closed_result = await connector.get_closed_positions_from_orders(
+                            symbol=symbol,
+                            limit=limit or 100
+                        )
+
+                        if closed_result['success']:
+                            for pos in closed_result['closed_positions']:
+                                # Converter timestamp de ms para datetime
+                                from datetime import datetime
+                                closed_from_api.append({
+                                    "id": f"api_{pos['symbol']}_{pos['entry_time']}",  # ID temporário
+                                    "external_id": None,
+                                    "symbol": pos['symbol'],
+                                    "side": pos['side'],
+                                    "status": "closed",
+                                    "size": pos['quantity'],
+                                    "entry_price": pos['entry_price'],
+                                    "mark_price": pos['exit_price'],
+                                    "exit_price": pos['exit_price'],
+                                    "unrealized_pnl": 0,
+                                    "realized_pnl": pos['realized_pnl'],
+                                    "initial_margin": 0,
+                                    "maintenance_margin": 0,
+                                    "leverage": 1,
+                                    "liquidation_price": 0,
+                                    "bankruptcy_price": 0,
+                                    "opened_at": datetime.fromtimestamp(pos['entry_time'] / 1000).isoformat(),
+                                    "closed_at": datetime.fromtimestamp(pos['close_time'] / 1000).isoformat(),
+                                    "last_update_at": datetime.fromtimestamp(pos['close_time'] / 1000).isoformat(),
+                                    "total_fees": 0,
+                                    "funding_fees": 0,
+                                    "exchange_account_id": account_id,
+                                    "exchange_account_name": account_data['name'],
+                                    "exchange": "binance",
+                                    "created_at": datetime.fromtimestamp(pos['entry_time'] / 1000).isoformat(),
+                                    "updated_at": datetime.fromtimestamp(pos['close_time'] / 1000).isoformat(),
+                                    "source": "api"  # Indicador de que veio da API
+                                })
+
+                    logger.info(f"✅ Retrieved {len(closed_from_api)} closed positions from Binance API")
+
+                except Exception as e:
+                    logger.error(f"Error fetching closed positions from API: {e}")
+                    # Continuar mesmo se falhar - retornar só as do banco
+
+            # Combinar posições do banco + API
+            all_positions = positions_list + closed_from_api
+
+            # Ordenar por data de criação (mais recentes primeiro)
+            all_positions.sort(key=lambda x: x.get('created_at') or '', reverse=True)
+
+            # Aplicar limit se especificado
+            if limit and len(all_positions) > limit:
+                all_positions = all_positions[:limit]
+
             logger.info("Positions retrieved",
-                       count=len(positions_list),
+                       count=len(all_positions),
+                       from_db=len(positions_list),
+                       from_api=len(closed_from_api),
                        status=status,
                        symbol=symbol,
                        exchange_account_id=exchange_account_id,
                        date_from=date_from,
                        date_to=date_to,
                        limit=limit)
-            return {"success": True, "data": positions_list}
+
+            return {
+                "success": True,
+                "data": all_positions,
+                "metadata": {
+                    "total": len(all_positions),
+                    "from_database": len(positions_list),
+                    "from_api": len(closed_from_api)
+                }
+            }
             
         except Exception as e:
             logger.error("Error retrieving positions", error=str(e), exc_info=True)

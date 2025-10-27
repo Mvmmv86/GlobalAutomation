@@ -533,6 +533,189 @@ class BinanceConnector:
             logger.error(f"Error getting futures positions: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_futures_income_history(self, income_type=None, symbol=None, start_time=None, end_time=None, limit=1000) -> Dict[str, Any]:
+        """
+        Busca histórico de income (P&L realizado, fees, funding, etc) da Binance Futures
+
+        Args:
+            income_type: Tipo de income (REALIZED_PNL, COMMISSION, FUNDING_FEE, etc)
+            symbol: Símbolo específico (opcional)
+            start_time: Timestamp de início em milissegundos (opcional)
+            end_time: Timestamp de fim em milissegundos (opcional)
+            limit: Limite de resultados (máximo 1000, padrão 1000)
+
+        Returns:
+            Dict com histórico de income ou erro
+
+        Income Types disponíveis:
+            - REALIZED_PNL: P&L realizado (posições fechadas)
+            - COMMISSION: Taxas de trading
+            - FUNDING_FEE: Taxas de funding
+            - TRANSFER: Transferências
+            - WELCOME_BONUS: Bônus
+            - INSURANCE_CLEAR: Liquidações
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "income_history": []
+                }
+
+            # Parâmetros para a API
+            params = {"limit": min(limit, 1000)}
+
+            if income_type:
+                params["incomeType"] = income_type
+            if symbol:
+                params["symbol"] = symbol
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+
+            # Chamar endpoint de income history da Binance
+            income_history = await asyncio.to_thread(
+                self.client.futures_income_history, **params
+            )
+
+            logger.info(f"📊 Retrieved {len(income_history)} income records",
+                       income_type=income_type,
+                       symbol=symbol)
+
+            return {
+                "success": True,
+                "demo": False,
+                "income_history": income_history
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting futures income history: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_closed_positions_from_orders(self, symbol=None, limit=500, start_time=None, end_time=None) -> Dict[str, Any]:
+        """
+        Reconstrói histórico de posições fechadas a partir das orders futures
+
+        Analisa orders de abertura e fechamento para identificar posições completas.
+        Útil para mostrar histórico de posições no frontend.
+
+        Args:
+            symbol: Filtrar por símbolo específico
+            limit: Número máximo de orders a buscar
+            start_time: Timestamp início em ms
+            end_time: Timestamp fim em ms
+
+        Returns:
+            Dict com posições fechadas identificadas
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "closed_positions": []
+                }
+
+            # Buscar todas as orders futures
+            orders_result = await self.get_futures_orders(
+                symbol=symbol,
+                limit=limit,
+                start_time=start_time,
+                end_time=end_time
+            )
+
+            if not orders_result['success']:
+                return orders_result
+
+            orders = orders_result['orders']
+
+            # Filtrar apenas orders executadas (FILLED)
+            filled_orders = [o for o in orders if o['status'] == 'FILLED']
+
+            # Agrupar por símbolo
+            positions_by_symbol = {}
+
+            for order in filled_orders:
+                symbol = order['symbol']
+                side = order['side']  # BUY ou SELL
+                qty = float(order['executedQty'])
+                price = float(order['avgPrice']) if order.get('avgPrice') else float(order.get('price', 0))
+                timestamp = order['time']
+                reduce_only = order.get('reduceOnly', False)
+
+                if symbol not in positions_by_symbol:
+                    positions_by_symbol[symbol] = {
+                        'open_qty': 0,
+                        'orders': []
+                    }
+
+                # Determinar se é abertura ou fechamento
+                if side == 'BUY':
+                    if reduce_only:
+                        # Fechando SHORT
+                        positions_by_symbol[symbol]['open_qty'] += qty
+                    else:
+                        # Abrindo LONG
+                        positions_by_symbol[symbol]['open_qty'] += qty
+                else:  # SELL
+                    if reduce_only:
+                        # Fechando LONG
+                        positions_by_symbol[symbol]['open_qty'] -= qty
+                    else:
+                        # Abrindo SHORT
+                        positions_by_symbol[symbol]['open_qty'] -= qty
+
+                positions_by_symbol[symbol]['orders'].append({
+                    'orderId': order['orderId'],
+                    'side': side,
+                    'qty': qty,
+                    'price': price,
+                    'timestamp': timestamp,
+                    'reduceOnly': reduce_only,
+                    'realized_pnl': float(order.get('realizedPnl', 0))
+                })
+
+            # Identificar posições que foram totalmente fechadas
+            closed_positions = []
+
+            for symbol, data in positions_by_symbol.items():
+                # Se qty final é próxima de zero, posição foi fechada
+                if abs(data['open_qty']) < 0.001:
+                    # Calcular P&L total
+                    total_realized_pnl = sum(o['realized_pnl'] for o in data['orders'])
+
+                    # Encontrar primeira e última order
+                    sorted_orders = sorted(data['orders'], key=lambda x: x['timestamp'])
+                    first_order = sorted_orders[0]
+                    last_order = sorted_orders[-1]
+
+                    closed_positions.append({
+                        'symbol': symbol,
+                        'side': 'LONG' if first_order['side'] == 'BUY' else 'SHORT',
+                        'entry_time': first_order['timestamp'],
+                        'close_time': last_order['timestamp'],
+                        'entry_price': first_order['price'],
+                        'exit_price': last_order['price'],
+                        'quantity': sum(o['qty'] for o in data['orders'] if not o['reduceOnly']),
+                        'realized_pnl': total_realized_pnl,
+                        'orders_count': len(data['orders']),
+                        'status': 'closed'
+                    })
+
+            logger.info(f"📊 Identified {len(closed_positions)} closed positions from {len(filled_orders)} orders")
+
+            return {
+                "success": True,
+                "demo": False,
+                "closed_positions": closed_positions
+            }
+
+        except Exception as e:
+            logger.error(f"Error reconstructing closed positions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def get_force_orders(self, symbol=None, start_time=None, end_time=None, limit=100) -> Dict[str, Any]:
         """
         Busca ordens de liquidação (force orders) da Binance

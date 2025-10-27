@@ -10,6 +10,7 @@ class PositionService {
     symbol?: string
     operationType?: string
     limit?: number
+    includeClosedFromApi?: boolean  // NOVO: buscar posições fechadas da Binance API
   }): Promise<Position[]> {
     try {
       const searchParams = new URLSearchParams()
@@ -25,6 +26,8 @@ class PositionService {
         searchParams.append('operation_type', params.operationType)
       }
       if (params?.limit) searchParams.append('limit', params.limit.toString())
+      // NOVO: Adicionar parâmetro para buscar posições fechadas da API
+      if (params?.includeClosedFromApi) searchParams.append('include_closed_from_api', 'true')
 
       const queryString = searchParams.toString()
       const endpoint = `/positions${queryString ? `?${queryString}` : ''}`

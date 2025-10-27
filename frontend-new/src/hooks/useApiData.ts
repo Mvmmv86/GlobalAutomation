@@ -125,9 +125,11 @@ export const usePositions = (params?: {
   symbol?: string
   operationType?: string
   limit?: number
+  includeClosedFromApi?: boolean  // NOVO: buscar fechadas da API
 }) => {
   // Configurar polling mais rápido para posições abertas
   const isOpenPositions = params?.status === 'open'
+  const isClosedPositions = params?.status === 'closed'
 
   return useQuery({
     queryKey: ['positions', params],
@@ -135,7 +137,7 @@ export const usePositions = (params?: {
     staleTime: isOpenPositions ? 3 * 1000 : 30 * 1000, // 3s para abertas, 30s para outras
     refetchInterval: isOpenPositions ? 5 * 1000 : undefined, // 5s polling para abertas
     refetchIntervalInBackground: isOpenPositions,
-    enabled: !!params?.exchangeAccountId || params?.status === 'closed', // Só funciona com conta selecionada ou fechadas
+    enabled: !!params?.exchangeAccountId || isClosedPositions, // Só funciona com conta selecionada ou fechadas
   })
 }
 

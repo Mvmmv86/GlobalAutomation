@@ -1154,6 +1154,329 @@ def create_orders_router() -> APIRouter:
                 detail=f"Erro ao criar trailing stop: {str(e)}"
             )
 
+    @router.get("")
+    async def get_orders(
+        request: Request,
+        operation_type: Optional[str] = None,  # spot ou futures
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        exchange_account_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: Optional[int] = 100
+    ):
+        """
+        Listar histórico de ordens (SPOT + FUTURES)
+
+        Filtros disponíveis:
+        - operation_type: spot, futures
+        - status: filled, pending, canceled, failed
+        - symbol: BTCUSDT, ETHUSDT, etc
+        - exchange_account_id: UUID da conta
+        - date_from: YYYY-MM-DD
+        - date_to: YYYY-MM-DD
+        - limit: número máximo de resultados (padrão 100)
+        """
+        try:
+            # Verificar se tabela orders existe
+            table_exists = await transaction_db.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'orders'
+                )
+            """)
+
+            if not table_exists:
+                return {
+                    "success": True,
+                    "data": [],
+                    "message": "Tabela de ordens ainda não existe"
+                }
+
+            # Build query with filters
+            where_conditions = []
+            params = []
+            param_count = 1
+
+            if status:
+                where_conditions.append(f"o.status = ${param_count}")
+                params.append(status)
+                param_count += 1
+
+            if symbol:
+                where_conditions.append(f"o.symbol ILIKE ${param_count}")
+                params.append(f"%{symbol}%")
+                param_count += 1
+
+            if exchange_account_id:
+                where_conditions.append(f"o.exchange_account_id = ${param_count}")
+                params.append(exchange_account_id)
+                param_count += 1
+
+            if date_from:
+                where_conditions.append(f"o.created_at >= ${param_count}")
+                date_obj = datetime.strptime(date_from, "%Y-%m-%d")
+                params.append(date_obj)
+                param_count += 1
+
+            if date_to:
+                where_conditions.append(f"o.created_at <= ${param_count}")
+                date_obj = datetime.strptime(date_to, "%Y-%m-%d")
+                params.append(date_obj)
+                param_count += 1
+
+            # Base WHERE clause
+            base_conditions = ["ea.is_active = true"]
+            all_conditions = base_conditions + where_conditions
+
+            where_clause = " AND ".join(all_conditions) if all_conditions else "1=1"
+
+            # Query com JOIN para pegar info da conta
+            query = f"""
+                SELECT
+                    o.id, o.client_order_id, o.external_id, o.source,
+                    o.symbol, o.side, o.type, o.status,
+                    o.quantity, o.price, o.stop_price,
+                    o.filled_quantity, o.fees_paid,
+                    o.time_in_force, o.reduce_only, o.post_only,
+                    o.created_at, o.updated_at,
+                    o.exchange_account_id,
+                    ea.name as exchange_account_name,
+                    ea.exchange
+                FROM orders o
+                LEFT JOIN exchange_accounts ea ON o.exchange_account_id = ea.id
+                WHERE {where_clause}
+                ORDER BY o.created_at DESC
+                LIMIT {limit}
+            """
+
+            orders = await transaction_db.fetch(query, *params)
+
+            # Format response
+            orders_list = []
+            for order in orders:
+                orders_list.append({
+                    "id": order["id"],
+                    "client_order_id": order["client_order_id"],
+                    "external_id": order["external_id"],
+                    "source": order["source"],
+                    "symbol": order["symbol"],
+                    "side": order["side"].upper() if order["side"] else None,
+                    "type": order["type"],
+                    "status": order["status"],
+                    "quantity": float(order["quantity"]) if order["quantity"] else 0,
+                    "price": float(order["price"]) if order["price"] else None,
+                    "stop_price": float(order["stop_price"]) if order["stop_price"] else None,
+                    "filled_quantity": float(order["filled_quantity"]) if order["filled_quantity"] else 0,
+                    "fees_paid": float(order["fees_paid"]) if order["fees_paid"] else 0,
+                    "time_in_force": order["time_in_force"],
+                    "reduce_only": order["reduce_only"],
+                    "post_only": order["post_only"],
+                    "created_at": order["created_at"].isoformat() if order["created_at"] else None,
+                    "updated_at": order["updated_at"].isoformat() if order["updated_at"] else None,
+                    "exchange_account_id": order["exchange_account_id"],
+                    "exchange_account_name": order["exchange_account_name"],
+                    "exchange": order["exchange"]
+                })
+
+            logger.info("Orders retrieved",
+                       count=len(orders_list),
+                       status=status,
+                       symbol=symbol,
+                       exchange_account_id=exchange_account_id)
+
+            return {
+                "success": True,
+                "data": orders_list,
+                "count": len(orders_list)
+            }
+
+        except Exception as e:
+            logger.error("Error retrieving orders", error=str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve orders: {str(e)}")
+
+    @router.get("/sync/{exchange_account_id}")
+    async def sync_orders_from_exchange(
+        exchange_account_id: str,
+        operation_type: str = "both",  # spot, futures, ou both
+        symbol: Optional[str] = None,
+        limit: int = 100,
+        request: Request = None
+    ):
+        """
+        Sincronizar ordens diretamente da Binance API
+
+        Busca histórico de orders da exchange e salva no banco de dados.
+        Útil para popular dados históricos que não foram salvos.
+        """
+        try:
+            # Buscar dados da conta
+            account = await transaction_db.fetchrow("""
+                SELECT
+                    id, exchange, api_key, secret_key, testnet
+                FROM exchange_accounts
+                WHERE id = $1 AND is_active = true
+            """, exchange_account_id)
+
+            if not account:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conta de exchange não encontrada ou inativa"
+                )
+
+            # Criar connector
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+
+            connector = BinanceConnector(
+                api_key=account['api_key'],
+                api_secret=account['secret_key'],
+                testnet=account['testnet']
+            )
+
+            synced_orders = []
+            errors = []
+
+            # Sincronizar SPOT orders
+            if operation_type in ['spot', 'both']:
+                try:
+                    spot_result = await connector.get_account_orders(
+                        symbol=symbol,
+                        limit=limit
+                    )
+
+                    if spot_result['success']:
+                        for order_data in spot_result['orders']:
+                            # Verificar se ordem já existe
+                            existing = await transaction_db.fetchval("""
+                                SELECT id FROM orders
+                                WHERE external_id = $1 AND exchange_account_id = $2
+                            """, str(order_data['orderId']), exchange_account_id)
+
+                            if not existing:
+                                # Salvar nova ordem
+                                order_id = await transaction_db.fetchval("""
+                                    INSERT INTO orders (
+                                        client_order_id,
+                                        source,
+                                        exchange_account_id,
+                                        external_id,
+                                        symbol,
+                                        side,
+                                        type,
+                                        status,
+                                        quantity,
+                                        price,
+                                        filled_quantity,
+                                        fees_paid,
+                                        time_in_force,
+                                        created_at,
+                                        updated_at
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+                                    RETURNING id
+                                """,
+                                    order_data.get('clientOrderId', f"sync_{order_data['orderId']}"),
+                                    'EXCHANGE_SYNC',
+                                    exchange_account_id,
+                                    str(order_data['orderId']),
+                                    order_data['symbol'],
+                                    order_data['side'].lower(),
+                                    order_data['type'].lower(),
+                                    order_data['status'].lower(),
+                                    Decimal(str(order_data['origQty'])),
+                                    Decimal(str(order_data['price'])) if order_data.get('price') else None,
+                                    Decimal(str(order_data['executedQty'])),
+                                    Decimal('0'),  # fees não disponíveis neste endpoint
+                                    order_data.get('timeInForce', 'GTC').lower(),
+                                    datetime.fromtimestamp(order_data['time'] / 1000),
+                                )
+                                synced_orders.append({'id': order_id, 'type': 'spot', 'symbol': order_data['symbol']})
+
+                    logger.info(f"✅ Synced {len(spot_result['orders'])} SPOT orders")
+                except Exception as e:
+                    logger.error(f"Error syncing SPOT orders: {e}")
+                    errors.append(f"SPOT: {str(e)}")
+
+            # Sincronizar FUTURES orders
+            if operation_type in ['futures', 'both']:
+                try:
+                    futures_result = await connector.get_futures_orders(
+                        symbol=symbol,
+                        limit=limit
+                    )
+
+                    if futures_result['success']:
+                        for order_data in futures_result['orders']:
+                            # Verificar se ordem já existe
+                            existing = await transaction_db.fetchval("""
+                                SELECT id FROM orders
+                                WHERE external_id = $1 AND exchange_account_id = $2
+                            """, str(order_data['orderId']), exchange_account_id)
+
+                            if not existing:
+                                # Salvar nova ordem
+                                order_id = await transaction_db.fetchval("""
+                                    INSERT INTO orders (
+                                        client_order_id,
+                                        source,
+                                        exchange_account_id,
+                                        external_id,
+                                        symbol,
+                                        side,
+                                        type,
+                                        status,
+                                        quantity,
+                                        price,
+                                        filled_quantity,
+                                        fees_paid,
+                                        time_in_force,
+                                        reduce_only,
+                                        created_at,
+                                        updated_at
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
+                                    RETURNING id
+                                """,
+                                    order_data.get('clientOrderId', f"sync_{order_data['orderId']}"),
+                                    'EXCHANGE_SYNC',
+                                    exchange_account_id,
+                                    str(order_data['orderId']),
+                                    order_data['symbol'],
+                                    order_data['side'].lower(),
+                                    order_data['type'].lower(),
+                                    order_data['status'].lower(),
+                                    Decimal(str(order_data['origQty'])),
+                                    Decimal(str(order_data['price'])) if order_data.get('price') else None,
+                                    Decimal(str(order_data['executedQty'])),
+                                    Decimal('0'),  # fees não disponíveis neste endpoint
+                                    order_data.get('timeInForce', 'GTC').lower(),
+                                    order_data.get('reduceOnly', False),
+                                    datetime.fromtimestamp(order_data['time'] / 1000),
+                                )
+                                synced_orders.append({'id': order_id, 'type': 'futures', 'symbol': order_data['symbol']})
+
+                    logger.info(f"✅ Synced {len(futures_result['orders'])} FUTURES orders")
+                except Exception as e:
+                    logger.error(f"Error syncing FUTURES orders: {e}")
+                    errors.append(f"FUTURES: {str(e)}")
+
+            return {
+                "success": True,
+                "data": {
+                    "synced_count": len(synced_orders),
+                    "synced_orders": synced_orders,
+                    "errors": errors if errors else None,
+                    "message": f"Sincronizado {len(synced_orders)} ordens da {account['exchange'].upper()}"
+                }
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Error syncing orders from exchange", error=str(e), exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Erro ao sincronizar ordens: {str(e)}"
+            )
+
     @router.get("/stats")
     async def get_orders_stats(request: Request):
         """Estatísticas de ordens"""

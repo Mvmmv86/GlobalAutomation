@@ -86,26 +86,43 @@ class Container:
         """Initialize database engine and session maker"""
         settings = get_settings()
 
+        # FIX: Usar NullPool para compatibilidade com PgBouncer (Supabase)
+        # PgBouncer em session mode não suporta pool grande de conexões
+        # Deixar o PgBouncer gerenciar o pool ao invés do SQLAlchemy
+        from sqlalchemy.pool import NullPool
+        import ssl
+
+        # SSL context para Supabase
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
         self._engine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
 
-            # ✅ POOL CONFIGURATION FOR HIGH CONCURRENCY WEBHOOKS
-            pool_size=20,              # Conexões persistentes (aumentado de 5)
-            max_overflow=30,           # Conexões adicionais em burst (aumentado de 10)
-            pool_timeout=60,           # Timeout aumentado para 60s (era 30s)
-            pool_recycle=3600,         # Reciclar conexões a cada 1h
-            pool_pre_ping=True,        # Verificar conexões antes de usar
+            # ✅ FIX PGBOUNCER: Usar NullPool ao invés de pool fixo
+            # Evita "MaxClientsInSessionMode: max clients reached"
+            poolclass=NullPool,  # PgBouncer gerencia conexões
 
-            # ✅ ASYNCPG OPTIMIZATIONS
+            # ✅ ASYNCPG OPTIMIZATIONS para PgBouncer
             connect_args={
-                "statement_cache_size": 0,
+                "ssl": ssl_ctx,
+                "statement_cache_size": 0,  # PgBouncer não suporta prepared statements
                 "prepared_statement_cache_size": 0,
                 "command_timeout": 60,  # Timeout de comandos SQL
                 "server_settings": {
                     "application_name": "tradingview_webhook_api",
                     "jit": "off",  # Desabilitar JIT para melhor previsibilidade
                 },
+            },
+            # Desabilitar cache de compilação
+            query_cache_size=0,
+            pool_pre_ping=False,  # Evitar pings que criam statements
+            # Execution options para evitar prepared statements
+            execution_options={
+                "postgresql_prepared": False,
+                "no_autoflush": True,
             },
         )
 

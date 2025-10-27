@@ -273,18 +273,18 @@ ADMIN_DIST_PATH = Path(__file__).parent.parent.parent / "frontend-admin" / "dist
 
 if ADMIN_DIST_PATH.exists():
     # Mount static files (CSS, JS, images)
-    app.mount("/admin/assets", StaticFiles(directory=str(ADMIN_DIST_PATH / "assets")), name="admin-assets")
+    app.mount("/dashboard-admin/assets", StaticFiles(directory=str(ADMIN_DIST_PATH / "assets")), name="admin-assets")
 
-    # Serve index.html for /admin and all sub-routes
+    # Serve index.html for /dashboard-admin and all sub-routes
     from fastapi.responses import FileResponse
 
-    @app.get("/admin{full_path:path}")
+    @app.get("/dashboard-admin{full_path:path}")
     async def serve_admin(full_path: str):
         """Serve admin panel SPA (Single Page Application)"""
         # Always return index.html for client-side routing
         return FileResponse(str(ADMIN_DIST_PATH / "index.html"))
 
-    logger.info(f"✅ Admin panel mounted at /admin (path: {ADMIN_DIST_PATH})")
+    logger.info(f"✅ Admin panel mounted at /dashboard-admin (path: {ADMIN_DIST_PATH})")
 else:
     logger.warning(f"⚠️ Admin panel not found at {ADMIN_DIST_PATH}")
 
@@ -299,7 +299,7 @@ async def root():
         "environment": settings.environment,
         "status": "healthy",
         "database": "asyncpg (pgBouncer transaction mode)",
-        "admin_panel": "/admin" if ADMIN_DIST_PATH.exists() else "not_available"
+        "admin_panel": "/dashboard-admin" if ADMIN_DIST_PATH.exists() else "not_available"
     }
 
 

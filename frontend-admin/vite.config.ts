@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
   console.log('🔧 Vite Config: Backend URL =', BACKEND_URL)
 
   return {
+  base: '/dashboard-admin',
   plugins: [react()],
   resolve: {
     alias: {

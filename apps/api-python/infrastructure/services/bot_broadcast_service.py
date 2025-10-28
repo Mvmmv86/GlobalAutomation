@@ -12,6 +12,9 @@ from uuid import UUID
 
 import structlog
 from infrastructure.exchanges.binance_connector import BinanceConnector
+from infrastructure.exchanges.bybit_connector import BybitConnector
+from infrastructure.exchanges.bingx_connector import BingXConnector
+from infrastructure.exchanges.bitget_connector import BitgetConnector
 
 logger = structlog.get_logger(__name__)
 
@@ -26,8 +29,9 @@ class BotBroadcastService:
         self.db = db_pool
         self.exchange_connectors = {
             "binance": BinanceConnector,
-            # Future: "bybit": BybitConnector,
-            # Future: "okx": OKXConnector,
+            "bybit": BybitConnector,
+            "bingx": BingXConnector,
+            "bitget": BitgetConnector,
         }
 
     async def broadcast_signal(

@@ -29,6 +29,7 @@ export interface ExchangeAccountData {
 const EXCHANGES = [
   { value: 'binance', label: 'Binance', requiresPassphrase: false },
   { value: 'bybit', label: 'Bybit', requiresPassphrase: false },
+  { value: 'bingx', label: 'BingX', requiresPassphrase: false },
   { value: 'okx', label: 'OKX', requiresPassphrase: true },
   { value: 'coinbase', label: 'Coinbase Pro', requiresPassphrase: true },
   { value: 'bitget', label: 'Bitget', requiresPassphrase: false },

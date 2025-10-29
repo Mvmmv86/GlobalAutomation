@@ -115,8 +115,8 @@ class BingXConnector:
                     "demo": True,
                 }
 
-            # Test connection with account info
-            result = await self._make_request("GET", "/openApi/spot/v1/account", signed=True)
+            # Test connection with account balance
+            result = await self._make_request("GET", "/openApi/spot/v1/account/balance", signed=True)
             
             if result.get("code") == 0:
                 return {
@@ -151,8 +151,8 @@ class BingXConnector:
                     ],
                 }
 
-            result = await self._make_request("GET", "/openApi/spot/v1/account", signed=True)
-            
+            result = await self._make_request("GET", "/openApi/spot/v1/account/balance", signed=True)
+
             if result.get("code") == 0:
                 account_data = result.get("data", {})
                 balances = account_data.get("balances", [])
@@ -324,8 +324,8 @@ class BingXConnector:
                     ]
                 }
 
-            result = await self._make_request("GET", "/openApi/spot/v1/account", signed=True)
-            
+            result = await self._make_request("GET", "/openApi/spot/v1/account/balance", signed=True)
+
             if result.get("code") == 0:
                 account_data = result.get("data", {})
                 raw_balances = account_data.get("balances", [])

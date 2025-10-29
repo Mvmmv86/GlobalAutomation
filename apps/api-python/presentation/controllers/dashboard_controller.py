@@ -221,12 +221,28 @@ def create_dashboard_router() -> APIRouter:
             # TODO: Extract user_id from JWT when auth is fully implemented
             user_id = 1
 
-            cached_data = await cache.get(user_id, "balances_summary")
+            # Get main account FIRST to include in cache key
+            main_account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                FROM exchange_accounts
+                WHERE testnet = false AND is_active = true AND is_main = true
+                LIMIT 1
+            """)
+
+            if not main_account:
+                return {
+                    "success": False,
+                    "error": "No main exchange account configured"
+                }
+
+            # Cache key includes exchange account ID to differentiate between exchanges
+            cache_key = f"balances_summary_{main_account['id']}"
+            cached_data = await cache.get(user_id, cache_key)
             if cached_data is not None:
-                logger.info("💰 Balances summary from CACHE")
+                logger.info(f"💰 Balances summary from CACHE (exchange={main_account['exchange']})")
                 return {"success": True, "data": cached_data, "from_cache": True}
 
-            logger.info("💰 Getting balances summary from BINANCE API (real-time)")
+            logger.info(f"💰 Getting balances summary from {main_account['exchange'].upper()} API (real-time)")
 
             # Initialize variables
             futures_balance = 0
@@ -237,14 +253,7 @@ def create_dashboard_router() -> APIRouter:
             spot_pnl = 0.0
 
             try:
-                # Get main account for real-time data (MULTI-EXCHANGE SUPPORT)
-                main_account = await transaction_db.fetchrow("""
-                    SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
-                    FROM exchange_accounts
-                    WHERE testnet = false AND is_active = true AND is_main = true
-                    LIMIT 1
-                """)
-
+                # main_account already fetched above for cache key
                 if main_account:
                     # Get API keys from database (plain text - Supabase encryption at rest)
                     api_key = main_account.get('api_key')
@@ -406,8 +415,8 @@ def create_dashboard_router() -> APIRouter:
                        spot_assets_count=len(spot_assets),
                        total_pnl=futures_pnl + spot_pnl)
 
-            # Store in cache with 3s TTL
-            await cache.set(user_id, "balances_summary", result, ttl=3)
+            # Store in cache with 3s TTL (using exchange-specific cache key)
+            await cache.set(user_id, cache_key, result, ttl=3)
 
             return {"success": True, "data": result, "from_cache": False}
 

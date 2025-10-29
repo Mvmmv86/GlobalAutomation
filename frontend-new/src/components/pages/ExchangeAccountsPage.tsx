@@ -77,7 +77,8 @@ const ExchangeAccountsPage: React.FC = () => {
 
   const handleSetAsMain = async (accountId: string) => {
     const account = accounts.find(acc => acc.id === accountId)
-    const currentMain = accounts.find(acc => acc.isMain && acc.exchange === account?.exchange)
+    // Buscar QUALQUER conta principal (não apenas da mesma exchange)
+    const currentMain = accounts.find(acc => acc.isMain)
 
     if (currentMain && currentMain.id !== accountId) {
       // Mostrar modal de confirmação

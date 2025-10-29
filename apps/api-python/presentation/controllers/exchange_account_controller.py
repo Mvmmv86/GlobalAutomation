@@ -218,13 +218,12 @@ def create_exchange_account_router() -> APIRouter:
                 param_count += 1
 
             if "is_main" in body:
-                # Se está marcando como principal, desmarcar todas as outras da mesma exchange
+                # Se está marcando como principal, desmarcar TODAS as outras contas (global)
                 if body["is_main"]:
                     await transaction_db.execute("""
                         UPDATE exchange_accounts
                         SET is_main = false
-                        WHERE exchange = (SELECT exchange FROM exchange_accounts WHERE id = $1)
-                        AND id != $1
+                        WHERE id != $1
                     """, account_id)
 
                 update_fields.append(f"is_main = ${param_count}")

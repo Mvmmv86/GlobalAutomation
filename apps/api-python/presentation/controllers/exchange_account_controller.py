@@ -119,8 +119,8 @@ def create_exchange_account_router() -> APIRouter:
             is_main = body.get("is_main", False)  # Nova opção para conta principal
             
             # Validate exchange type
-            if exchange not in ["binance", "bybit"]:
-                raise HTTPException(status_code=400, detail="Unsupported exchange. Use 'binance' or 'bybit'")
+            if exchange not in ["binance", "bybit", "bingx", "okx", "bitget", "coinbase"]:
+                raise HTTPException(status_code=400, detail=f"Unsupported exchange '{exchange}'. Supported: binance, bybit, bingx, okx, bitget, coinbase")
             
             # TODO: Get user_id from JWT token
             # For now, use a default user (first user in database)

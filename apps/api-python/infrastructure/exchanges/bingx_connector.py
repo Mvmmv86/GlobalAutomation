@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import hmac
 import time
+import json
 import aiohttp
 from decimal import Decimal
 from typing import Dict, Any, Optional
@@ -96,10 +97,22 @@ class BingXConnector:
         try:
             if method == "GET":
                 async with session.get(url, params=params, headers=headers) as response:
-                    return await response.json()
+                    response_text = await response.text()
+                    logger.info(f"BingX API Response (status={response.status}): {response_text[:500]}")
+                    try:
+                        return json.loads(response_text)
+                    except json.JSONDecodeError:
+                        logger.error(f"BingX returned non-JSON response: {response_text[:200]}")
+                        return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
             elif method == "POST":
                 async with session.post(url, json=params, headers=headers) as response:
-                    return await response.json()
+                    response_text = await response.text()
+                    logger.info(f"BingX API Response (status={response.status}): {response_text[:500]}")
+                    try:
+                        return json.loads(response_text)
+                    except json.JSONDecodeError:
+                        logger.error(f"BingX returned non-JSON response: {response_text[:200]}")
+                        return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
         except Exception as e:
             logger.error(f"BingX API request failed: {e}")
             raise

@@ -267,23 +267,58 @@ def create_sync_router() -> APIRouter:
             spot_result = await connector.get_account_info()
             spot_balances = spot_result.get('balances', []) if spot_result.get('success', True) else []
 
-            # Get FUTURES balances
+            # Get FUTURES balances (exchange-specific parsing)
             futures_result = await connector.get_futures_account()
             futures_balances = []
 
             if futures_result.get('success', True):
-                futures_account = futures_result.get('account', {})
-                # Extract assets from futures account
-                for asset_data in futures_account.get('assets', []):
-                    wallet_balance = float(asset_data.get('walletBalance', 0))
-                    available_balance = float(asset_data.get('availableBalance', 0))
-                    if wallet_balance > 0:
-                        futures_balances.append({
-                            'asset': asset_data.get('asset'),
-                            'free': available_balance,
-                            'locked': wallet_balance - available_balance,
-                            'total': wallet_balance
-                        })
+                # Binance format: has 'account' wrapper with 'assets' array
+                if 'account' in futures_result:
+                    futures_account = futures_result.get('account', {})
+                    # Extract assets from futures account
+                    for asset_data in futures_account.get('assets', []):
+                        wallet_balance = float(asset_data.get('walletBalance', 0))
+                        available_balance = float(asset_data.get('availableBalance', 0))
+                        if wallet_balance > 0:
+                            futures_balances.append({
+                                'asset': asset_data.get('asset'),
+                                'free': available_balance,
+                                'locked': wallet_balance - available_balance,
+                                'total': wallet_balance
+                            })
+                # BingX format: has 'balance' object directly
+                elif 'balance' in futures_result:
+                    balance_data = futures_result.get('balance', {})
+                    logger.info(f"🐛 DEBUG BingX balance_data: {balance_data}")
+
+                    # BingX returns: {"balance": {"asset": "USDT", "balance": "16.69", "availableMargin": "16.69", ...}}
+                    if isinstance(balance_data, dict):
+                        asset = balance_data.get('asset', 'USDT')
+                        balance_str = balance_data.get('balance', '0')
+                        equity_str = balance_data.get('equity', balance_str)
+                        available_str = balance_data.get('availableMargin', balance_str)
+
+                        # Convert strings to floats
+                        try:
+                            balance = float(balance_str)
+                            equity = float(equity_str)
+                            available = float(available_str)
+                        except (ValueError, TypeError) as e:
+                            logger.error(f"❌ Error converting BingX futures values: balance={balance_str}, equity={equity_str}, available={available_str}, error={e}")
+                            balance = 0.0
+                            equity = 0.0
+                            available = 0.0
+
+                        if balance > 0:
+                            futures_balances.append({
+                                'asset': asset,
+                                'free': available,
+                                'locked': balance - available,
+                                'total': balance
+                            })
+                            logger.info(f"✅ BingX FUTURES: {asset} = {balance} (available={available})")
+                    else:
+                        logger.error(f"❌ BingX balance_data is not a dict: {type(balance_data)}")
 
             # Combine all balances
             all_balances = [
@@ -295,18 +330,19 @@ def create_sync_router() -> APIRouter:
             synced_count = 0
             errors = []
 
-            # Track which assets we've seen from Binance for cleanup
-            binance_assets = set()
+            # Track which assets we've seen from exchange for cleanup
+            exchange_assets = set()
             for balance_data, account_type in all_balances:
                 asset = balance_data.get('asset')
                 if asset:
-                    binance_assets.add((asset, account_type))
+                    exchange_assets.add((asset, account_type))
 
-            # Initialize real-time price service (use real API, not testnet)
+            # Initialize real-time price service (use Binance for prices across all exchanges)
+            # Note: We use Binance prices as the reference market price for all exchanges
             price_service = BinancePriceService(testnet=False)  # Always use real prices
 
             # Get real-time prices from Binance API
-            logger.info("🔄 Fetching real-time prices from Binance...")
+            logger.info("🔄 Fetching real-time prices from Binance (reference market)...")
             real_prices = await price_service.get_all_ticker_prices()
 
             if not real_prices:
@@ -375,8 +411,8 @@ def create_sync_router() -> APIRouter:
                     errors.append(error_msg)
                     logger.error(error_msg)
 
-            # Clean up old balances that no longer exist in Binance
-            logger.info("🧹 Cleaning up old balances not found in Binance...")
+            # Clean up old balances that no longer exist in exchange
+            logger.info("🧹 Cleaning up old balances not found in exchange...")
 
             # Get all existing assets in database for this account
             existing_assets = await transaction_db.fetch("""
@@ -384,12 +420,12 @@ def create_sync_router() -> APIRouter:
                 WHERE exchange_account_id = $1
             """, account_id)
 
-            # Remove assets that are no longer in Binance
+            # Remove assets that are no longer in exchange
             removed_count = 0
             for db_asset in existing_assets:
                 asset_key = (db_asset['asset'], db_asset['account_type'])
-                if asset_key not in binance_assets:
-                    # This asset is in DB but not in Binance anymore - remove it
+                if asset_key not in exchange_assets:
+                    # This asset is in DB but not in exchange anymore - remove it
                     await transaction_db.execute("""
                         DELETE FROM exchange_account_balances
                         WHERE exchange_account_id = $1 AND asset = $2 AND account_type = $3

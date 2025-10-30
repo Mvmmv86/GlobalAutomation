@@ -519,18 +519,29 @@ class BingXConnector:
             result = await self._make_request("GET", "/openApi/swap/v2/user/balance", signed=True)
 
             if result.get("code") == 0:
-                balance_data = result.get("data", {})
+                # BingX API returns: {"data": {"balance": {"asset": "USDT", "balance": "16.69", ...}}}
+                data = result.get("data", {})
+                balance_info = data.get("balance", {})
+                logger.info(f"✅ BingX futures balance info: {balance_info}")
                 return {
                     "success": True,
                     "demo": False,
-                    "balance": balance_data
+                    "balance": balance_info  # Only the balance object
                 }
             else:
-                raise Exception(f"BingX API error: {result.get('msg')}")
+                error_msg = f"BingX API error: {result.get('msg')}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
 
         except Exception as e:
             logger.error(f"Error getting BingX futures account: {e}")
-            raise
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
     async def create_futures_order(
         self,

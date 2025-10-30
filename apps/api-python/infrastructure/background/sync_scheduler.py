@@ -140,8 +140,10 @@ class SyncScheduler:
 
             # Usar HTTP interno para evitar problemas de import
             import httpx
+            import os
+            api_port = os.getenv('PORT', '3001')  # Usa PORT do .env ou 3001 como padrão
             async with httpx.AsyncClient() as client:
-                response = await client.post(f"http://localhost:8080/api/v1/sync/balances/{account_id}")
+                response = await client.post(f"http://localhost:{api_port}/api/v1/sync/balances/{account_id}")
                 result = response.json()
 
             if result.get('success'):
@@ -159,8 +161,10 @@ class SyncScheduler:
 
             # Usar HTTP interno para evitar problemas de import
             import httpx
+            import os
+            api_port = os.getenv('PORT', '3001')  # Usa PORT do .env ou 3001 como padrão
             async with httpx.AsyncClient() as client:
-                response = await client.post(f"http://localhost:8080/api/v1/sync/positions/{account_id}")
+                response = await client.post(f"http://localhost:{api_port}/api/v1/sync/positions/{account_id}")
                 result = response.json()
 
             if result.get('success'):

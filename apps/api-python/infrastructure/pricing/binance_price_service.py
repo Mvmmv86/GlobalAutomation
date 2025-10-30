@@ -16,6 +16,7 @@ class BinancePriceService:
         self.testnet = testnet
         self.base_url = "https://testnet.binance.vision" if testnet else "https://api.binance.com"
         self._price_cache = {}
+        self._not_found_cache = set()  # Cache de moedas que não existem na Binance
 
     async def get_all_ticker_prices(self) -> Dict[str, float]:
         """Get all ticker prices from Binance API"""
@@ -52,6 +53,10 @@ class BinancePriceService:
         if asset == 'BRL':
             return amount * 0.18  # 1 BRL ≈ 0.18 USD
 
+        # Check if this asset was already marked as not found
+        if asset in self._not_found_cache:
+            return 0.0
+
         # Try to find price in different pair formats
         usdt_value = 0.0
 
@@ -78,8 +83,9 @@ class BinancePriceService:
             logger.debug(f"💰 {asset}: {amount} * {prices[symbol_usdc]} * {prices[usdc_usdt]} = ${usdt_value:.2f}")
             return usdt_value
 
-        # If no price found, log and return 0
-        logger.warning(f"⚠️ No price found for {asset}, setting value to $0")
+        # If no price found, add to cache and log once
+        self._not_found_cache.add(asset)
+        logger.warning(f"⚠️ No price found for {asset}, setting value to $0 (will skip in future)")
         return 0.0
 
     async def convert_balances_to_usdt(self, balances: list, account_type: str = "SPOT") -> Dict[str, Any]:

@@ -285,9 +285,10 @@ export const useAccountBalance = (accountId?: string) => {
       return null
     },
     enabled: !!accountId,
-    // 🚀 PERFORMANCE: Increased intervals to reduce API calls
-    staleTime: 20 * 1000, // 20 seconds
-    refetchInterval: 30 * 1000, // refresh every 30 seconds (reduced from 15s)
+    // 🚀 Aggressive refresh for real-time balance updates
+    staleTime: 0, // Always consider data stale
+    gcTime: 0, // No cache
+    refetchInterval: 10 * 1000, // Refetch every 10 seconds
     refetchIntervalInBackground: true,
   })
 }

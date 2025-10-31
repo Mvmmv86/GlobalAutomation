@@ -262,24 +262,23 @@ export const usePnlChart = (days: number = 7) => {
   })
 }
 
-// Account Balance Hook - for specific account
+// Account Balance Hook - for specific account (works with all exchanges)
 export const useAccountBalance = (accountId?: string) => {
   return useQuery({
     queryKey: ['account-balance', accountId],
     queryFn: async () => {
       if (!accountId) return null
       console.log('🔍 useAccountBalance: Fetching balance for account:', accountId)
-      const response = await apiClient.get(`/sync/balances/debug/${accountId}`)
+
+      // Use new multi-exchange endpoint
+      const response = await apiClient.get(`/dashboard/balances/${accountId}`)
       console.log('💰 useAccountBalance: Response received:', response)
 
-      // Extrair dados FUTURES da resposta
-      if (response.futures_api_response && response.futures_api_response.account) {
-        const futuresAccount = response.futures_api_response.account
+      if (response.success && response.data) {
         return {
-          futures_balance_usdt: parseFloat(futuresAccount.availableBalance || '0'),
-          futures_total_balance: parseFloat(futuresAccount.totalWalletBalance || '0'),
-          futures_unrealized_pnl: parseFloat(futuresAccount.totalUnrealizedProfit || '0'),
-          spot_balance_usdt: 0 // Não vamos usar SPOT por enquanto
+          futures_balance_usdt: response.data.futures_balance_usdt || 0,
+          spot_balance_usdt: response.data.spot_balance_usdt || 0,
+          total_balance_usdt: response.data.total_balance_usdt || 0
         }
       }
 

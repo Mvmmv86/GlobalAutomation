@@ -468,6 +468,91 @@ def create_dashboard_router() -> APIRouter:
                 except Exception as close_error:
                     logger.warning(f"⚠️ Error closing connector: {close_error}")
 
+    @router.get("/balances/{account_id}")
+    async def get_account_balances(request: Request, account_id: str):
+        """Get futures and spot balances for a specific account (works with all exchanges)"""
+        try:
+            user_id = 1
+            connector = None
+
+            # Get account info
+            account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                FROM exchange_accounts
+                WHERE id = $1 AND is_active = true
+            """, account_id)
+
+            if not account:
+                raise HTTPException(status_code=404, detail="Exchange account not found")
+
+            # Get API keys
+            api_key = account.get('api_key')
+            secret_key = account.get('secret_key')
+            passphrase = account.get('passphrase')
+            exchange = account['exchange'].lower()
+            testnet = account['testnet']
+
+            if not api_key or not secret_key:
+                raise HTTPException(status_code=500, detail="API keys not configured")
+
+            # Create connector based on exchange
+            if exchange == 'binance':
+                connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bybit':
+                connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bingx':
+                connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+            elif exchange == 'bitget':
+                connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+            else:
+                raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+            # Get balances based on exchange
+            futures_balance = 0
+            spot_balance = 0
+
+            if exchange == 'bingx':
+                # BingX: Use get_balances_separated()
+                balances_result = await connector.get_balances_separated()
+                if balances_result.get('success'):
+                    spot_balance = balances_result.get('spot_usdt', 0)
+                    futures_balance = balances_result.get('futures_usdt', 0)
+            else:
+                # Other exchanges: Use standard methods
+                # Get FUTURES balance
+                futures_result = await connector.get_futures_account()
+                if futures_result.get('success'):
+                    assets = futures_result.get('account', {}).get('assets', [])
+                    for asset_data in assets:
+                        available_balance = float(asset_data.get('availableBalance', 0))
+                        if available_balance != 0:
+                            futures_balance += available_balance
+
+                # Get SPOT balance (simplified - just return 0 for now)
+                spot_balance = 0
+
+            result = {
+                "futures_balance_usdt": futures_balance,
+                "spot_balance_usdt": spot_balance,
+                "total_balance_usdt": futures_balance + spot_balance
+            }
+
+            logger.info(f"💰 Balances for account {account_id} ({exchange}): FUTURES=${futures_balance:.2f}, SPOT=${spot_balance:.2f}")
+
+            return {"success": True, "data": result}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting account balances: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to get account balances: {str(e)}")
+        finally:
+            if connector is not None:
+                try:
+                    await connector.close()
+                except Exception as close_error:
+                    logger.warning(f"⚠️ Error closing connector: {close_error}")
+
     @router.get("/cache/metrics")
     async def get_cache_metrics(request: Request):
         """Get cache performance metrics for monitoring"""

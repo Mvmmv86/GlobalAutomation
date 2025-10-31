@@ -1317,18 +1317,19 @@ class BingXConnector:
         Get SPOT and FUTURES balances separated
 
         LOGIC:
-        1. Get WALLET TOTAL from /openApi/spot/v1/account/balance (returns FUND + SPOT combined)
-        2. Convert each asset to USDT using prices from:
+        1. Get FUND account balances from /openApi/fund/v1/account/balance
+        2. Get SPOT account balances from /openApi/spot/v1/account/balance
+        3. Combine FUND + SPOT balances (sum if asset exists in both)
+        4. Convert each asset to USDT using prices from:
            - 1st priority: Binance API (more liquid)
            - 2nd priority: BingX API
-        3. Filter: Only convert assets with estimated value > $1 USD (to save API calls)
-        4. Get FUTURES balance from /openApi/swap/v2/user/balance
-        5. Calculate: SPOT = WALLET_TOTAL - FUTURES
+        5. Get FUTURES balance from /openApi/swap/v2/user/balance
+        6. Calculate: SPOT = WALLET_TOTAL - FUTURES
 
         Returns:
             dict: {
                 "success": bool,
-                "wallet_total_usdt": float,  # Total wallet (FUND + SPOT)
+                "wallet_total_usdt": float,  # Total wallet (FUND + SPOT combined)
                 "spot_usdt": float,          # SPOT = WALLET - FUTURES
                 "futures_usdt": float,       # FUTURES balance
                 "assets_count": int,         # Number of assets converted
@@ -1347,28 +1348,52 @@ class BingXConnector:
                     "price_sources": {"BINANCE": 2, "STABLE": 1}
                 }
 
-            # 1. Get WALLET TOTAL (FUND + SPOT combined)
-            wallet_result = await self._make_request(
+            # 1. Get FUND account balances
+            fund_result = await self._make_request(
+                "GET",
+                "/openApi/fund/v1/account/balance",
+                signed=True
+            )
+
+            if fund_result.get("code") != 0:
+                raise Exception(f"Error getting FUND account: {fund_result.get('msg')}")
+
+            # 2. Get SPOT account balances
+            spot_result = await self._make_request(
                 "GET",
                 "/openApi/spot/v1/account/balance",
                 signed=True
             )
 
-            if wallet_result.get("code") != 0:
-                raise Exception(f"Error getting wallet: {wallet_result.get('msg')}")
+            if spot_result.get("code") != 0:
+                raise Exception(f"Error getting SPOT account: {spot_result.get('msg')}")
 
-            # 2. Convert each asset to USDT
-            balances = wallet_result.get("data", {}).get("balances", [])
+            # 3. Combine FUND + SPOT balances
+            # NOTE: FUND uses 'assets', SPOT uses 'balances'
+            fund_balances = fund_result.get("data", {}).get("assets", [])
+            spot_balances = spot_result.get("data", {}).get("balances", [])
+
+            # Merge balances (sum amounts if asset exists in both)
+            combined_balances = {}
+            for balance in fund_balances:
+                asset = balance.get("asset")
+                amount = float(balance.get("free", 0))
+                combined_balances[asset] = combined_balances.get(asset, 0) + amount
+
+            for balance in spot_balances:
+                asset = balance.get("asset")
+                amount = float(balance.get("free", 0))
+                combined_balances[asset] = combined_balances.get(asset, 0) + amount
+
+            logger.info(f"Processing {len(combined_balances)} unique assets from BingX FUND + SPOT")
+            logger.info(f"  FUND: {len(fund_balances)} assets, SPOT: {len(spot_balances)} assets")
+
+            # 4. Convert each asset to USDT
             wallet_total_usdt = 0
             assets_converted = 0
             price_sources = {"BINANCE": 0, "BINGX": 0, "STABLE": 0, "NOT_FOUND": 0}
 
-            logger.info(f"Processing {len(balances)} assets from BingX wallet")
-
-            for balance in balances:
-                asset = balance.get("asset")
-                amount = float(balance.get("free", 0))
-
+            for asset, amount in combined_balances.items():
                 if amount <= 0:
                     continue
 

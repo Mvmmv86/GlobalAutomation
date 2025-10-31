@@ -67,8 +67,13 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
   className
 }) => {
   // Get account balance for selected account
-  const { data: accountBalance } = useAccountBalance(selectedAccountId)
+  const { data: accountBalance, isLoading: isLoadingBalance } = useAccountBalance(selectedAccountId)
   const { data: spotBalancesData } = useSpotBalances(selectedAccountId)
+
+  // Debug log
+  React.useEffect(() => {
+    console.log('🔍 TradingPanel: accountBalance updated:', accountBalance, 'isLoading:', isLoadingBalance)
+  }, [accountBalance, isLoadingBalance])
 
   // Available balance for calculation
   const availableFuturesBalance = accountBalance?.futures_balance_usdt || 0
@@ -293,7 +298,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
               <div className="text-xs text-muted-foreground">
                 <span className="font-mono">
                   {operationType === 'futures' ?
-                    (accountBalance ? `${accountBalance.futures_balance_usdt?.toFixed(2) || '0.00'} USDT` : 'Carregando...') :
+                    (availableFuturesBalance > 0 ? `${availableFuturesBalance.toFixed(2)} USDT` : 'Carregando...') :
                     (spotBalancesData ? `${spotBalancesData.total_usd_value?.toFixed(2) || '0.00'} USDT` : 'Carregando...')
                   }
                 </span>

@@ -271,14 +271,15 @@ export const useAccountBalance = (accountId?: string) => {
       console.log('🔍 useAccountBalance: Fetching balance for account:', accountId)
 
       // Use new multi-exchange endpoint
-      const response = await apiClient.get(`/dashboard/balances/${accountId}`)
+      const response = await apiClient.get<any>(`/dashboard/balances/${accountId}`)
       console.log('💰 useAccountBalance: Response received:', response)
 
-      if (response.success && response.data) {
+      // apiClient.get() already extracts data from {success, data} response
+      if (response && typeof response === 'object') {
         return {
-          futures_balance_usdt: response.data.futures_balance_usdt || 0,
-          spot_balance_usdt: response.data.spot_balance_usdt || 0,
-          total_balance_usdt: response.data.total_balance_usdt || 0
+          futures_balance_usdt: response.futures_balance_usdt || 0,
+          spot_balance_usdt: response.spot_balance_usdt || 0,
+          total_balance_usdt: response.total_balance_usdt || 0
         }
       }
 

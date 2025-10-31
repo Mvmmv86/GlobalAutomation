@@ -151,12 +151,27 @@ class BingXConnector:
             return {"success": False, "error": str(e), "testnet": self.testnet}
 
     async def get_account_info(self) -> Dict[str, Any]:
-        """Get account information"""
+        """
+        Get wallet account information (FUND + SPOT combined)
+
+        NOTE: BingX API endpoint /openApi/spot/v1/account/balance returns the total
+        wallet balance which includes both FUND and SPOT accounts combined.
+        As of 2025, BingX has not provided a separate API endpoint to query SPOT
+        trading account separately from FUND account.
+
+        Returns:
+            dict: Account information with balances
+                - success: bool
+                - demo: bool
+                - account_type: "WALLET" (FUND+SPOT combined)
+                - balances: list of assets with free and locked amounts
+        """
         try:
             if self.is_demo_mode():
                 return {
+                    "success": True,
                     "demo": True,
-                    "account_type": "DEMO",
+                    "account_type": "WALLET",
                     "balances": [
                         {"asset": "USDT", "free": "1000.00", "locked": "0.00"},
                         {"asset": "BTC", "free": "0.02", "locked": "0.00"},
@@ -169,7 +184,7 @@ class BingXConnector:
             if result.get("code") == 0:
                 account_data = result.get("data", {})
                 balances = account_data.get("balances", [])
-                
+
                 # Filter only balances with value > 0
                 active_balances = [
                     b for b in balances
@@ -177,8 +192,9 @@ class BingXConnector:
                 ]
 
                 return {
+                    "success": True,
                     "demo": False,
-                    "account_type": "SPOT",
+                    "account_type": "WALLET",  # FUND + SPOT combined (BingX API limitation)
                     "can_trade": account_data.get("canTrade", True),
                     "can_withdraw": account_data.get("canWithdraw", True),
                     "can_deposit": account_data.get("canDeposit", True),
@@ -523,10 +539,26 @@ class BingXConnector:
                 data = result.get("data", {})
                 balance_info = data.get("balance", {})
                 logger.info(f"✅ BingX futures balance info: {balance_info}")
+
+                # FIX: Convert BingX format to Binance-compatible format for dashboard
+                # BingX returns single balance object, convert to assets array
+                assets = []
+                if balance_info:
+                    assets.append({
+                        "asset": balance_info.get("asset", "USDT"),
+                        "walletBalance": balance_info.get("balance", "0"),
+                        "unrealizedProfit": balance_info.get("unrealizedProfit", "0"),
+                        "availableBalance": balance_info.get("availableMargin", "0"),
+                        "marginBalance": balance_info.get("equity", "0")
+                    })
+
                 return {
                     "success": True,
                     "demo": False,
-                    "balance": balance_info  # Only the balance object
+                    "account": {  # ← FIX: Wrap in 'account' for compatibility
+                        "assets": assets
+                    },
+                    "balance": balance_info  # Keep original for backward compatibility
                 }
             else:
                 error_msg = f"BingX API error: {result.get('msg')}"
@@ -1196,6 +1228,219 @@ class BingXConnector:
             logger.error(f"Error normalizing quantity: {e}")
             # Return original quantity if normalization fails
             return quantity
+
+    async def _get_price_from_binance(self, asset: str) -> Optional[float]:
+        """
+        Get asset price from BINANCE (1st priority)
+
+        Args:
+            asset: Asset symbol (e.g., 'BTC', 'ETH')
+
+        Returns:
+            float: Price in USDT or None if not found
+        """
+        session = await self._get_session()
+        url = "https://api.binance.com/api/v3/ticker/price"
+
+        try:
+            async with session.get(url, params={"symbol": f"{asset}USDT"}) as response:
+                result = await response.json()
+                if "price" in result:
+                    return float(result["price"])
+        except Exception as e:
+            logger.debug(f"Could not get {asset} price from Binance: {e}")
+
+        return None
+
+    async def _get_price_from_bingx(self, asset: str) -> Optional[float]:
+        """
+        Get asset price from BINGX (2nd priority)
+
+        Args:
+            asset: Asset symbol (e.g., 'BTC', 'ETH')
+
+        Returns:
+            float: Price in USDT or None if not found
+        """
+        session = await self._get_session()
+        url = f"{self.base_url}/openApi/spot/v1/ticker/24hr"
+        timestamp = int(time.time() * 1000)
+        params = {"symbol": f"{asset}-USDT", "timestamp": timestamp}
+
+        try:
+            async with session.get(url, params=params) as response:
+                result = await response.json()
+                if result.get("code") == 0:
+                    data = result.get("data", [])
+                    if data and len(data) > 0:
+                        return float(data[0].get("lastPrice", 0))
+        except Exception as e:
+            logger.debug(f"Could not get {asset} price from BingX: {e}")
+
+        return None
+
+    async def _get_asset_price_in_usdt(self, asset: str) -> tuple[float, str]:
+        """
+        Get asset price in USDT
+
+        Priority order:
+        1. USDT/USDC always return 1.0
+        2. Try Binance first (more liquid)
+        3. Try BingX second
+        4. Return 0 if not found
+
+        Args:
+            asset: Asset symbol (e.g., 'AERO', 'BTC', 'ETH')
+
+        Returns:
+            tuple: (price, source) where source is 'STABLE', 'BINANCE', 'BINGX', or 'NOT_FOUND'
+        """
+        # Stablecoins always worth $1
+        if asset in ["USDT", "USDC"]:
+            return 1.0, "STABLE"
+
+        # Try Binance first (1st priority)
+        price = await self._get_price_from_binance(asset)
+        if price and price > 0:
+            return price, "BINANCE"
+
+        # Try BingX second (2nd priority)
+        price = await self._get_price_from_bingx(asset)
+        if price and price > 0:
+            return price, "BINGX"
+
+        # Not found
+        return 0, "NOT_FOUND"
+
+    async def get_balances_separated(self) -> Dict[str, Any]:
+        """
+        Get SPOT and FUTURES balances separated
+
+        LOGIC:
+        1. Get WALLET TOTAL from /openApi/spot/v1/account/balance (returns FUND + SPOT combined)
+        2. Convert each asset to USDT using prices from:
+           - 1st priority: Binance API (more liquid)
+           - 2nd priority: BingX API
+        3. Filter: Only convert assets with estimated value > $1 USD (to save API calls)
+        4. Get FUTURES balance from /openApi/swap/v2/user/balance
+        5. Calculate: SPOT = WALLET_TOTAL - FUTURES
+
+        Returns:
+            dict: {
+                "success": bool,
+                "wallet_total_usdt": float,  # Total wallet (FUND + SPOT)
+                "spot_usdt": float,          # SPOT = WALLET - FUTURES
+                "futures_usdt": float,       # FUTURES balance
+                "assets_count": int,         # Number of assets converted
+                "price_sources": dict        # Count by source (BINANCE, BINGX, STABLE)
+            }
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "wallet_total_usdt": 1000.00,
+                    "spot_usdt": 950.00,
+                    "futures_usdt": 50.00,
+                    "assets_count": 3,
+                    "price_sources": {"BINANCE": 2, "STABLE": 1}
+                }
+
+            # 1. Get WALLET TOTAL (FUND + SPOT combined)
+            wallet_result = await self._make_request(
+                "GET",
+                "/openApi/spot/v1/account/balance",
+                signed=True
+            )
+
+            if wallet_result.get("code") != 0:
+                raise Exception(f"Error getting wallet: {wallet_result.get('msg')}")
+
+            # 2. Convert each asset to USDT
+            balances = wallet_result.get("data", {}).get("balances", [])
+            wallet_total_usdt = 0
+            assets_converted = 0
+            price_sources = {"BINANCE": 0, "BINGX": 0, "STABLE": 0, "NOT_FOUND": 0}
+
+            logger.info(f"Processing {len(balances)} assets from BingX wallet")
+
+            for balance in balances:
+                asset = balance.get("asset")
+                amount = float(balance.get("free", 0))
+
+                if amount <= 0:
+                    continue
+
+                # Get price with source tracking
+                price, source = await self._get_asset_price_in_usdt(asset)
+                value_usdt = amount * price
+
+                # Only count assets with value (price found)
+                if price > 0:
+                    wallet_total_usdt += value_usdt
+                    price_sources[source] += 1
+
+                    # Only count as "converted" if value >= $1
+                    if value_usdt >= 1.0:
+                        assets_converted += 1
+                        logger.debug(f"{asset}: {amount:.8f} @ ${price:.2f} ({source}) = ${value_usdt:.2f}")
+
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.05)
+
+            logger.info(
+                f"Wallet total: ${wallet_total_usdt:.2f} "
+                f"({assets_converted} assets > $1, "
+                f"Binance: {price_sources['BINANCE']}, "
+                f"BingX: {price_sources['BINGX']}, "
+                f"Stable: {price_sources['STABLE']})"
+            )
+
+            # 3. Get FUTURES balance
+            futures_result = await self._make_request(
+                "GET",
+                "/openApi/swap/v2/user/balance",
+                signed=True
+            )
+
+            futures_balance = 0
+            if futures_result.get("code") == 0:
+                futures_balance = float(
+                    futures_result.get("data", {}).get("balance", {}).get("balance", 0)
+                )
+                logger.info(f"Futures balance: ${futures_balance:.2f}")
+            else:
+                logger.warning(f"Could not get futures balance: {futures_result.get('msg')}")
+
+            # 4. Calculate SPOT = WALLET - FUTURES
+            spot_balance = wallet_total_usdt - futures_balance
+
+            logger.info(f"Final balances - SPOT: ${spot_balance:.2f}, FUTURES: ${futures_balance:.2f}")
+
+            return {
+                "success": True,
+                "demo": False,
+                "wallet_total_usdt": round(wallet_total_usdt, 2),
+                "spot_usdt": round(spot_balance, 2),
+                "futures_usdt": round(futures_balance, 2),
+                "assets_count": assets_converted,
+                "price_sources": {
+                    k: v for k, v in price_sources.items() if k != "NOT_FOUND"
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting separated balances: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "wallet_total_usdt": 0,
+                "spot_usdt": 0,
+                "futures_usdt": 0,
+                "assets_count": 0,
+                "price_sources": {}
+            }
 
     async def close(self):
         """Close aiohttp session"""

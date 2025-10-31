@@ -292,67 +292,101 @@ def create_dashboard_router() -> APIRouter:
                     real_prices = await price_service.get_all_ticker_prices()
                     logger.info(f"✅ Loaded {len(real_prices)} price pairs from Binance")
 
-                    # 1. GET SPOT BALANCES IN REAL-TIME
-                    logger.info("📊 Fetching SPOT balances from exchange...")
-                    spot_result = await connector.get_account_info()
-                    if spot_result.get('success'):
-                        balances = spot_result.get('balances', [])
-                        for balance in balances:
-                            free = float(balance.get('free', 0))
-                            locked = float(balance.get('locked', 0))
-                            total = free + locked
+                    # 1. GET SPOT AND FUTURES BALANCES IN REAL-TIME
+                    # BingX requires special handling with get_balances_separated()
+                    if exchange == 'bingx':
+                        logger.info("📊 Fetching BingX balances (SPOT + FUTURES) using separated method...")
+                        balances_result = await connector.get_balances_separated()
 
-                            # Only include assets with balance
-                            if total > 0:
-                                asset = balance.get('asset')
+                        if balances_result.get('success'):
+                            # Get SPOT balance (already in USD from BingX connector)
+                            spot_balance = balances_result.get('spot_usdt', 0)
+                            spot_assets.append({
+                                "asset": "USDT",
+                                "free": spot_balance,
+                                "locked": 0,
+                                "total": spot_balance,
+                                "usd_value": spot_balance,
+                                "exchange": exchange_name
+                            })
+                            logger.info(f"✅ SPOT: ${spot_balance:.2f} (calculated from wallet)")
 
-                                # Calculate USD value using price service
-                                usd_value = await price_service.calculate_usdt_value(asset, total, real_prices)
+                            # Get FUTURES balance (already in USD from BingX connector)
+                            futures_balance = balances_result.get('futures_usdt', 0)
+                            futures_assets.append({
+                                "asset": "USDT",
+                                "free": futures_balance,
+                                "locked": 0,
+                                "total": futures_balance,
+                                "usd_value": futures_balance,
+                                "exchange": exchange_name
+                            })
+                            logger.info(f"✅ FUTURES: ${futures_balance:.2f}")
+                        else:
+                            logger.error(f"❌ Failed to get BingX balances: {balances_result.get('error')}")
 
-                                spot_assets.append({
-                                    "asset": asset,
-                                    "free": free,
-                                    "locked": locked,
-                                    "total": total,
-                                    "usd_value": usd_value,
-                                    "exchange": exchange_name
-                                })
-                                spot_balance += usd_value  # Sum in USD
+                    else:
+                        # For other exchanges (Binance, Bybit, Bitget), use normal methods
+                        logger.info("📊 Fetching SPOT balances from exchange...")
+                        spot_result = await connector.get_account_info()
+                        if spot_result.get('success'):
+                            balances = spot_result.get('balances', [])
+                            for balance in balances:
+                                free = float(balance.get('free', 0))
+                                locked = float(balance.get('locked', 0))
+                                total = free + locked
 
-                        logger.info(f"✅ SPOT: {len(spot_assets)} assets retrieved, Total: ${spot_balance:.2f}")
+                                # Only include assets with balance
+                                if total > 0:
+                                    asset = balance.get('asset')
 
-                    # 2. GET FUTURES ACCOUNT IN REAL-TIME
-                    logger.info("🚀 Fetching FUTURES account from exchange...")
-                    futures_result = await connector.get_futures_account()
-                    if futures_result.get('success'):
-                        # FIX: Assets estão dentro de 'account' na resposta
-                        assets = futures_result.get('account', {}).get('assets', [])
-                        for asset_data in assets:
-                            wallet_balance = float(asset_data.get('walletBalance', 0))
-                            unrealized_profit = float(asset_data.get('unrealizedProfit', 0))
-                            available_balance = float(asset_data.get('availableBalance', 0))
+                                    # Calculate USD value using price service
+                                    usd_value = await price_service.calculate_usdt_value(asset, total, real_prices)
 
-                            # Only include assets with balance (usar available ao invés de wallet)
-                            if available_balance != 0:
-                                asset = asset_data.get('asset')
+                                    spot_assets.append({
+                                        "asset": asset,
+                                        "free": free,
+                                        "locked": locked,
+                                        "total": total,
+                                        "usd_value": usd_value,
+                                        "exchange": exchange_name
+                                    })
+                                    spot_balance += usd_value  # Sum in USD
 
-                                # FIX: Usar availableBalance (saldo realizado) ao invés de walletBalance
-                                # walletBalance = $357.70 (JÁ INCLUI P&L!)
-                                # availableBalance = $305.15 (SALDO REAL sem P&L)
-                                # O P&L ($53.95) é calculado separadamente em get_futures_positions
-                                balance_usd = await price_service.calculate_usdt_value(asset, available_balance, real_prices)
+                            logger.info(f"✅ SPOT: {len(spot_assets)} assets retrieved, Total: ${spot_balance:.2f}")
 
-                                futures_assets.append({
-                                    "asset": asset,
-                                    "free": available_balance,
-                                    "locked": wallet_balance - available_balance,
-                                    "total": wallet_balance,
-                                    "usd_value": balance_usd,  # Apenas saldo realizado
-                                    "exchange": exchange_name
-                                })
-                                futures_balance += balance_usd  # Apenas saldo realizado
+                        # 2. GET FUTURES ACCOUNT IN REAL-TIME
+                        logger.info("🚀 Fetching FUTURES account from exchange...")
+                        futures_result = await connector.get_futures_account()
+                        if futures_result.get('success'):
+                            # FIX: Assets estão dentro de 'account' na resposta
+                            assets = futures_result.get('account', {}).get('assets', [])
+                            for asset_data in assets:
+                                wallet_balance = float(asset_data.get('walletBalance', 0))
+                                unrealized_profit = float(asset_data.get('unrealizedProfit', 0))
+                                available_balance = float(asset_data.get('availableBalance', 0))
 
-                        logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved, Total: ${futures_balance:.2f}")
+                                # Only include assets with balance (usar available ao invés de wallet)
+                                if available_balance != 0:
+                                    asset = asset_data.get('asset')
+
+                                    # FIX: Usar availableBalance (saldo realizado) ao invés de walletBalance
+                                    # walletBalance = $357.70 (JÁ INCLUI P&L!)
+                                    # availableBalance = $305.15 (SALDO REAL sem P&L)
+                                    # O P&L ($53.95) é calculado separadamente em get_futures_positions
+                                    balance_usd = await price_service.calculate_usdt_value(asset, available_balance, real_prices)
+
+                                    futures_assets.append({
+                                        "asset": asset,
+                                        "free": available_balance,
+                                        "locked": wallet_balance - available_balance,
+                                        "total": wallet_balance,
+                                        "usd_value": balance_usd,  # Apenas saldo realizado
+                                        "exchange": exchange_name
+                                    })
+                                    futures_balance += balance_usd  # Apenas saldo realizado
+
+                            logger.info(f"✅ FUTURES: {len(futures_assets)} assets retrieved, Total: ${futures_balance:.2f}")
 
                     # 3. GET FUTURES POSITIONS P&L IN REAL-TIME
                     logger.info("📈 Fetching FUTURES positions P&L...")

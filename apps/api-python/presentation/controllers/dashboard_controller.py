@@ -251,6 +251,7 @@ def create_dashboard_router() -> APIRouter:
             spot_assets = []
             futures_pnl = 0.0
             spot_pnl = 0.0
+            connector = None  # Initialize connector to None for cleanup
 
             try:
                 # main_account already fetched above for cache key
@@ -285,12 +286,6 @@ def create_dashboard_router() -> APIRouter:
                         connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
                     else:
                         raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
-
-                    # Initialize price service for USD conversion
-                    logger.info("💱 Initializing price service for USD conversion...")
-                    price_service = BinancePriceService(testnet=testnet)
-                    real_prices = await price_service.get_all_ticker_prices()
-                    logger.info(f"✅ Loaded {len(real_prices)} price pairs from Binance")
 
                     # 1. GET SPOT AND FUTURES BALANCES IN REAL-TIME
                     # BingX requires special handling with get_balances_separated()
@@ -327,6 +322,12 @@ def create_dashboard_router() -> APIRouter:
 
                     else:
                         # For other exchanges (Binance, Bybit, Bitget), use normal methods
+                        # Initialize price service for USD conversion (only for non-BingX exchanges)
+                        logger.info("💱 Initializing price service for USD conversion...")
+                        price_service = BinancePriceService(testnet=testnet)
+                        real_prices = await price_service.get_all_ticker_prices()
+                        logger.info(f"✅ Loaded {len(real_prices)} price pairs from Binance")
+
                         logger.info("📊 Fetching SPOT balances from exchange...")
                         spot_result = await connector.get_account_info()
                         if spot_result.get('success'):
@@ -457,6 +458,15 @@ def create_dashboard_router() -> APIRouter:
         except Exception as e:
             logger.error("Error getting balances summary", error=str(e), exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to get balances summary")
+
+        finally:
+            # Always close the connector to prevent memory leaks
+            if connector is not None:
+                try:
+                    await connector.close()
+                    logger.debug("✅ Connector session closed")
+                except Exception as close_error:
+                    logger.warning(f"⚠️ Error closing connector: {close_error}")
 
     @router.get("/cache/metrics")
     async def get_cache_metrics(request: Request):

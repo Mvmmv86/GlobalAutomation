@@ -628,7 +628,36 @@ def create_dashboard_router() -> APIRouter:
             else:
                 raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
-            # Get SPOT account info from Binance
+            # BingX: Use get_balances_separated() for correct SPOT value (FUND+SPOT-FUTURES)
+            if exchange == 'bingx':
+                balances_result = await connector.get_balances_separated()
+
+                if not balances_result.get('success'):
+                    raise HTTPException(status_code=500, detail="Failed to fetch BingX balances")
+
+                spot_total_usdt = balances_result.get('spot_usdt', 0)
+
+                # Return simplified response for BingX (already in USD)
+                await connector.close()
+
+                return {
+                    "success": True,
+                    "data": {
+                        "exchange_account_id": exchange_account_id,
+                        "assets": [{
+                            "asset": "USDT",
+                            "free": spot_total_usdt,
+                            "locked": 0,
+                            "total": spot_total_usdt,
+                            "in_order": 0,
+                            "usd_value": spot_total_usdt
+                        }],
+                        "total_assets": 1,
+                        "total_usd_value": spot_total_usdt
+                    }
+                }
+
+            # Other exchanges: Get SPOT account info
             account_result = await connector.get_account_info()
 
             if not account_result.get('success', False):

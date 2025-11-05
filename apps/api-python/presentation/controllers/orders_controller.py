@@ -208,6 +208,8 @@ def create_orders_router() -> APIRouter:
         - ✅ Quantidade mínima
         """
         try:
+            logger.info(f"🔵 CREATE ORDER CHAMADO! Payload: {order_request.model_dump()}")
+
             # 1. Buscar dados da conta
             account = await transaction_db.fetchrow("""
                 SELECT
@@ -226,18 +228,31 @@ def create_orders_router() -> APIRouter:
             api_key = account['api_key']
             api_secret = account['secret_key']
 
-            # 3. Buscar preço atual do mercado
-            current_price = await get_current_market_price(
-                exchange=account['exchange'],
-                symbol=order_request.symbol,
-                api_key=api_key,
-                api_secret=api_secret,
-                testnet=account['testnet'],
-                operation_type=order_request.operation_type
-            )
+            # 3. Buscar preço atual do mercado (SKIP para MARKET orders - pegar da exchange)
+            current_price = None
+            if order_request.order_type != 'market':
+                try:
+                    current_price = await get_current_market_price(
+                        exchange=account['exchange'],
+                        symbol=order_request.symbol,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        testnet=account['testnet'],
+                        operation_type=order_request.operation_type
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Não conseguiu buscar preço de mercado: {e}")
+                    # Para LIMIT/STOP, usar o preço fornecido
+                    if order_request.price:
+                        current_price = order_request.price
 
             # 4. Calcular valor necessário
-            order_price = order_request.price if order_request.order_type != 'market' else current_price
+            # Para MARKET orders, usar preço estimado de $1 apenas para validação
+            # O preço real será determinado pela exchange
+            if order_request.order_type == 'market':
+                order_price = 1.0  # Valor placeholder
+            else:
+                order_price = order_request.price if order_request.price else (current_price or 1.0)
 
             if order_request.operation_type == 'futures':
                 # FUTURES: Usar margem
@@ -254,7 +269,7 @@ def create_orders_router() -> APIRouter:
             # )
 
             # 6. VALIDAÇÃO: Preço dentro de ±10% (anti-fat finger)
-            if order_request.order_type in ['limit', 'stop_limit'] and order_request.price:
+            if order_request.order_type in ['limit', 'stop_limit'] and order_request.price and current_price:
                 await validate_price_range(
                     order_request.symbol,
                     order_request.price,
@@ -270,14 +285,40 @@ def create_orders_router() -> APIRouter:
                     order_request.take_profit
                 )
 
-            # 8. Criar conector da exchange
-            from infrastructure.exchanges.binance_connector import BinanceConnector
+            # 8. Criar conector da exchange (FACTORY PATTERN)
+            exchange_type = account['exchange'].lower()
+            logger.info(f"🔷 Creating {exchange_type} connector for order")
 
-            connector = BinanceConnector(
-                api_key=api_key,
-                api_secret=api_secret,
-                testnet=account['testnet']
-            )
+            if exchange_type == 'binance':
+                from infrastructure.exchanges.binance_connector import BinanceConnector
+                connector = BinanceConnector(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    testnet=account['testnet']
+                )
+            elif exchange_type == 'bingx':
+                from infrastructure.exchanges.bingx_connector import BingXConnector
+                connector = BingXConnector(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    testnet=account['testnet']
+                )
+            elif exchange_type == 'bybit':
+                from infrastructure.exchanges.bybit_connector import BybitConnector
+                connector = BybitConnector(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    testnet=account['testnet']
+                )
+            elif exchange_type == 'bitget':
+                from infrastructure.exchanges.bitget_connector import BitgetConnector
+                connector = BitgetConnector(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    testnet=account['testnet']
+                )
+            else:
+                raise ValueError(f"Unsupported exchange: {exchange_type}")
 
             # 9. Executar ordem na exchange (REAL)
             if order_request.operation_type == 'futures':

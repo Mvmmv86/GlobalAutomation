@@ -40,6 +40,7 @@ class BingXConnector:
             self.base_url = "https://open-api.bingx.com"
 
         self.session = None
+        self.time_offset = 0  # Offset entre nosso relógio e o servidor BingX (ms)
 
     def is_demo_mode(self) -> bool:
         """Check if running in demo mode"""
@@ -51,28 +52,89 @@ class BingXConnector:
             self.session = aiohttp.ClientSession()
         return self.session
 
-    def _generate_signature(self, params: dict, timestamp: int) -> str:
-        """Generate signature for BingX API"""
+    async def _sync_time(self) -> None:
+        """Sincronizar tempo com servidor BingX para calcular offset"""
+        try:
+            session = await self._get_session()
+            url = f"{self.base_url}/openApi/swap/v2/server/time"
+
+            # Captura tempo local antes da requisição
+            local_time_before = int(time.time() * 1000)
+
+            async with session.get(url) as response:
+                data = await response.json()
+                server_time = data.get('timestamp', local_time_before)
+
+            # Captura tempo local depois da requisição
+            local_time_after = int(time.time() * 1000)
+
+            # Calcula offset usando média dos tempos (compensa latência)
+            local_time_avg = (local_time_before + local_time_after) // 2
+            self.time_offset = server_time - local_time_avg
+
+            logger.info(f"⏰ Time sync com BingX:")
+            logger.info(f"   Local time (avg): {local_time_avg}")
+            logger.info(f"   Server time: {server_time}")
+            logger.info(f"   Offset calculado: {self.time_offset}ms")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Falha ao sincronizar tempo com BingX: {e}")
+            logger.warning(f"   Usando tempo local sem offset")
+            self.time_offset = 0
+
+    def _get_timestamp(self) -> str:
+        """Obter timestamp atual (tempo local com ajuste)"""
+        # BingX rejeita timestamps no futuro - subtrair 500ms para garantir
+        # que sempre esteja um pouco no passado mas dentro da janela de ±5000ms
+        timestamp = int(time.time() * 1000) - 500
+        return str(timestamp)
+
+    def _generate_signature(self, params: dict) -> tuple[str, str]:
+        """
+        Generate signature for BingX API (seguindo documentação oficial)
+
+        IMPORTANTE: Para Query String (POST/GET via URL) - NÃO ordenar parâmetros!
+        Apenas para Request Body (JSON) seria necessário ordenar.
+
+        Returns:
+            tuple: (query_string, signature)
+        """
         if not self.api_secret:
-            return ""
-        
-        query_string = f"timestamp={timestamp}"
-        for key in sorted(params.keys()):
-            query_string += f"&{key}={params[key]}"
-        
-        return hmac.new(
+            return "", ""
+
+        # 1. Adicionar timestamp atual (como STRING) com offset do servidor
+        params['timestamp'] = self._get_timestamp()
+
+        # 2. Criar query string SEM ORDENAR (conforme doc BingX para query string)
+        # Documentação: "Combinar todos os parâmetros da API (sem ordenar)"
+        query_string = '&'.join(f"{k}={params[k]}" for k in params.keys())
+
+        # 3. Gerar HMAC SHA256 em hexadecimal
+        signature = hmac.new(
             self.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
 
+        # Debug logging
+        logger.info(f"🔐 _generate_signature DEBUG:")
+        logger.info(f"   Params (insertion order): {params}")
+        logger.info(f"   Query string: {query_string}")
+        logger.info(f"   Signature: {signature}")
+
+        return query_string, signature
+
     async def _make_request(
-        self, method: str, endpoint: str, params: dict = None, signed: bool = False
+        self, method: str, endpoint: str, params: dict = None, signed: bool = False, use_body: bool = False
     ) -> dict:
-        """Make HTTP request to BingX API"""
+        """Make HTTP request to BingX API
+
+        Args:
+            use_body: If True, send params in request body (for FUTURES v2)
+        """
         session = await self._get_session()
         url = f"{self.base_url}{endpoint}"
-        
+
         if params is None:
             params = {}
 
@@ -80,39 +142,73 @@ class BingXConnector:
             "Content-Type": "application/json"
         }
 
+        request_data = None  # Will hold form data for body requests
+
         if signed and self.api_key:
-            timestamp = int(time.time() * 1000)
-            params["timestamp"] = timestamp
             headers["X-BX-APIKEY"] = self.api_key
-            
-            # Generate signature
-            query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
-            signature = hmac.new(
-                self.api_secret.encode('utf-8'),
-                query_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            params["signature"] = signature
+
+            # Generate signature (MODIFIES params to add timestamp!)
+            # Returns: (query_string_sorted, signature)
+            # IMPORTANTE: _generate_signature adiciona timestamp ao dict params
+            query_string, signature = self._generate_signature(params)
+
+            if use_body:
+                # FUTURES v2: Send params in BODY as form-urlencoded
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+                # Build data dict with all params (incluindo timestamp) + signature
+                # params já tem o timestamp adicionado por _generate_signature!
+                request_data = params.copy()
+                request_data["signature"] = signature
+
+                logger.info(f"🔐 BingX Request (BODY mode - FUTURES v2):")
+                logger.info(f"   Method: {method}")
+                logger.info(f"   URL: {url}")
+                logger.info(f"   Headers: {headers}")
+                logger.info(f"   Body Data: {request_data}")
+            else:
+                # SPOT/GET: Send params in URL
+                url = f"{url}?{query_string}&signature={signature}"
+
+                logger.info(f"🔐 BingX Request (URL mode - SPOT/GET):")
+                logger.info(f"   Method: {method}")
+                logger.info(f"   URL: {url[:150]}...")
+                logger.info(f"   Headers: {headers}")
 
         try:
             if method == "GET":
-                async with session.get(url, params=params, headers=headers) as response:
+                # For signed requests, URL already contains all params
+                async with session.get(url, headers=headers) as response:
                     response_text = await response.text()
-                    logger.info(f"BingX API Response (status={response.status}): {response_text[:500]}")
+                    logger.info(f"BingX Response (status={response.status}): {response_text[:500]}")
                     try:
                         return json.loads(response_text)
                     except json.JSONDecodeError:
-                        logger.error(f"BingX returned non-JSON response: {response_text[:200]}")
+                        logger.error(f"Invalid JSON response: {response_text[:200]}")
                         return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+
             elif method == "POST":
-                async with session.post(url, json=params, headers=headers) as response:
-                    response_text = await response.text()
-                    logger.info(f"BingX API Response (status={response.status}): {response_text[:500]}")
-                    try:
-                        return json.loads(response_text)
-                    except json.JSONDecodeError:
-                        logger.error(f"BingX returned non-JSON response: {response_text[:200]}")
-                        return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+                if use_body and request_data:
+                    # FUTURES: Send params in body
+                    async with session.post(url, headers=headers, data=request_data) as response:
+                        response_text = await response.text()
+                        logger.info(f"BingX Response (status={response.status}): {response_text[:500]}")
+                        try:
+                            return json.loads(response_text)
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON response: {response_text[:200]}")
+                            return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+                else:
+                    # SPOT: Send params in URL
+                    async with session.post(url, headers=headers) as response:
+                        response_text = await response.text()
+                        logger.info(f"BingX Response (status={response.status}): {response_text[:500]}")
+                        try:
+                            return json.loads(response_text)
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON response: {response_text[:200]}")
+                            return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+
         except Exception as e:
             logger.error(f"BingX API request failed: {e}")
             raise
@@ -252,8 +348,8 @@ class BingXConnector:
             if end_time:
                 params["endTime"] = end_time
 
-            result = await self._make_request("GET", "/openApi/spot/v1/order/history", params, signed=True)
-            
+            result = await self._make_request("GET", "/openApi/spot/v1/trade/historyOrders", params, signed=True)
+
             if result.get("code") == 0:
                 orders = result.get("data", {}).get("orders", [])
                 return {
@@ -471,15 +567,15 @@ class BingXConnector:
                 return demo_order
 
             # Real order for BingX
+            # MARKET orders should NOT include timeInForce parameter
             params = {
                 "symbol": symbol,
                 "side": side,
                 "type": "MARKET",
-                "quantity": str(quantity),
-                "timeInForce": "IOC"
+                "quantity": str(quantity)
             }
 
-            result = await self._make_request("POST", "/openApi/spot/v1/order", params, signed=True)
+            result = await self._make_request("POST", "/openApi/spot/v1/trade/order", params, signed=True)
             
             if result.get("code") == 0:
                 order_data = result.get("data", {})
@@ -584,7 +680,10 @@ class BingXConnector:
         price: Optional[float] = None,
         stop_price: Optional[float] = None,
         reduce_only: bool = False,
-        time_in_force: str = "GTC"
+        time_in_force: str = "GTC",
+        leverage: Optional[int] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Create futures order on BingX
@@ -598,6 +697,9 @@ class BingXConnector:
             stop_price: Stop price (required for STOP orders)
             reduce_only: Reduce only flag
             time_in_force: Time in force (GTC, IOC, FOK)
+            leverage: Leverage multiplier (e.g., 10 for 10x)
+            stop_loss: Stop loss price
+            take_profit: Take profit price
         """
         try:
             # Normalize symbol to BingX format
@@ -619,28 +721,65 @@ class BingXConnector:
                     "timestamp": int(time.time() * 1000),
                 }
 
+            # Sincronizar tempo com servidor BingX antes de criar a ordem
+            await self._sync_time()
+
             # Determine position side
             position_side = "LONG" if side == "BUY" else "SHORT"
 
-            params = {
-                "symbol": symbol_bingx,
-                "side": side,
-                "positionSide": position_side,
-                "type": order_type,
-                "quantity": quantity,
-            }
+            # BingX API v2: Construir parâmetros na ordem exata
+            # Baseado em exemplos funcionais da documentação
+            params = {}
+            params["symbol"] = symbol_bingx
+            params["side"] = side
+            params["positionSide"] = position_side
+            params["type"] = order_type.upper()
+
+            # BingX API v2 expects STRING values for numeric parameters!
+            # ALWAYS use 'quantity' (never 'volume')
+            params["quantity"] = str(quantity)  # Must be STRING, not float!
 
             if price and order_type in ["LIMIT", "STOP"]:
-                params["price"] = price
+                params["price"] = str(price)  # Must be STRING
                 params["timeInForce"] = time_in_force
 
             if stop_price and "STOP" in order_type:
-                params["stopPrice"] = stop_price
+                params["stopPrice"] = str(stop_price)  # Must be STRING
 
             if reduce_only:
                 params["reduceOnly"] = "true"
 
-            result = await self._make_request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
+            # Add stop loss and take profit if provided
+            if stop_loss:
+                params["stopLoss"] = str(stop_loss)  # Must be STRING
+
+            if take_profit:
+                params["takeProfit"] = str(take_profit)  # Must be STRING
+
+            # Log parameters BEFORE signing for debugging
+            logger.info(f"📤 BingX FUTURES Order Parameters (before signing):")
+            logger.info(f"   Symbol (original): {symbol}")
+            logger.info(f"   Symbol (BingX format): {params['symbol']}")
+            logger.info(f"   Side: {params['side']}")
+            logger.info(f"   Type: {params['type']}")
+            logger.info(f"   Position Side: {params['positionSide']}")
+            logger.info(f"   Quantity: {params['quantity']} (type: {type(params['quantity']).__name__})")
+            if 'price' in params:
+                logger.info(f"   Price: {params['price']} (type: {type(params['price']).__name__})")
+
+            # Set leverage if provided (needs to be set before order creation)
+            # BingX leverage endpoint only accepts: symbol, leverage (NO side parameter!)
+            if leverage:
+                try:
+                    leverage_params = {
+                        "symbol": symbol_bingx,
+                        "leverage": str(leverage)  # BingX API v2 requires STRING type
+                    }
+                    await self._make_request("POST", "/openApi/swap/v2/trade/leverage", leverage_params, signed=True, use_body=True)
+                except Exception as e:
+                    logger.warning(f"Failed to set leverage: {e}")
+
+            result = await self._make_request("POST", "/openApi/swap/v2/trade/order", params, signed=True, use_body=True)
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
@@ -798,7 +937,7 @@ class BingXConnector:
                 "timeInForce": time_in_force
             }
 
-            result = await self._make_request("POST", "/openApi/spot/v1/order", params, signed=True)
+            result = await self._make_request("POST", "/openApi/spot/v1/trade/order", params, signed=True)
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
@@ -849,7 +988,7 @@ class BingXConnector:
                 "orderId": order_id
             }
 
-            result = await self._make_request("POST", "/openApi/spot/v1/order/cancel", params, signed=True)
+            result = await self._make_request("POST", "/openApi/spot/v1/trade/cancel", params, signed=True)
 
             if result.get("code") == 0:
                 return {
@@ -868,6 +1007,78 @@ class BingXConnector:
 
         except Exception as e:
             logger.error(f"Error canceling BingX order: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def create_spot_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: Optional[float] = None,
+        stop_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Generic SPOT order creation method (unified interface like Binance)
+        Routes to create_market_order() or create_limit_order() based on order_type
+
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            side: 'BUY' or 'SELL'
+            order_type: 'MARKET', 'LIMIT', 'STOP_LOSS_LIMIT', etc.
+            quantity: Order quantity
+            price: Limit price (required for LIMIT orders)
+            stop_price: Stop price (for stop orders)
+
+        Returns:
+            Dict with success, order_id, status, etc.
+        """
+        try:
+            logger.info(f"🔷 BingX create_spot_order: {order_type} {side} {quantity} {symbol}")
+
+            # Convert to Decimal for precision
+            from decimal import Decimal
+            quantity_decimal = Decimal(str(quantity))
+
+            # Route based on order type
+            if order_type.upper() == "MARKET":
+                return await self.create_market_order(
+                    symbol=symbol,
+                    side=side.upper(),
+                    quantity=quantity_decimal
+                )
+
+            elif order_type.upper() == "LIMIT":
+                if price is None:
+                    return {
+                        "success": False,
+                        "error": "Price is required for LIMIT orders"
+                    }
+
+                return await self.create_limit_order(
+                    symbol=symbol,
+                    side=side.upper(),
+                    quantity=float(quantity),
+                    price=float(price),
+                    time_in_force="GTC"
+                )
+
+            elif order_type.upper() in ["STOP_LOSS", "STOP_LOSS_LIMIT"]:
+                # BingX SPOT doesn't support stop loss orders directly
+                # Would need to implement via conditional orders if available
+                return {
+                    "success": False,
+                    "error": f"Order type {order_type} not supported for BingX SPOT. Use MARKET or LIMIT."
+                }
+
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unsupported order type: {order_type}"
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in BingX create_spot_order: {e}")
             return {"success": False, "error": str(e)}
 
     async def get_order_status(
@@ -898,7 +1109,7 @@ class BingXConnector:
                 "orderId": order_id
             }
 
-            result = await self._make_request("GET", "/openApi/spot/v1/order/query", params, signed=True)
+            result = await self._make_request("GET", "/openApi/spot/v1/trade/query", params, signed=True)
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
@@ -1279,6 +1490,47 @@ class BingXConnector:
 
         return None
 
+    async def get_all_ticker_prices(self) -> Dict[str, Any]:
+        """
+        Get ALL ticker prices from BingX in a single API call (PERFORMANCE OPTIMIZATION)
+
+        This is much faster than calling _get_price_from_bingx() for each asset individually.
+        Instead of N API calls (one per asset), we make 1 API call to get all prices.
+
+        Returns:
+            dict: {
+                "success": bool,
+                "data": [
+                    {"symbol": "AERO-USDT", "lastPrice": "0.8931", ...},
+                    {"symbol": "DRIFT-USDT", "lastPrice": "0.3361", ...},
+                    ...
+                ]
+            }
+        """
+        try:
+            session = await self._get_session()
+            url = f"{self.base_url}/openApi/spot/v1/ticker/24hr"
+            timestamp = int(time.time() * 1000)
+
+            # Call WITHOUT symbol parameter to get ALL tickers
+            params = {"timestamp": timestamp}
+
+            async with session.get(url, params=params) as response:
+                result = await response.json()
+
+                if result.get("code") == 0:
+                    return {
+                        "success": True,
+                        "data": result.get("data", [])
+                    }
+                else:
+                    logger.warning(f"BingX get_all_ticker_prices failed: {result}")
+                    return {"success": False, "data": []}
+
+        except Exception as e:
+            logger.error(f"Error fetching all ticker prices from BingX: {e}")
+            return {"success": False, "data": []}
+
     async def _get_asset_price_in_usdt(self, asset: str) -> tuple[float, str]:
         """
         Get asset price in USDT
@@ -1422,7 +1674,7 @@ class BingXConnector:
                 f"Stable: {price_sources['STABLE']})"
             )
 
-            # 3. Get FUTURES balance
+            # 3. Get FUTURES balance (FREE BALANCE - availableMargin)
             futures_result = await self._make_request(
                 "GET",
                 "/openApi/swap/v2/user/balance",
@@ -1431,10 +1683,14 @@ class BingXConnector:
 
             futures_balance = 0
             if futures_result.get("code") == 0:
-                futures_balance = float(
-                    futures_result.get("data", {}).get("balance", {}).get("balance", 0)
-                )
-                logger.info(f"Futures balance: ${futures_balance:.2f}")
+                # FIX: Use availableMargin (free balance) instead of balance (total balance)
+                # availableMargin = saldo LIVRE para novas ordens
+                # balance = saldo total (inclui margem usada em posições abertas)
+                balance_data = futures_result.get("data", {}).get("balance", {})
+                futures_balance = float(balance_data.get("availableMargin", 0))
+
+                total_balance = float(balance_data.get("balance", 0))
+                logger.info(f"Futures balance: ${futures_balance:.2f} LIVRE (total: ${total_balance:.2f})")
             else:
                 logger.warning(f"Could not get futures balance: {futures_result.get('msg')}")
 

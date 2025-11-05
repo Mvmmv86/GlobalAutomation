@@ -299,7 +299,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
                 <span className="font-mono">
                   {operationType === 'futures' ?
                     (availableFuturesBalance > 0 ? `${availableFuturesBalance.toFixed(2)} USDT` : 'Carregando...') :
-                    (spotBalancesData ? `${spotBalancesData.total_usd_value?.toFixed(2) || '0.00'} USDT` : 'Carregando...')
+                    (accountBalance?.spot_balance_usdt ? `${accountBalance.spot_balance_usdt.toFixed(2)} USDT` : 'Carregando...')
                   }
                 </span>
               </div>

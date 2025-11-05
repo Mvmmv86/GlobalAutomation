@@ -247,14 +247,15 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
               </div>
             </div>
           ) : (
-            <div className="overflow-auto" style={{ maxHeight: '400px' }}>
+            <div className="overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px' }}>
               <table className="w-full text-[10px]">
                 <thead className="sticky top-0 border-b bg-background">
                   <tr className="text-left text-muted-foreground">
                     <th className="px-2 py-1 font-medium">Ativo</th>
-                    <th className="px-2 py-1 font-medium text-right">Disponível</th>
-                    <th className="px-2 py-1 font-medium text-right">Em Ordem</th>
                     <th className="px-2 py-1 font-medium text-right">Total</th>
+                    <th className="px-2 py-1 font-medium text-right">Valor USDT</th>
+                    <th className="px-2 py-1 font-medium text-right">P&L (USD)</th>
+                    <th className="px-2 py-1 font-medium text-right">P&L %</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -269,19 +270,32 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
                         </div>
                       </td>
                       <td className="px-2 py-1.5 text-right">
-                        <span className="font-mono">{balance.free.toFixed(8)}</span>
-                      </td>
-                      <td className="px-2 py-1.5 text-right">
-                        <span className="font-mono text-muted-foreground">{balance.in_order.toFixed(8)}</span>
+                        <span className="font-mono font-semibold">{balance.total.toFixed(8)}</span>
                       </td>
                       <td className="px-2 py-1.5 text-right">
                         <div>
-                          <div className="font-mono font-semibold">{balance.total.toFixed(8)}</div>
-                          {balance.usd_value > 0 && (
-                            <div className="text-[9px] text-muted-foreground">
-                              ${balance.usd_value.toFixed(2)}
-                            </div>
-                          )}
+                          <div className={cn(
+                            "font-mono font-semibold",
+                            balance.usd_value > 0 ? "text-foreground" : "text-muted-foreground"
+                          )}>
+                            ${balance.usd_value > 0 ? balance.usd_value.toFixed(2) : '0.00'}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        <div className={cn(
+                          "font-mono font-semibold",
+                          balance.pnl > 0 ? "text-green-500" : balance.pnl < 0 ? "text-red-500" : "text-muted-foreground"
+                        )}>
+                          {balance.pnl !== 0 ? `$${balance.pnl.toFixed(2)}` : '-'}
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        <div className={cn(
+                          "font-mono font-semibold",
+                          balance.pnl_percent > 0 ? "text-green-500" : balance.pnl_percent < 0 ? "text-red-500" : "text-muted-foreground"
+                        )}>
+                          {balance.pnl_percent !== 0 ? `${balance.pnl_percent.toFixed(2)}%` : '-'}
                         </div>
                       </td>
                     </tr>
@@ -306,7 +320,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
             </div>
           </div>
         ) : (
-          <div className="overflow-auto" style={{ maxHeight: '400px' }}>
+          <div className="overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px' }}>
             <table className="w-full text-[10px]">
               <thead className="sticky top-0 border-b bg-background">
                 <tr className="text-left text-muted-foreground">

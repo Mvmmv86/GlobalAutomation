@@ -628,32 +628,133 @@ def create_dashboard_router() -> APIRouter:
             else:
                 raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
 
-            # BingX: Use get_balances_separated() for correct SPOT value (FUND+SPOT-FUTURES)
+            # BingX: Use get_account_balances() to get ALL individual assets (LINK, AERO, DRIFT, etc.)
             if exchange == 'bingx':
-                balances_result = await connector.get_balances_separated()
+                balances_result = await connector.get_account_balances()
 
                 if not balances_result.get('success'):
                     raise HTTPException(status_code=500, detail="Failed to fetch BingX balances")
 
-                spot_total_usdt = balances_result.get('spot_usdt', 0)
+                raw_balances = balances_result.get('balances', [])
 
-                # Return simplified response for BingX (already in USD)
+                # Get all BUY orders for this account to calculate average cost
+                buy_orders_query = await transaction_db.fetch("""
+                    SELECT symbol, quantity, price, created_at
+                    FROM orders
+                    WHERE exchange_account_id = $1
+                      AND LOWER(side::text) = 'buy'
+                      AND status = 'filled'
+                    ORDER BY created_at ASC
+                """, exchange_account_id)
+
+                # Calculate average buy price for each asset + store last buy price
+                avg_buy_prices = {}
+                last_buy_prices = {}  # Store the most recent buy price as fallback
+
+                for order in buy_orders_query:
+                    symbol = order['symbol']
+                    # Extract asset from symbol (e.g., LINKUSDT -> LINK)
+                    asset = symbol.replace('USDT', '').replace('-', '')
+
+                    if asset not in avg_buy_prices:
+                        avg_buy_prices[asset] = {'total_qty': 0, 'total_cost': 0}
+
+                    qty = float(order['quantity'])
+                    price = float(order['price'])
+                    avg_buy_prices[asset]['total_qty'] += qty
+                    avg_buy_prices[asset]['total_cost'] += (qty * price)
+
+                    # Store last buy price (will be overwritten with most recent)
+                    last_buy_prices[asset] = price
+
+                # Calculate average prices
+                for asset in avg_buy_prices:
+                    if avg_buy_prices[asset]['total_qty'] > 0:
+                        avg_buy_prices[asset]['avg_price'] = avg_buy_prices[asset]['total_cost'] / avg_buy_prices[asset]['total_qty']
+
+                # PERFORMANCE OPTIMIZATION: Fetch all prices in batch (1 API call instead of N)
+                # Extract unique assets that need price lookup
+                assets_needing_prices = [bal['asset'] for bal in raw_balances if bal['asset'] not in ['USDT', 'USDC']]
+
+                # Fetch all prices at once from BingX (much faster than individual calls)
+                price_cache = {}
+                if assets_needing_prices:
+                    try:
+                        # Get all BingX ticker prices in ONE call
+                        all_prices_result = await connector.get_all_ticker_prices()
+                        if all_prices_result.get('success'):
+                            for ticker in all_prices_result.get('data', []):
+                                symbol = ticker.get('symbol', '')
+                                # Extract base asset (e.g., AERO-USDT -> AERO)
+                                if 'USDT' in symbol:
+                                    asset = symbol.replace('-USDT', '').replace('USDT', '')
+                                    price = float(ticker.get('lastPrice', 0))
+                                    if price > 0:
+                                        price_cache[asset] = price
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch batch prices from BingX: {e}")
+
+                # Stablecoins always $1
+                price_cache['USDT'] = 1.0
+                price_cache['USDC'] = 1.0
+
+                assets_list = []
+                total_usd_value = 0
+                total_pnl = 0
+
+                for bal in raw_balances:
+                    asset = bal['asset']
+                    free = float(bal['free'])
+                    locked = float(bal['locked'])
+                    total = float(bal['total'])
+
+                    # Get price from cache (instant lookup, no API call)
+                    current_price = price_cache.get(asset, 0)
+                    usd_value = current_price * total
+                    total_usd_value += usd_value
+
+                    # Calculate P&L with fallback logic:
+                    # 1st: Try average buy price (from all orders)
+                    # 2nd: Try last buy price (most recent order)
+                    # 3rd: No P&L if no historical orders
+                    pnl = 0
+                    pnl_percent = 0
+                    avg_buy_price = 0
+
+                    # Try average buy price first
+                    if asset in avg_buy_prices and 'avg_price' in avg_buy_prices[asset]:
+                        avg_buy_price = avg_buy_prices[asset]['avg_price']
+                    # Fallback to last buy price if no average available
+                    elif asset in last_buy_prices:
+                        avg_buy_price = last_buy_prices[asset]
+
+                    # Calculate P&L if we have a cost basis (either avg or last)
+                    if avg_buy_price > 0 and current_price > 0:
+                        pnl = (current_price - avg_buy_price) * total
+                        pnl_percent = ((current_price - avg_buy_price) / avg_buy_price) * 100
+                        total_pnl += pnl
+
+                    assets_list.append({
+                        "asset": asset,
+                        "free": free,
+                        "locked": locked,
+                        "total": total,
+                        "in_order": 0,  # BingX API doesn't provide this separately
+                        "usd_value": round(usd_value, 2),
+                        "avg_buy_price": round(avg_buy_price, 4),
+                        "pnl": round(pnl, 2),
+                        "pnl_percent": round(pnl_percent, 2)
+                    })
+
                 await connector.close()
 
                 return {
                     "success": True,
                     "data": {
                         "exchange_account_id": exchange_account_id,
-                        "assets": [{
-                            "asset": "USDT",
-                            "free": spot_total_usdt,
-                            "locked": 0,
-                            "total": spot_total_usdt,
-                            "in_order": 0,
-                            "usd_value": spot_total_usdt
-                        }],
-                        "total_assets": 1,
-                        "total_usd_value": spot_total_usdt
+                        "assets": assets_list,
+                        "total_assets": len(assets_list),
+                        "total_usd_value": round(total_usd_value, 2)
                     }
                 }
 

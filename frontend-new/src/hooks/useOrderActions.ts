@@ -50,6 +50,9 @@ export const useCreateOrder = () => {
         })
       }
 
+      console.log('📤 useOrderActions: Payload being sent:', JSON.stringify(payload, null, 2))
+      console.log('📤 useOrderActions: URL:', `${API_BASE_URL}/orders/create`)
+
       const response = await fetch(`${API_BASE_URL}/orders/create`, {
         method: 'POST',
         headers: {

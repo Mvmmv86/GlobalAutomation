@@ -226,10 +226,10 @@ class AdminService {
    * Get all bots
    */
   async getAllBots(status?: string): Promise<Bot[]> {
-    const params: any = { admin_user_id: this.getAdminUserId() }
+    const params: any = {}
     if (status) params.status = status
 
-    const response = await apiClient.instance.get('/admin/bots', { params })
+    const response = await apiClient.instance.get('/bots', { params })
 
     if (response.data?.success && response.data?.data) {
       return response.data.data

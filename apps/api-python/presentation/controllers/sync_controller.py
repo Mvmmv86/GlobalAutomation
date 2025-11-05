@@ -500,12 +500,17 @@ def create_sync_router() -> APIRouter:
 
             positions = result.get('positions', [])
 
-            # 🔍 DEBUG: Log detalhado das posições retornadas pela Binance
-            logger.info(f"🔍 DEBUG BINANCE POSITIONS: Total retornado = {len(positions)}")
+            # 🔍 DEBUG: Log detalhado das posições retornadas pela API
+            logger.info(f"🔍 DEBUG POSITIONS: Total retornado = {len(positions)}")
             for i, pos in enumerate(positions):
                 symbol = pos.get('symbol', 'N/A')
-                amount = pos.get('positionAmt', '0')
-                logger.info(f"   [{i+1}] {symbol}: {amount}")
+                amount = pos.get('positionAmt', pos.get('size', '0'))
+                logger.info(f"   [{i+1}] {symbol}: amount={amount}")
+                # Log ALL fields from first position to see structure
+                if i == 0:
+                    logger.info(f"   📋 CAMPOS DA POSIÇÃO: {list(pos.keys())}")
+                    for key, value in pos.items():
+                        logger.info(f"      {key} = {value}")
 
             # Track which symbols we've seen from Binance for cleanup
             binance_symbols = set()
@@ -529,7 +534,15 @@ def create_sync_router() -> APIRouter:
                     """, position.get('symbol', '').replace('-', ''), account_id)
                     
                     if existing:
-                        # Update existing position (set status='open' since Binance returned it)
+                        # Update existing position (set status='open' since API returned it)
+                        # BingX FUTURES uses: avgPrice, positionAmt, unrealizedProfit
+                        # Binance FUTURES uses: entryPrice, positionAmt, unrealizedProfit
+                        entry_price = float(position.get('avgPrice', position.get('entryPrice', position.get('averageOpenPrice', 0))))
+                        size_amt = float(position.get('positionAmt', position.get('size', 0)))
+                        side = 'long' if size_amt > 0 else 'short'
+                        mark_price = float(position.get('markPrice', 0)) if position.get('markPrice') else None
+                        unrealized_pnl = float(position.get('unrealizedProfit', position.get('unRealizedProfit', 0)))
+
                         await transaction_db.execute("""
                             UPDATE positions SET
                                 side = $1, size = $2, entry_price = $3, mark_price = $4,
@@ -537,12 +550,11 @@ def create_sync_router() -> APIRouter:
                                 last_update_at = $8, updated_at = $9, status = 'open'
                             WHERE id = $10
                         """,
-                        'long' if float(position.get('positionAmt', position.get('size', 0))) > 0 else 'short',
-                        abs(float(position.get('size', position.get('positionAmt', 0)))),
-                        float(position.get('entryPrice', position.get('averageOpenPrice', 0))) if position.get('entryPrice', position.get('averageOpenPrice')) else 0,
-                        float(position.get('markPrice', 0)) if position.get('markPrice') else None,
-                        # Calculate unrealized PnL = (mark_price - entry_price) * size * (1 if long else -1)
-                        _calculate_unrealized_pnl(position, 'long' if float(position.get('positionAmt', position.get('size', 0))) > 0 else 'short'),
+                        side,
+                        abs(size_amt),
+                        entry_price,
+                        mark_price,
+                        unrealized_pnl,
                         float(position.get('leverage', '1')),
                         float(position.get('liquidationPrice', 0)) if position.get('liquidationPrice') else None,
                         datetime.now(),  # last_update_at
@@ -760,5 +772,189 @@ def create_sync_router() -> APIRouter:
 
         except Exception as e:
             return {"error": str(e)}
+
+    @router.post("/spot-orders-history/{account_id}")
+    async def sync_spot_orders_history(
+        account_id: str,
+        request: Request,
+        days_back: Optional[int] = 90,
+        min_usd_value: Optional[float] = 1.0
+    ):
+        """
+        Sync historical SPOT orders from exchange for P&L calculation
+        - Only imports BUY orders that are FILLED (needed for average cost basis)
+        - Filters out orders with value < $1 USD (dust)
+        - Saves to 'orders' table (NOT 'trading_orders')
+        - Multi-exchange support (Binance, BingX, Bybit, Bitget)
+        """
+        try:
+            logger.info(f"📦 Syncing SPOT order history for account {account_id} (last {days_back} days, min ${min_usd_value})")
+
+            # Get account info from database
+            account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet
+                FROM exchange_accounts
+                WHERE id = $1
+            """, account_id)
+
+            if not account:
+                raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+
+            exchange_name = account['exchange'].upper()
+            logger.info(f"🏦 Exchange: {exchange_name}")
+
+            # Create connector for the exchange
+            connector = await get_exchange_connector(account_id)
+
+            # Calculate time range (last N days)
+            end_time = int(datetime.now().timestamp() * 1000)
+            start_time = int((datetime.now() - timedelta(days=days_back)).timestamp() * 1000)
+
+            # Fetch orders from exchange
+            result = await connector.get_account_orders(
+                symbol=None,  # All symbols
+                limit=500,    # Max orders
+                start_time=start_time,
+                end_time=end_time
+            )
+
+            if not result.get('success', True):
+                return {
+                    "success": False,
+                    "error": result.get('error', 'Failed to fetch orders'),
+                    "synced_count": 0
+                }
+
+            orders = result.get('orders', [])
+            logger.info(f"📊 Fetched {len(orders)} orders from {exchange_name}")
+
+            # Filter: Only BUY + FILLED orders
+            buy_filled_orders = []
+            for order in orders:
+                side = order.get('side', '').upper()
+                status = order.get('status', '').upper()
+
+                # Check if it's a BUY order and FILLED
+                if side == 'BUY' and status == 'FILLED':
+                    buy_filled_orders.append(order)
+
+            logger.info(f"✅ Filtered to {len(buy_filled_orders)} BUY+FILLED orders")
+
+            # Filter: Minimum USD value ($1+)
+            price_service = BinancePriceService(testnet=False)
+            real_prices = await price_service.get_all_ticker_prices()
+
+            filtered_orders = []
+            for order in buy_filled_orders:
+                symbol = order.get('symbol', '').replace('-', '').replace('_SPBL', '')
+                quantity = float(order.get('executedQty', order.get('fillSize', order.get('cumExecQty', 0))))
+                price = float(order.get('avgPrice', order.get('fillPrice', order.get('price', 0)))) if order.get('avgPrice', order.get('fillPrice', order.get('price'))) else 0
+
+                # Calculate USD value of order
+                usd_value = quantity * price
+
+                # Only keep orders >= min_usd_value
+                if usd_value >= min_usd_value:
+                    filtered_orders.append(order)
+
+            logger.info(f"💵 Filtered to {len(filtered_orders)} orders with value >= ${min_usd_value}")
+
+            # Save to 'orders' table (NOT 'trading_orders')
+            synced_count = 0
+            skipped_count = 0
+            errors = []
+
+            for order in filtered_orders:
+                try:
+                    # Extract order data (exchange-specific parsing)
+                    order_id = str(order.get('orderId', order.get('id', order.get('order_id'))))
+                    symbol = order.get('symbol', '').replace('-', '').replace('_SPBL', '')
+                    side = order.get('side', '').lower()
+                    order_type = order.get('type', order.get('orderType', 'market')).lower()
+                    quantity = float(order.get('origQty', order.get('size', order.get('qty', 0))))
+                    price = float(order.get('price', 0)) if order.get('price') else None
+                    filled_quantity = float(order.get('executedQty', order.get('fillSize', order.get('cumExecQty', 0))))
+                    average_price = float(order.get('avgPrice', order.get('fillPrice', order.get('price', 0)))) if order.get('avgPrice', order.get('fillPrice', order.get('price'))) else None
+
+                    # Timestamps
+                    created_timestamp = int(order.get('time', order.get('cTime', order.get('createTime', 0))))
+                    updated_timestamp = int(order.get('updateTime', order.get('uTime', order.get('time', 0))))
+
+                    created_at = datetime.fromtimestamp(created_timestamp / 1000) if created_timestamp else datetime.now()
+                    updated_at = datetime.fromtimestamp(updated_timestamp / 1000) if updated_timestamp else datetime.now()
+
+                    # Generate client_order_id (unique identifier)
+                    import uuid
+                    client_order_id = f"{exchange_name}_{order_id}_{uuid.uuid4().hex[:8]}"
+
+                    # Check if order already exists in 'orders' table
+                    existing = await transaction_db.fetchrow("""
+                        SELECT id FROM orders
+                        WHERE external_id = $1 AND exchange_account_id = $2
+                    """, order_id, account_id)
+
+                    if existing:
+                        logger.debug(f"⏭️  Order {order_id} already exists, skipping")
+                        skipped_count += 1
+                        continue
+
+                    # Insert into 'orders' table
+                    await transaction_db.execute("""
+                        INSERT INTO orders (
+                            external_id, client_order_id, symbol, side, type, status,
+                            quantity, price, filled_quantity, average_fill_price,
+                            submitted_at, completed_at, exchange_account_id,
+                            source, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    """,
+                    order_id,                      # external_id
+                    client_order_id,               # client_order_id
+                    symbol,                        # symbol
+                    side,                          # side (buy)
+                    order_type,                    # type
+                    'filled',                      # status
+                    quantity,                      # quantity
+                    price,                         # price
+                    filled_quantity,               # filled_quantity
+                    average_price,                 # average_fill_price
+                    created_at,                    # submitted_at
+                    updated_at,                    # completed_at
+                    account_id,                    # exchange_account_id
+                    'history_import',              # source
+                    created_at,                    # created_at
+                    updated_at                     # updated_at
+                    )
+
+                    synced_count += 1
+                    logger.debug(f"✅ Imported order {order_id}: {symbol} {quantity} @ ${average_price}")
+
+                except Exception as e:
+                    error_msg = f"Failed to import order {order.get('orderId', order.get('id'))}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+
+            logger.info(f"🎉 SPOT order history sync completed: {synced_count} imported, {skipped_count} skipped")
+
+            return {
+                "success": True,
+                "message": f"Synced {synced_count} historical SPOT orders (BUY+FILLED, value >= ${min_usd_value})",
+                "synced_count": synced_count,
+                "skipped_count": skipped_count,
+                "total_fetched": len(orders),
+                "buy_filled_count": len(buy_filled_orders),
+                "filtered_count": len(filtered_orders),
+                "errors": errors[:10],  # Limit to first 10 errors
+                "exchange": exchange_name,
+                "days_back": days_back,
+                "min_usd_value": min_usd_value
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error syncing SPOT order history: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to sync SPOT order history: {str(e)}")
 
     return router

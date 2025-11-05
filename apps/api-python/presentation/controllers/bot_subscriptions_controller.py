@@ -2,7 +2,7 @@
 Bot Subscriptions Controller
 Handles client subscriptions to managed bots
 """
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from uuid import UUID
@@ -128,73 +128,11 @@ async def get_my_subscriptions(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{subscription_id}")
-async def get_subscription(subscription_id: str, user_id: str):
-    """Get detailed information about a specific subscription"""
-    try:
-        subscription = await transaction_db.fetchrow("""
-            SELECT
-                bs.*,
-                b.name as bot_name,
-                b.description as bot_description,
-                b.market_type,
-                b.default_leverage,
-                b.default_margin_usd,
-                b.default_stop_loss_pct,
-                b.default_take_profit_pct,
-                ea.exchange,
-                ea.name as account_name
-            FROM bot_subscriptions bs
-            INNER JOIN bots b ON b.id = bs.bot_id
-            INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
-            WHERE bs.id = $1 AND bs.user_id = $2
-        """, subscription_id, user_id)
-
-        if not subscription:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-
-        # Get recent executions for this subscription
-        recent_executions = await transaction_db.fetch("""
-            SELECT
-                bse.id,
-                bse.status,
-                bse.exchange_order_id,
-                bse.executed_price,
-                bse.executed_quantity,
-                bse.error_message,
-                bse.execution_time_ms,
-                bse.created_at,
-                bs_signal.ticker,
-                bs_signal.action
-            FROM bot_signal_executions bse
-            INNER JOIN bot_signals bs_signal ON bs_signal.id = bse.signal_id
-            WHERE bse.subscription_id = $1
-            ORDER BY bse.created_at DESC
-            LIMIT 20
-        """, subscription_id)
-
-        return {
-            "success": True,
-            "data": {
-                **dict(subscription),
-                "recent_executions": [dict(e) for e in recent_executions]
-            }
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            "Error getting subscription",
-            subscription_id=subscription_id,
-            error=str(e),
-            exc_info=True
-        )
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("")
-async def subscribe_to_bot(subscription_data: SubscriptionCreate, user_id: str):
+async def subscribe_to_bot(
+    subscription_data: SubscriptionCreate,
+    user_id: str = Query(..., description="User ID subscribing to the bot")
+):
     """
     Subscribe to a bot
     Creates a new subscription for the user with custom configuration
@@ -294,6 +232,71 @@ async def subscribe_to_bot(subscription_data: SubscriptionCreate, user_id: str):
         raise
     except Exception as e:
         logger.error("Error creating subscription", user_id=user_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{subscription_id}")
+async def get_subscription(subscription_id: str, user_id: str):
+    """Get detailed information about a specific subscription"""
+    try:
+        subscription = await transaction_db.fetchrow("""
+            SELECT
+                bs.*,
+                b.name as bot_name,
+                b.description as bot_description,
+                b.market_type,
+                b.default_leverage,
+                b.default_margin_usd,
+                b.default_stop_loss_pct,
+                b.default_take_profit_pct,
+                ea.exchange,
+                ea.name as account_name
+            FROM bot_subscriptions bs
+            INNER JOIN bots b ON b.id = bs.bot_id
+            INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
+            WHERE bs.id = $1 AND bs.user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Get recent executions for this subscription
+        recent_executions = await transaction_db.fetch("""
+            SELECT
+                bse.id,
+                bse.status,
+                bse.exchange_order_id,
+                bse.executed_price,
+                bse.executed_quantity,
+                bse.error_message,
+                bse.execution_time_ms,
+                bse.created_at,
+                bs_signal.ticker,
+                bs_signal.action
+            FROM bot_signal_executions bse
+            INNER JOIN bot_signals bs_signal ON bs_signal.id = bse.signal_id
+            WHERE bse.subscription_id = $1
+            ORDER BY bse.created_at DESC
+            LIMIT 20
+        """, subscription_id)
+
+        return {
+            "success": True,
+            "data": {
+                **dict(subscription),
+                "recent_executions": [dict(e) for e in recent_executions]
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error getting subscription",
+            subscription_id=subscription_id,
+            error=str(e),
+            exc_info=True
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

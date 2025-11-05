@@ -101,21 +101,36 @@ def create_positions_router() -> APIRouter:
             
             positions_list = []
             for position in positions:
+                # Calcular P&L %
+                size = float(position["size"]) if position["size"] else 0
+                entry_price = float(position["entry_price"]) if position["entry_price"] else 0
+                unrealized_pnl = float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0
+                leverage = float(position["leverage"]) if position["leverage"] else 1
+
+                # Valor inicial da posição (sem alavancagem)
+                position_value = size * entry_price
+                # Capital inicial investido (com alavancagem)
+                initial_capital = position_value / leverage if leverage > 0 else position_value
+
+                # P&L % = (unrealized_pnl / initial_capital) * 100
+                pnl_percentage = (unrealized_pnl / initial_capital * 100) if initial_capital > 0 else 0
+
                 positions_list.append({
                     "id": position["id"],
                     "external_id": position["external_id"],
                     "symbol": position["symbol"],
                     "side": position["side"].upper() if position["side"] else "LONG",
                     "status": position["status"],
-                    "size": float(position["size"]) if position["size"] else 0,
-                    "entry_price": float(position["entry_price"]) if position["entry_price"] else 0,
+                    "size": size,
+                    "entry_price": entry_price,
                     "mark_price": float(position["mark_price"]) if position["mark_price"] else 0,
                     "exit_price": None,  # Campo não disponível na tabela atual
-                    "unrealized_pnl": float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0,
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_percentage": round(pnl_percentage, 2),  # Novo campo P&L %
                     "realized_pnl": float(position["realized_pnl"]) if position["realized_pnl"] else 0,
                     "initial_margin": float(position["initial_margin"]) if position["initial_margin"] else 0,
                     "maintenance_margin": float(position["maintenance_margin"]) if position["maintenance_margin"] else 0,
-                    "leverage": float(position["leverage"]) if position["leverage"] else 1,
+                    "leverage": leverage,
                     "liquidation_price": float(position["liquidation_price"]) if position["liquidation_price"] else 0,
                     "bankruptcy_price": float(position["bankruptcy_price"]) if position["bankruptcy_price"] else 0,
                     "opened_at": position["opened_at"].isoformat() if position["opened_at"] else None,
@@ -383,21 +398,36 @@ def create_positions_router() -> APIRouter:
             
             if not position:
                 raise HTTPException(status_code=404, detail="Position not found")
-            
+
+            # Calcular P&L %
+            size = float(position["size"]) if position["size"] else 0
+            entry_price = float(position["entry_price"]) if position["entry_price"] else 0
+            unrealized_pnl = float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0
+            leverage = float(position["leverage"]) if position["leverage"] else 1
+
+            # Valor inicial da posição (sem alavancagem)
+            position_value = size * entry_price
+            # Capital inicial investido (com alavancagem)
+            initial_capital = position_value / leverage if leverage > 0 else position_value
+
+            # P&L % = (unrealized_pnl / initial_capital) * 100
+            pnl_percentage = (unrealized_pnl / initial_capital * 100) if initial_capital > 0 else 0
+
             position_data = {
                 "id": position["id"],
                 "external_id": position["external_id"],
                 "symbol": position["symbol"],
                 "side": position["side"].upper() if position["side"] else "LONG",
                 "status": position["status"],
-                "size": float(position["size"]) if position["size"] else 0,
-                "entry_price": float(position["entry_price"]) if position["entry_price"] else 0,
+                "size": size,
+                "entry_price": entry_price,
                 "mark_price": float(position["mark_price"]) if position["mark_price"] else 0,
-                "unrealized_pnl": float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_percentage": round(pnl_percentage, 2),  # Novo campo P&L %
                 "realized_pnl": float(position["realized_pnl"]) if position["realized_pnl"] else 0,
                 "initial_margin": float(position["initial_margin"]) if position["initial_margin"] else 0,
                 "maintenance_margin": float(position["maintenance_margin"]) if position["maintenance_margin"] else 0,
-                "leverage": float(position["leverage"]) if position["leverage"] else 1,
+                "leverage": leverage,
                 "liquidation_price": float(position["liquidation_price"]) if position["liquidation_price"] else 0,
                 "bankruptcy_price": float(position["bankruptcy_price"]) if position["bankruptcy_price"] else 0,
                 "opened_at": position["opened_at"].isoformat() if position["opened_at"] else None,

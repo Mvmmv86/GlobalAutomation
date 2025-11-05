@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -198,6 +199,33 @@ def create_app() -> FastAPI:
             raise
 
     # Error handlers
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Handle Pydantic validation errors with detailed logging"""
+        errors = exc.errors()
+        logger.error(
+            "Validation error occurred",
+            path=request.url.path,
+            errors=errors,
+            body=exc.body if hasattr(exc, 'body') else None
+        )
+
+        # Format error messages for user
+        error_messages = []
+        for error in errors:
+            field = " -> ".join(str(loc) for loc in error['loc'])
+            msg = error['msg']
+            error_messages.append(f"{field}: {msg}")
+
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "Validation Error",
+                "detail": "Invalid parameters. " + "; ".join(error_messages),
+                "validation_errors": errors
+            }
+        )
+
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError):
         """Handle ValueError exceptions"""

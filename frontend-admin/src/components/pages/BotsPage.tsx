@@ -81,7 +81,7 @@ export function BotsPage() {
   }
 
   const handleCopyWebhookUrl = (bot: Bot) => {
-    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'http://localhost:8000'
+    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'
     const url = `${baseUrl}/api/v1/bots/webhook/master/${bot.master_webhook_path}`
     navigator.clipboard.writeText(url)
     setCopiedUrl(bot.id)
@@ -301,7 +301,7 @@ export function BotsPage() {
                     <input
                       type="text"
                       readOnly
-                      value={`${ngrokUrl || import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/bots/webhook/master/${bot.master_webhook_path}`}
+                      value={`${ngrokUrl || import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'}/api/v1/bots/webhook/master/${bot.master_webhook_path}`}
                       className="text-xs bg-white text-black border border-gray-300 px-3 py-2 rounded flex-1 font-mono"
                     />
                     <Button

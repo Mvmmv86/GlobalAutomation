@@ -9,15 +9,17 @@ import { botsService, Bot as BotType, BotSubscription, CreateSubscriptionData } 
 import { SubscribeBotModal } from '../molecules/SubscribeBotModal'
 import { BotDetailsModal } from '../molecules/BotDetailsModal'
 import { useExchangeAccounts } from '@/hooks/useExchangeAccounts'
+import { useAuth } from '@/contexts/AuthContext'
 
 const BotsPage: React.FC = () => {
   const queryClient = useQueryClient()
+  const { user } = useAuth()
   const [selectedBot, setSelectedBot] = useState<BotType | null>(null)
   const [selectedSubscription, setSelectedSubscription] = useState<BotSubscription | null>(null)
   const [isSubscribeModalOpen, setIsSubscribeModalOpen] = useState(false)
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false)
 
-  const userId = '550e8400-e29b-41d4-a716-446655440002'
+  const userId = user?.id || ''
 
   const { data: availableBots = [], isLoading: loadingBots } = useQuery({
     queryKey: ['bots-available'],

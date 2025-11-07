@@ -75,3 +75,4 @@ Desktop.ini
 # Prisma
 prisma/.env
 node_modules
+apps/api-python/venv/

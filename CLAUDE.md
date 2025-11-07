@@ -61,9 +61,9 @@ Este arquivo orienta o **Claude Code** (claude.ai/code) — e qualquer outro dev
 
 | Serviço | Porta | Diretório | Status |
 |---------|-------|-----------|--------|
-| **Backend API** | `8000` | `/apps/api-python/` | ✅ Operacional (python3 main.py) |
+| **Backend API** | `8001` | `/apps/api-python/` | ✅ Operacional (python3 -m uvicorn main:app --host 0.0.0.0 --port 8001) |
 | **Frontend React** | `3000` | `/frontend-new/` | ✅ Operacional (npm run dev) |
-| **Auto Sync** | - | `/apps/api-python/auto_sync.sh` | ✅ Ativo (30s) |
+| **Auto Sync** | - | `/apps/api-python/auto_sync.sh` | ⚠️ Desabilitado para dev local |
 
 ### 📝 Nota Importante sobre Docker
 

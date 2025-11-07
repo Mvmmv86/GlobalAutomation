@@ -1,5 +1,8 @@
 """FastAPI main application - Entry point"""
 
+# DEBUG: Print to see import progress
+print("DEBUG: Starting main.py import")
+
 import structlog
 import json
 from datetime import datetime, date, timedelta
@@ -7,7 +10,9 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables
+print("DEBUG: Loading .env")
 load_dotenv()
+print("DEBUG: .env loaded")
 from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -18,6 +23,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+print("DEBUG: Importing controllers...")
 from presentation.controllers.webhook_controller import create_webhook_router
 from presentation.controllers.webhooks_crud_controller import create_webhooks_crud_router
 from presentation.controllers.tradingview_webhook_secure_controller import create_secure_tradingview_webhook_router
@@ -34,6 +40,7 @@ from presentation.controllers.websocket_controller import create_websocket_route
 from presentation.controllers.bots_controller import router as bots_router
 from presentation.controllers.bot_subscriptions_controller import router as bot_subscriptions_router
 from presentation.controllers.admin_controller import router as admin_router
+print("DEBUG: Controllers imported, importing infrastructure...")
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -48,6 +55,7 @@ from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.services.order_processor import order_processor
 from infrastructure.di import cleanup_container
 
+print("DEBUG: All imports complete, initializing limiter...")
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -77,32 +85,33 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    print("DEBUG: Lifespan starting...")
     settings = get_settings()
+    print(f"DEBUG: Got settings, env={settings.environment}")
 
     # Startup
+    print("DEBUG: About to log startup message")
     logger.info("Starting TradingView Gateway API", version=settings.version)
+    print("DEBUG: Logged startup message")
 
     try:
-        # Initialize database with asyncpg (pgBouncer transaction mode)
-        await transaction_db.connect()
-        logger.info("Database connected successfully (pgBouncer transaction mode)")
+        # Connect to database with timeout
+        logger.info("🔌 Connecting to database...")
+        try:
+            await asyncio.wait_for(transaction_db.connect(), timeout=10.0)
+            logger.info("✅ Database connected successfully")
+        except asyncio.TimeoutError:
+            logger.error("❌ Database connection timed out after 10s")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Database connection failed: {e}")
+            raise
 
-        # Initialize Redis (temporarily disabled for integration testing)
-        # await redis_manager.connect()
-        logger.info("Redis connection skipped for integration testing")
+        logger.info("⚠️ Redis connection DISABLED")
+        logger.info("⏸️ Background sync scheduler DISABLED")
+        logger.info("⏸️ Cache cleanup tasks DISABLED")
 
-        # Start background sync scheduler
-        logger.info("🚀 Starting background sync scheduler with real prices (30s interval)")
-        await sync_scheduler.start()  # Habilitado para dados em tempo real
-
-        # Start cache cleanup background task
-        logger.info("🧹 Starting cache cleanup background task (60s interval)")
-        import asyncio
-        asyncio.create_task(start_cache_cleanup_task())
-
-        # Start candles cache cleanup
-        logger.info("📊 Starting candles cache cleanup background task")
-        asyncio.create_task(start_candles_cache_cleanup())
+        logger.info("✅ Application startup complete (minimal mode for local testing)")
 
         yield
 
@@ -110,13 +119,16 @@ async def lifespan(app: FastAPI):
         # Shutdown
         logger.info("Shutting down TradingView Gateway API")
 
-        # Stop background sync scheduler
-        logger.info("🛑 Stopping background sync scheduler")
-        await sync_scheduler.stop()
+        # Stop background sync scheduler (DISABLED)
+        # logger.info("🛑 Stopping background sync scheduler")
+        # await sync_scheduler.stop()
 
-        # Close connections
-        await transaction_db.disconnect()
-        # await redis_manager.disconnect()
+        # Close database connection (se foi criada)
+        if transaction_db._pool is not None:
+            logger.info("🔌 Disconnecting from database...")
+            await transaction_db.disconnect()
+            logger.info("✅ Database disconnected")
+        # await redis_manager.disconnect()  # Redis ainda desabilitado
 
         # Cleanup DI container
         await cleanup_container()
@@ -286,7 +298,9 @@ def create_app() -> FastAPI:
 
 
 # Create app instance
+print("DEBUG: Creating app instance...")
 app = create_app()
+print("DEBUG: App instance created!")
 
 
 # ============================================================================

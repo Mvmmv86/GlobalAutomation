@@ -40,18 +40,18 @@ class PositionsCache:
     Thread-safe cache for positions data with automatic TTL expiration.
 
     Design decisions:
-    - TTL of 3s: Balance between freshness and performance
+    - TTL of 30s: Balance between freshness and performance (PERFORMANCE OPTIMIZATION)
     - User-scoped keys: Prevent data leakage between users
     - Automatic cleanup: Remove stale entries every 60s
     - Metrics: Track hits/misses for monitoring
     """
 
-    def __init__(self, default_ttl: int = 3):
+    def __init__(self, default_ttl: int = 30):
         """
         Initialize cache with default TTL.
 
         Args:
-            default_ttl: Default time-to-live in seconds (default: 3s)
+            default_ttl: Default time-to-live in seconds (default: 30s for better performance)
         """
         self._cache: Dict[str, CacheEntry] = {}
         self._lock = asyncio.Lock()
@@ -235,7 +235,7 @@ def get_positions_cache() -> PositionsCache:
     """
     global _positions_cache
     if _positions_cache is None:
-        _positions_cache = PositionsCache(default_ttl=3)
+        _positions_cache = PositionsCache(default_ttl=30)  # PERFORMANCE OPTIMIZATION: 30s TTL
     return _positions_cache
 
 

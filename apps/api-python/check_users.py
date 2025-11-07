@@ -22,16 +22,18 @@ async def check_users():
     print("\n📊 USUÁRIOS CADASTRADOS NO BANCO:")
     print("=" * 60)
     
-    users = await conn.fetch("SELECT email, name, is_active, is_verified FROM users ORDER BY email")
-    
+    users = await conn.fetch("SELECT email, name, is_active, is_verified, is_admin FROM users ORDER BY email")
+
     if not users:
         print("❌ Nenhum usuário encontrado!")
     else:
         for user in users:
             status = "✅ Ativo" if user['is_active'] else "❌ Inativo"
             verified = "✅" if user['is_verified'] else "❌"
+            admin = "👑 ADMIN" if user['is_admin'] else "👤 Cliente"
             print(f"📧 Email: {user['email']}")
             print(f"   Nome: {user['name']}")
+            print(f"   Tipo: {admin}")
             print(f"   Status: {status}")
             print(f"   Verificado: {verified}")
             print("-" * 40)

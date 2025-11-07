@@ -244,11 +244,11 @@ export const useBalancesSummary = () => {
   return useQuery({
     queryKey: ['balances-summary-v2'],
     queryFn: dashboardService.getBalancesSummary,
-    // 🚀 PERFORMANCE: Reduced refetch interval to minimize API calls
-    // Backend cache: 3s TTL, so we can refetch less frequently
-    staleTime: 10 * 1000, // 10 seconds
-    gcTime: 30 * 1000, // 30 seconds garbage collection
-    refetchInterval: 15 * 1000, // refetch every 15 seconds (reduced from 5s)
+    // 🚀 PERFORMANCE OPTIMIZATION: Aligned with backend 30s cache TTL
+    // Backend cache: 30s TTL, refetch just before cache expires
+    staleTime: 25 * 1000, // 25 seconds - consider stale just before cache expires
+    gcTime: 60 * 1000, // 60 seconds garbage collection
+    refetchInterval: 30 * 1000, // refetch every 30 seconds (aligned with backend TTL)
     refetchIntervalInBackground: true,
     retry: 1,
   })
@@ -286,10 +286,11 @@ export const useAccountBalance = (accountId?: string) => {
       return null
     },
     enabled: !!accountId,
-    // 🚀 Aggressive refresh for real-time balance updates
-    staleTime: 0, // Always consider data stale
-    gcTime: 0, // No cache
-    refetchInterval: 10 * 1000, // Refetch every 10 seconds
+    // 🚀 PERFORMANCE OPTIMIZATION: Aligned with backend 30s cache TTL
+    // Backend cache: 30s TTL, balance data doesn't change that rapidly
+    staleTime: 25 * 1000, // 25 seconds
+    gcTime: 60 * 1000, // 60 seconds
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds (aligned with backend TTL)
     refetchIntervalInBackground: true,
   })
 }

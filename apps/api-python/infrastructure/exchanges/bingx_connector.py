@@ -901,10 +901,15 @@ class BingXConnector:
             params = {
                 "symbol": symbol_bingx,
                 "side": side.upper(),
-                "leverage": leverage
+                "leverage": leverage  # Keep as integer - BingX API expects number
             }
 
-            result = await self._make_request("POST", "/openApi/swap/v2/trade/leverage", params, signed=True)
+            logger.info(f"🔧 Setting leverage - Symbol: {symbol_bingx}, Side: {side.upper()}, Leverage: {leverage} (type: {type(leverage).__name__})")
+
+            # BingX FUTURES v2 endpoints require params in BODY (form-urlencoded), not URL
+            result = await self._make_request("POST", "/openApi/swap/v2/trade/leverage", params, signed=True, use_body=True)
+
+            logger.info(f"Set leverage result: {result}")
 
             if result.get("code") == 0:
                 return {
@@ -931,9 +936,9 @@ class BingXConnector:
         side: str,
         quantity: float,
         stop_price: float,
-        reduce_only: bool = True
+        reduce_only: bool = False
     ) -> Dict[str, Any]:
-        """Create stop loss order for futures"""
+        """Create stop loss order for futures (reduce_only=False for Hedge mode compatibility)"""
         return await self.create_futures_order(
             symbol=symbol,
             side=side,
@@ -949,9 +954,9 @@ class BingXConnector:
         side: str,
         quantity: float,
         stop_price: float,
-        reduce_only: bool = True
+        reduce_only: bool = False
     ) -> Dict[str, Any]:
-        """Create take profit order for futures"""
+        """Create take profit order for futures (reduce_only=False for Hedge mode compatibility)"""
         return await self.create_futures_order(
             symbol=symbol,
             side=side,

@@ -2,7 +2,6 @@
 
 import structlog
 import json
-import asyncio
 from datetime import datetime, date, timedelta
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -85,16 +84,8 @@ async def lifespan(app: FastAPI):
 
     try:
         # Initialize database with asyncpg (pgBouncer transaction mode)
-        logger.info("Attempting database connection...")
-        try:
-            await asyncio.wait_for(transaction_db.connect(), timeout=30.0)
-            logger.info("Database connected successfully (pgBouncer transaction mode)")
-        except asyncio.TimeoutError:
-            logger.error("Database connection timeout after 30s - check DATABASE_URL and Supabase IP whitelist")
-            raise
-        except Exception as e:
-            logger.error(f"Database connection failed: {e}")
-            raise
+        await transaction_db.connect()
+        logger.info("Database connected successfully (pgBouncer transaction mode)")
 
         # Initialize Redis (temporarily disabled for integration testing)
         # await redis_manager.connect()
@@ -106,6 +97,7 @@ async def lifespan(app: FastAPI):
 
         # Start cache cleanup background task
         logger.info("🧹 Starting cache cleanup background task (60s interval)")
+        import asyncio
         asyncio.create_task(start_cache_cleanup_task())
 
         # Start candles cache cleanup

@@ -284,7 +284,6 @@ class BotBroadcastService:
         execution_start = datetime.utcnow()
         subscription_id = subscription["subscription_id"]
         user_id = subscription["user_id"]
-        exchange_account_id = subscription["exchange_account_id"]
 
         try:
             # 1. Risk management checks
@@ -296,7 +295,7 @@ class BotBroadcastService:
                     reason=risk_check["reason"]
                 )
                 await self._record_execution(
-                    signal_id, subscription_id, user_id, exchange_account_id,
+                    signal_id, subscription_id, user_id,
                     "skipped", None, None, None,
                     risk_check["reason"], None
                 )
@@ -329,19 +328,7 @@ class BotBroadcastService:
 
             # 6. Set leverage on exchange
             if subscription["market_type"] == "futures":
-                # BingX Hedge Mode requires setting leverage for BOTH LONG and SHORT sides separately
-                logger.info(f"Setting leverage for {ticker}: {leverage}x (Hedge mode - setting for BOTH LONG and SHORT)")
-
-                # Set leverage for LONG side
-                leverage_result_long = await connector.set_leverage(ticker, leverage, "LONG")
-                # Set leverage for SHORT side
-                leverage_result_short = await connector.set_leverage(ticker, leverage, "SHORT")
-
-                if leverage_result_long.get("success") and leverage_result_short.get("success"):
-                    logger.info(f"✅ Leverage set successfully to {leverage}x for BOTH sides")
-                else:
-                    logger.error(f"❌ Failed to set leverage - LONG: {leverage_result_long}, SHORT: {leverage_result_short}")
-                    # Continue anyway - the order will use current leverage setting
+                await connector.set_leverage(ticker, leverage)
 
             # 7. Execute order based on action
             order_result = None
@@ -369,48 +356,42 @@ class BotBroadcastService:
                 order_result = await connector.close_position(ticker)
 
             # 8. Create Stop Loss and Take Profit for BUY/SELL orders
-            # COMMENTED OUT FOR TESTING - Focus on main order execution first
-            sl_order_id = None
-            tp_order_id = None
-            sl_price = None
-            tp_price = None
+            if order_result and action.lower() in ["buy", "sell"]:
+                entry_price = float(order_result.get("avgPrice", current_price))
+                executed_qty = float(order_result.get("executedQty", quantity))
 
-            # if order_result and action.lower() in ["buy", "sell"]:
-            #     entry_price = float(order_result.get("avgPrice", current_price))
-            #     executed_qty = float(order_result.get("executedQty", quantity))
-            #
-            #     # Calculate SL/TP prices
-            #     sl_tp_prices = self._calculate_sl_tp_prices(
-            #         action=action.lower(),
-            #         entry_price=entry_price,
-            #         stop_loss_pct=config["stop_loss_pct"],
-            #         take_profit_pct=config["take_profit_pct"]
-            #     )
-            #
-            #     sl_price = sl_tp_prices["stop_loss"]
-            #     tp_price = sl_tp_prices["take_profit"]
-            #
-            #     # Create SL/TP orders with retry
-            #     sl_tp_result = await self._create_sl_tp_orders(
-            #         connector=connector,
-            #         ticker=ticker,
-            #         action=action.lower(),
-            #         quantity=executed_qty,
-            #         sl_price=sl_price,
-            #         tp_price=tp_price
-            #     )
-            #
-            #     sl_order_id = sl_tp_result.get("sl_order_id")
-            #     tp_order_id = sl_tp_result.get("tp_order_id")
-            #
-            #     logger.info(
-            #         "SL/TP orders created",
-            #         user_id=str(user_id),
-            #         sl_order_id=sl_order_id,
-            #         tp_order_id=tp_order_id,
-            #         sl_price=sl_price,
-            #         tp_price=tp_price
-            #     )
+                # Calculate SL/TP prices
+                sl_tp_prices = self._calculate_sl_tp_prices(
+                    action=action.lower(),
+                    entry_price=entry_price,
+                    stop_loss_pct=config["stop_loss_pct"],
+                    take_profit_pct=config["take_profit_pct"]
+                )
+
+                sl_price = sl_tp_prices["stop_loss"]
+                tp_price = sl_tp_prices["take_profit"]
+
+                # Create SL/TP orders with retry
+                sl_tp_result = await self._create_sl_tp_orders(
+                    connector=connector,
+                    ticker=ticker,
+                    action=action.lower(),
+                    quantity=executed_qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price
+                )
+
+                sl_order_id = sl_tp_result.get("sl_order_id")
+                tp_order_id = sl_tp_result.get("tp_order_id")
+
+                logger.info(
+                    "SL/TP orders created",
+                    user_id=str(user_id),
+                    sl_order_id=sl_order_id,
+                    tp_order_id=tp_order_id,
+                    sl_price=sl_price,
+                    tp_price=tp_price
+                )
 
             # 9. Calculate execution time
             execution_end = datetime.utcnow()
@@ -424,7 +405,7 @@ class BotBroadcastService:
             executed_qty = order_result.get("executedQty") or quantity
 
             await self._record_execution(
-                signal_id, subscription_id, user_id, exchange_account_id,
+                signal_id, subscription_id, user_id,
                 "success", exchange_order_id, executed_price, executed_qty,
                 None, None, execution_time_ms,
                 sl_order_id, tp_order_id, sl_price, tp_price
@@ -464,7 +445,7 @@ class BotBroadcastService:
             )
 
             await self._record_execution(
-                signal_id, subscription_id, user_id, exchange_account_id,
+                signal_id, subscription_id, user_id,
                 "failed", None, None, None,
                 str(e), None, execution_time_ms,
                 None, None, None, None  # No SL/TP for failed orders
@@ -531,11 +512,6 @@ class BotBroadcastService:
         Returns:
             Dict with "stop_loss" and "take_profit" prices
         """
-        # Convert to float to avoid Decimal/float type errors
-        entry_price = float(entry_price)
-        stop_loss_pct = float(stop_loss_pct)
-        take_profit_pct = float(take_profit_pct)
-
         if action == "buy":
             # Long position
             sl_price = entry_price * (1 - stop_loss_pct / 100)
@@ -667,7 +643,6 @@ class BotBroadcastService:
         signal_id: UUID,
         subscription_id: UUID,
         user_id: UUID,
-        exchange_account_id: UUID,
         status: str,
         exchange_order_id: Optional[str],
         executed_price: Optional[float],
@@ -683,15 +658,15 @@ class BotBroadcastService:
         """Record execution result in database including SL/TP orders"""
         await self.db.execute("""
             INSERT INTO bot_signal_executions (
-                signal_id, subscription_id, user_id, exchange_account_id, status,
+                signal_id, subscription_id, user_id, status,
                 exchange_order_id, executed_price, executed_quantity,
                 error_message, error_code, execution_time_ms,
                 stop_loss_order_id, take_profit_order_id,
                 stop_loss_price, take_profit_price,
                 created_at, completed_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
         """,
-            signal_id, subscription_id, user_id, exchange_account_id, status,
+            signal_id, subscription_id, user_id, status,
             exchange_order_id, executed_price, executed_quantity,
             error_message, error_code, execution_time_ms,
             sl_order_id, tp_order_id, sl_price, tp_price

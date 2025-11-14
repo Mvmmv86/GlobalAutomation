@@ -34,6 +34,7 @@ from presentation.controllers.websocket_controller import create_websocket_route
 from presentation.controllers.bots_controller import router as bots_router
 from presentation.controllers.bot_subscriptions_controller import router as bot_subscriptions_router
 from presentation.controllers.admin_controller import router as admin_router
+from presentation.controllers.chart_data_controller import router as chart_data_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -280,6 +281,7 @@ def create_app() -> FastAPI:
     app.include_router(bots_router)  # Bots management (copy-trading)
     app.include_router(bot_subscriptions_router)  # Bot subscriptions
     app.include_router(admin_router)  # Admin management (dashboard, users, bots CRUD)
+    app.include_router(chart_data_router)  # Chart data and WebSocket support
 
 
     return app

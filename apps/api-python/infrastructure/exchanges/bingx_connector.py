@@ -948,6 +948,104 @@ class BingXConnector:
             reduce_only=reduce_only
         )
 
+    async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        """Cancel a specific order by ID"""
+        try:
+            symbol_bingx = self._format_symbol(symbol)
+
+            params = {
+                "symbol": symbol_bingx,
+                "orderId": order_id
+            }
+
+            logger.info(f"🚫 Canceling order - Symbol: {symbol_bingx}, OrderID: {order_id}")
+
+            result = await self.api_request(
+                method="DELETE",
+                path="/openApi/swap/v2/trade/order",
+                params=params
+            )
+
+            if result.get("code") == 0:
+                logger.info(f"✅ Order cancelled successfully: {order_id}")
+                return {
+                    "success": True,
+                    "order_id": order_id,
+                    "data": result.get("data")
+                }
+            else:
+                logger.error(f"❌ Failed to cancel order: {result}")
+                return {
+                    "success": False,
+                    "error": result.get("msg", "Failed to cancel order"),
+                    "code": result.get("code")
+                }
+
+        except Exception as e:
+            logger.error(f"Error canceling order: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def create_sl_tp_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        order_type: str,
+        stop_price: float,
+        position_side: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a Stop Loss or Take Profit order"""
+        try:
+            symbol_bingx = self._format_symbol(symbol)
+
+            # Map order type
+            bingx_order_type = {
+                "STOP_LOSS": "STOP_MARKET",
+                "TAKE_PROFIT": "TAKE_PROFIT_MARKET"
+            }.get(order_type.upper(), order_type)
+
+            params = {
+                "symbol": symbol_bingx,
+                "side": side.upper(),
+                "type": bingx_order_type,
+                "stopPrice": stop_price,
+                "quantity": quantity,
+                "workingType": "MARK_PRICE"
+            }
+
+            # Add position side for hedge mode if provided
+            if position_side:
+                params["positionSide"] = position_side.upper()
+
+            logger.info(f"📝 Creating {order_type} order - Symbol: {symbol_bingx}, Side: {side}, Stop: {stop_price}")
+
+            result = await self.api_request(
+                method="POST",
+                path="/openApi/swap/v2/trade/order",
+                params=params
+            )
+
+            if result.get("code") == 0:
+                order_data = result.get("data", {}).get("order", {})
+                order_id = order_data.get("orderId")
+                logger.info(f"✅ {order_type} order created successfully: {order_id}")
+                return {
+                    "success": True,
+                    "order_id": order_id,
+                    "data": order_data
+                }
+            else:
+                logger.error(f"❌ Failed to create {order_type} order: {result}")
+                return {
+                    "success": False,
+                    "error": result.get("msg", f"Failed to create {order_type} order"),
+                    "code": result.get("code")
+                }
+
+        except Exception as e:
+            logger.error(f"Error creating {order_type} order: {e}")
+            return {"success": False, "error": str(e)}
+
     async def create_take_profit_order(
         self,
         symbol: str,
@@ -1333,6 +1431,74 @@ class BingXConnector:
 
         except Exception as e:
             logger.error(f"Error getting BingX futures orders: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_open_orders(
+        self,
+        symbol: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get OPEN/PENDING orders (SL/TP lines for charts)
+
+        BingX API: /openApi/swap/v2/trade/openOrders
+        Returns only orders with status NEW (pending activation)
+
+        Returns:
+            dict: {
+                "success": bool,
+                "demo": bool,
+                "orders": [
+                    {
+                        "orderId": "1234567890",
+                        "symbol": "SOL-USDT",
+                        "status": "NEW",
+                        "side": "SELL",
+                        "positionSide": "LONG",
+                        "type": "STOP_MARKET",
+                        "origQty": "1.5",
+                        "price": "0",
+                        "stopPrice": "140.50",
+                        "time": 1672531200000,
+                        "updateTime": 1672531200000
+                    }
+                ]
+            }
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orders": []
+                }
+
+            params = {}
+
+            if symbol:
+                # Normalize symbol to BingX format (SOL-USDT)
+                params["symbol"] = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
+
+            # BingX FUTURES v2 endpoint for open orders
+            result = await self._make_request("GET", "/openApi/swap/v2/trade/openOrders", params, signed=True)
+
+            if result.get("code") == 0:
+                orders = result.get("data", {}).get("orders", [])
+                logger.info(f"✅ BingX open orders retrieved: {len(orders)} orders for {symbol or 'all symbols'}")
+                return {
+                    "success": True,
+                    "demo": False,
+                    "orders": orders
+                }
+            else:
+                error_msg = result.get("msg", "Unknown error")
+                logger.error(f"❌ BingX open orders failed: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting BingX open orders: {e}")
             return {"success": False, "error": str(e)}
 
     async def get_closed_positions_from_orders(

@@ -5,11 +5,17 @@ import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { PriceDisplay } from '../molecules/PriceDisplay'
 import { SymbolSelector } from '../molecules/SymbolSelector'
-import { TradingViewWidget } from '../atoms/TradingViewWidget'
-import { TradingViewFallback } from '../atoms/TradingViewFallback'
-import { SimpleChart } from '../atoms/SimpleChart'
-import { CustomChart } from '../atoms/CustomChart'
+// ❌ IMPORTS DE GRÁFICOS ANTIGOS REMOVIDOS - APENAS CANVASPROCHART
+// import { TradingViewWidget } from '../atoms/TradingViewWidget'
+// import { TradingViewFallback } from '../atoms/TradingViewFallback'
+// import { SimpleChart } from '../atoms/SimpleChart'
+// import { CustomChart } from '../atoms/CustomChart'
+import { CanvasProChart, CanvasProChartHandle } from '../charts/CanvasProChart'
+import { IndicatorPanel } from '../charts/CanvasProChart/components/IndicatorPanel'
+import { AnyIndicatorConfig, IndicatorType, INDICATOR_PRESETS } from '../charts/CanvasProChart/indicators/types'
 import { useChartPositions } from '@/hooks/useChartPositions'
+import { useCandles } from '@/hooks/useCandles'
+import { usePositionOrders } from '@/hooks/usePositionOrders'
 import { cn } from '@/lib/utils'
 import { updatePositionSLTP } from '@/lib/api'
 import { toast } from 'sonner'
@@ -44,6 +50,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 }) => {
   const queryClient = useQueryClient()
   const containerRef = useRef<HTMLDivElement>(null)
+  const canvasProChartRef = useRef<CanvasProChartHandle>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isLoading, setIsLoading] = useState(false) // ✅ Iniciar com false para carregamento automático
   const [currentPrice, setCurrentPrice] = useState<number>(0)
@@ -58,9 +65,10 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     return '60'
   })
 
-  const [chartMode, setChartMode] = useState<'custom' | 'tradingview' | 'fallback' | 'simple'>('custom')
-  // console.log('📱 ChartContainer - chartMode atual:', chartMode) // Removido para evitar re-renders
-  const [retryCount, setRetryCount] = useState(0)
+  // ✅ APENAS CANVASPROCHART DISPONÍVEL
+  const chartMode = 'canvas' // Fixado em canvas, sem outras opções
+
+  // const [retryCount, setRetryCount] = useState(0) // ❌ REMOVIDO - não precisa mais
 
   // ✅ Recuperar tema salvo do localStorage
   const [chartTheme, setChartTheme] = useState<'light' | 'dark'>(() => {
@@ -72,36 +80,11 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   })
 
   const [chartKey, setChartKey] = useState(0) // Voltar para 0 para abordagem mais simples
+
   const [showIndicators, setShowIndicators] = useState(false)
 
-  // Estado para controlar indicadores ativos
-  const [activeIndicators, setActiveIndicators] = useState<{
-    ema9: boolean
-    ema20: boolean
-    ema50: boolean
-    sma20: boolean
-    sma50: boolean
-    sma200: boolean
-    bollingerBands: boolean
-    rsi: boolean
-    macd: boolean
-    stochastic: boolean
-    atr: boolean
-    volume: boolean
-  }>({
-    ema9: false,
-    ema20: false,
-    ema50: false,
-    sma20: false,
-    sma50: false,
-    sma200: false,
-    bollingerBands: false,
-    rsi: false,
-    macd: false,
-    stochastic: false,
-    atr: false,
-    volume: true, // Volume ativo por padrão
-  })
+  // ✅ NOVO: Estado para controlar indicadores do sistema profissional (30+)
+  const [canvasIndicators, setCanvasIndicators] = useState<AnyIndicatorConfig[]>([])
 
   // Buscar posições do símbolo atual
   const {
@@ -113,7 +96,60 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     exchangeAccountId
   })
 
+  // 🔥 NOVO: Buscar dados de candles para CanvasChart
+  const { data: candleData } = useCandles(symbol, selectedInterval)
+
+  // 🔥 NOVO: Buscar ordens de SL/TP para CanvasChart
+  const { data: ordersData } = usePositionOrders(exchangeAccountId || '', symbol)
+
+  // 🚨 DEBUG CRÍTICO: Verificar qual modo de gráfico está ativo
+  console.log('🔴 ChartContainer RENDERIZADO:', {
+    chartMode,
+    symbol,
+    selectedInterval,
+    chartTheme,
+    chartPositionsLength: chartPositions?.length || 0,
+    chartPositions
+  })
+
   // ✅ Salvar configurações no localStorage quando mudarem
+  // Handlers para gerenciar indicadores
+  const handleAddIndicator = (type: IndicatorType) => {
+    if (!canvasProChartRef.current) return
+
+    const preset = INDICATOR_PRESETS[type]
+    const config: AnyIndicatorConfig = {
+      id: `${type.toLowerCase()}-${Date.now()}`,
+      type,
+      enabled: true,
+      displayType: preset.displayType || 'overlay',
+      color: preset.color || '#FFFFFF',
+      lineWidth: preset.lineWidth || 2,
+      params: preset.params || {}
+    } as AnyIndicatorConfig
+
+    canvasProChartRef.current.addIndicator(config)
+    setCanvasIndicators(prev => [...prev, config])
+    toast.success(`${type} adicionado ao gráfico`)
+  }
+
+  const handleRemoveIndicator = (id: string) => {
+    if (!canvasProChartRef.current) return
+
+    canvasProChartRef.current.removeIndicator(id)
+    setCanvasIndicators(prev => prev.filter(ind => ind.id !== id))
+    toast.info('Indicador removido')
+  }
+
+  const handleToggleIndicator = (id: string, enabled: boolean) => {
+    if (!canvasProChartRef.current) return
+
+    canvasProChartRef.current.updateIndicator(id, { enabled })
+    setCanvasIndicators(prev => prev.map(ind =>
+      ind.id === id ? { ...ind, enabled } : ind
+    ))
+  }
+
   useEffect(() => {
     localStorage.setItem('trading-timeframe', selectedInterval)
   }, [selectedInterval])
@@ -121,10 +157,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   useEffect(() => {
     localStorage.setItem('trading-theme', chartTheme)
   }, [chartTheme])
-
-  useEffect(() => {
-    localStorage.setItem('trading-indicators', JSON.stringify(activeIndicators))
-  }, [activeIndicators])
 
   // Mock data for price display - In real implementation, this would come from TradingView widget
   useEffect(() => {
@@ -176,18 +208,11 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     }
   }
 
-  const switchChartMode = () => {
-    if (chartMode === 'custom') {
-      setChartMode('tradingview')
-    } else if (chartMode === 'tradingview') {
-      setChartMode('fallback')
-    } else if (chartMode === 'fallback') {
-      setChartMode('simple')
-    } else {
-      setChartMode('custom')
-    }
-    setRetryCount(retryCount + 1)
-  }
+  // ❌ REMOVIDO - Apenas Canvas PRO disponível
+  // const switchChartMode = () => {
+  //   setChartMode('canvas')
+  //   setRetryCount(retryCount + 1)
+  // }
 
   // Fechar menu de indicadores ao clicar fora
   useEffect(() => {
@@ -205,28 +230,23 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   }, [showIndicators])
 
 
-  const getChartModeLabel = () => {
-    switch (chartMode) {
-      case 'custom': return 'Custom'
-      case 'tradingview': return 'TradingView'
-      case 'fallback': return 'TV Lite'
-      case 'simple': return 'Demo'
-      default: return 'Chart'
-    }
-  }
+  // ❌ REMOVIDO - getChartModeLabel não é mais necessário (apenas CanvasProChart)
 
   // Intervalos completos - memoizados para evitar re-renders
   const intervals = useMemo(() => [
     { label: '1m', value: '1' },
     { label: '3m', value: '3' },
     { label: '5m', value: '5' },
+    { label: '10m', value: '10' },  // ✅ NOVO: 10 minutos
     { label: '15m', value: '15' },
     { label: '30m', value: '30' },
     { label: '1h', value: '60' },
+    { label: '2h', value: '120' },  // ✅ NOVO: 2 horas
     { label: '4h', value: '240' },
     { label: '1d', value: '1D' },
-    { label: '1w', value: '1W' },  // ✅ NOVO: Semanal
-    { label: '1M', value: '1M' }   // ✅ NOVO: Mensal
+    { label: '3d', value: '3D' },   // ✅ NOVO: 3 dias
+    { label: '1w', value: '1W' },
+    { label: '1M', value: '1M' }
   ], [])
 
   return (
@@ -321,141 +341,21 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                 <BarChart3 className="h-4 w-4" />
               </Button>
 
-              {showIndicators && (
-                <div className="absolute right-0 top-10 w-72 bg-background border rounded-lg shadow-xl z-50 p-4 max-h-[500px] overflow-y-auto">
-                  <div className="text-sm font-semibold mb-3 flex items-center">
-                    <BarChart3 className="h-4 w-4 mr-2" />
-                    Indicadores Técnicos
-                  </div>
-
-                  {/* Médias Móveis Exponenciais */}
-                  <div className="mb-4">
-                    <h4 className="text-xs font-semibold text-muted-foreground mb-2">EMA - Média Móvel Exponencial</h4>
-                    <div className="space-y-2">
-                      {[
-                        { key: 'ema9', name: 'EMA (9)', desc: 'Curto prazo', color: '#2196F3' },
-                        { key: 'ema20', name: 'EMA (20)', desc: 'Médio prazo', color: '#2962FF' },
-                        { key: 'ema50', name: 'EMA (50)', desc: 'Longo prazo', color: '#1565C0' },
-                      ].map((indicator) => (
-                        <div key={indicator.key} className="flex items-start space-x-3">
-                          <input
-                            type="checkbox"
-                            id={indicator.key}
-                            checked={activeIndicators[indicator.key as keyof typeof activeIndicators]}
-                            onChange={(e) => {
-                              setActiveIndicators(prev => ({
-                                ...prev,
-                                [indicator.key]: e.target.checked
-                              }))
-                              console.log(`📊 ${indicator.name}: ${e.target.checked ? 'ON' : 'OFF'}`)
-                            }}
-                            className="w-4 h-4 mt-0.5 text-primary"
-                          />
-                          <div className="flex-1">
-                            <label htmlFor={indicator.key} className="text-sm font-medium cursor-pointer flex items-center gap-2">
-                              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: indicator.color }}></span>
-                              {indicator.name}
-                            </label>
-                            <p className="text-xs text-muted-foreground">{indicator.desc}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Médias Móveis Simples */}
-                  <div className="mb-4">
-                    <h4 className="text-xs font-semibold text-muted-foreground mb-2">SMA - Média Móvel Simples</h4>
-                    <div className="space-y-2">
-                      {[
-                        { key: 'sma20', name: 'SMA (20)', desc: 'Curto prazo', color: '#FF9800' },
-                        { key: 'sma50', name: 'SMA (50)', desc: 'Médio prazo', color: '#FF6D00' },
-                        { key: 'sma200', name: 'SMA (200)', desc: 'Longo prazo', color: '#E65100' },
-                      ].map((indicator) => (
-                        <div key={indicator.key} className="flex items-start space-x-3">
-                          <input
-                            type="checkbox"
-                            id={indicator.key}
-                            checked={activeIndicators[indicator.key as keyof typeof activeIndicators]}
-                            onChange={(e) => {
-                              setActiveIndicators(prev => ({
-                                ...prev,
-                                [indicator.key]: e.target.checked
-                              }))
-                              console.log(`📊 ${indicator.name}: ${e.target.checked ? 'ON' : 'OFF'}`)
-                            }}
-                            className="w-4 h-4 mt-0.5 text-primary"
-                          />
-                          <div className="flex-1">
-                            <label htmlFor={indicator.key} className="text-sm font-medium cursor-pointer flex items-center gap-2">
-                              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: indicator.color }}></span>
-                              {indicator.name}
-                            </label>
-                            <p className="text-xs text-muted-foreground">{indicator.desc}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Outros Indicadores */}
-                  <div className="mb-4">
-                    <h4 className="text-xs font-semibold text-muted-foreground mb-2">Outros Indicadores</h4>
-                    <div className="space-y-2">
-                      {[
-                        { key: 'bollingerBands', name: 'Bollinger Bands', desc: 'Bandas de volatilidade', color: '#9E9E9E' },
-                        { key: 'volume', name: 'Volume', desc: 'Volume de negociação', color: '#26a69a' },
-                      ].map((indicator) => (
-                        <div key={indicator.key} className="flex items-start space-x-3">
-                          <input
-                            type="checkbox"
-                            id={indicator.key}
-                            checked={activeIndicators[indicator.key as keyof typeof activeIndicators]}
-                            onChange={(e) => {
-                              setActiveIndicators(prev => ({
-                                ...prev,
-                                [indicator.key]: e.target.checked
-                              }))
-                              console.log(`📊 ${indicator.name}: ${e.target.checked ? 'ON' : 'OFF'}`)
-                            }}
-                            className="w-4 h-4 mt-0.5 text-primary"
-                          />
-                          <div className="flex-1">
-                            <label htmlFor={indicator.key} className="text-sm font-medium cursor-pointer flex items-center gap-2">
-                              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: indicator.color }}></span>
-                              {indicator.name}
-                            </label>
-                            <p className="text-xs text-muted-foreground">{indicator.desc}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="mt-3 pt-3 border-t">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full text-xs"
-                      onClick={() => setShowIndicators(false)}
-                    >
-                      Fechar
-                    </Button>
-                  </div>
-                </div>
-              )}
+              {/* PAINEL DE INDICADORES ANTIGO REMOVIDO - USANDO NOVO PAINEL PROFISSIONAL DO CANVASPROCHART */}
             </div>
 
-            {/* Settings */}
+            {/* ❌ BOTÃO DE TROCA DE GRÁFICO REMOVIDO - Apenas Canvas PRO disponível */}
+            {false && (
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8"
-              onClick={switchChartMode}
-              title={`Trocar para ${getChartModeLabel() === 'TradingView' ? 'TV Lite' : getChartModeLabel() === 'TV Lite' ? 'Demo' : 'TradingView'}`}
+              onClick={() => {}}
+              title="Apenas Canvas PRO disponível"
             >
               <Settings className="h-4 w-4" />
             </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -484,9 +384,123 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             </div>
           )}
 
-          {/* Renderização condicional baseada no modo do gráfico */}
-          {chartMode === 'custom' && (
+          {/* ========================================
+               ✅✅✅ APENAS CANVASPROCHART - SISTEMA PROFISSIONAL 30+ INDICADORES ✅✅✅
+               ======================================== */}
+          {/* SEMPRE RENDERIZA CANVASPROCHART - NÃO HÁ OUTRAS OPÇÕES */}
+          {console.log('🎨 RENDERIZANDO CanvasProChart com props:', {
+            symbol,
+            interval: selectedInterval,
+            candlesCount: candleData?.candles?.length || 0,
+            stopLoss: ordersData?.stopLoss,
+            takeProfit: ordersData?.takeProfit,
+            positionsCount: chartPositions?.length || 0
+          })}
+          <CanvasProChart
+              ref={canvasProChartRef}
+              key={`canvas-${chartKey}-${symbol}-${selectedInterval}`}
+              symbol={symbol}
+              interval={selectedInterval}
+              theme={chartTheme}
+              candles={candleData?.candles || []}
+              positions={chartPositions}
+              stopLoss={ordersData?.stopLoss}
+              takeProfit={ordersData?.takeProfit}
+              onDragSLTP={async (type, newPrice) => {
+                console.log(`🎯 CanvasChart: ${type} arrastado para $${newPrice.toFixed(2)}`)
+
+                const queryKey = ['position-orders', exchangeAccountId, symbol]
+
+                try {
+                  // Optimistic update
+                  await queryClient.cancelQueries({ queryKey })
+                  const previousData = queryClient.getQueryData(queryKey)
+
+                  queryClient.setQueryData(queryKey, (oldData: any) => {
+                    if (!oldData) return oldData
+                    return {
+                      ...oldData,
+                      [type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit']: newPrice
+                    }
+                  })
+
+                  console.log(`📝 UI atualizada otimisticamente: ${type} -> $${newPrice}`)
+
+                  toast.loading(`Atualizando ${type === 'STOP_LOSS' ? 'Stop Loss' : 'Take Profit'}...`, {
+                    id: `sltp-canvas-${symbol}`
+                  })
+
+                  // Chamar API
+                  const position = chartPositions?.[0]
+                  if (!position) throw new Error('Posição não encontrada')
+
+                  const result = await updatePositionSLTP(
+                    position.id,
+                    type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit',
+                    newPrice
+                  )
+
+                  // Confirmar com backend
+                  queryClient.setQueryData(queryKey, (oldData: any) => {
+                    if (!oldData) return oldData
+                    return {
+                      ...oldData,
+                      [type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit']: result.new_price
+                    }
+                  })
+
+                  await queryClient.invalidateQueries({ queryKey })
+                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
+
+                  toast.success(result.message, {
+                    id: `sltp-canvas-${symbol}`,
+                    description: `Nova ordem criada: ${result.order_id}`
+                  })
+
+                  console.log('✅ SL/TP CanvasChart confirmado:', result)
+
+                } catch (error: any) {
+                  console.error('❌ Erro ao atualizar SL/TP no CanvasChart:', error)
+
+                  const previousData = queryClient.getQueryData(queryKey)
+                  queryClient.setQueryData(queryKey, previousData)
+
+                  toast.error('Erro ao atualizar ordem', {
+                    id: `sltp-canvas-${symbol}`,
+                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
+                  })
+                }
+              }}
+              width="100%"
+              height="100%"
+              className="w-full h-full rounded-b-lg overflow-hidden"
+            />
+
+          {/* Painel de Indicadores Profissional (30+) */}
+          {showIndicators && (
+            <IndicatorPanel
+              activeIndicators={canvasIndicators}
+              onAddIndicator={handleAddIndicator}
+              onRemoveIndicator={handleRemoveIndicator}
+              onToggleIndicator={handleToggleIndicator}
+              theme={chartTheme}
+              onClose={() => setShowIndicators(false)}
+            />
+          )}
+
+          {/* ========================================
+               ❌ GRÁFICOS COMENTADOS (DESATIVADOS)
+               ======================================== */}
+
+          {/* ❌❌❌ CUSTOMCHART REMOVIDO COMPLETAMENTE - APENAS CANVASPROCHART ❌❌❌ */}
+          {false && (
             <>
+            {console.log('🟢 RENDERIZANDO CustomChart com props:', {
+              symbol,
+              interval: selectedInterval,
+              chartPositions,
+              chartPositionsLength: chartPositions?.length || 0
+            })}
             <CustomChart
               key={`custom-${chartKey}-${symbol}-${selectedInterval}`}
               symbol={symbol}
@@ -581,7 +595,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             </>
           )}
 
-          {chartMode === 'tradingview' && (
+          {/* ❌❌❌ TRADINGVIEW REMOVIDO COMPLETAMENTE - APENAS CANVASPROCHART ❌❌❌ */}
+          {false && (
             <>
             {/* Removido console.log para evitar re-renders */}
             <TradingViewWidget
@@ -600,7 +615,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             </>
           )}
 
-          {chartMode === 'fallback' && (
+          {/* ❌❌❌ TRADINGVIEW FALLBACK REMOVIDO - APENAS CANVASPROCHART ❌❌❌ */}
+          {false && (
             <>
             {/* Removido console.log para evitar re-renders */}
             <div
@@ -622,7 +638,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             </>
           )}
 
-          {chartMode === 'simple' && (
+          {/* ❌❌❌ SIMPLE CHART REMOVIDO - APENAS CANVASPROCHART ❌❌❌ */}
+          {false && (
             <SimpleChart
               symbol={symbol}
               width="100%"

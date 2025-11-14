@@ -13,6 +13,16 @@ import BotsPage from '../pages/BotsPage'
 import OrdersPage from '../pages/OrdersPage'
 import PositionsPage from '../pages/PositionsPage'
 import SettingsPage from '../pages/SettingsPage'
+import DirtyRegionsTestPage from '../pages/DirtyRegionsTestPage'
+import { IndicatorTestPage } from '../pages/IndicatorTestPage'
+import { AllIndicatorsTestPage } from '../pages/AllIndicatorsTestPage'
+import LayerTestPage from '../pages/LayerTestPage'
+import PanelTestPage from '../pages/PanelTestPage'
+import RenderersTestPage from '../pages/RenderersTestPage'
+import WorkersTestPage from '../pages/WorkersTestPage'
+import IndicatorWorkerTestPage from '../pages/IndicatorWorkerTestPage'
+import ExtendedIndicatorsTestPage from '../pages/ExtendedIndicatorsTestPage'
+import { RealtimeChartTestPage } from '../pages/RealtimeChartTestPage'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 
 interface ProtectedRouteProps {
@@ -167,9 +177,23 @@ export const AppRouter: React.FC = () => {
         }
       />
 
+      {/* Test Routes - ALWAYS accessible (no auth check) */}
+      <Route path="/test" element={<DirtyRegionsTestPage />} />
+      <Route path="/test-indicators" element={<IndicatorTestPage />} />
+      <Route path="/test-all-indicators" element={<AllIndicatorsTestPage />} />
+      <Route path="/test-realtime" element={<RealtimeChartTestPage />} />
+
       {/* Default redirect */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      
+
+      {/* Test Routes - Development Only */}
+      <Route path="/test/layers" element={<LayerTestPage />} />
+      <Route path="/test/panels" element={<PanelTestPage />} />
+      <Route path="/test/renderers" element={<RenderersTestPage />} />
+      <Route path="/test/workers" element={<WorkersTestPage />} />
+      <Route path="/test/indicator-workers" element={<IndicatorWorkerTestPage />} />
+      <Route path="/test/extended-indicators" element={<ExtendedIndicatorsTestPage />} />
+
       {/* 404 fallback */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

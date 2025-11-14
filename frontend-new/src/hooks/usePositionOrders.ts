@@ -45,19 +45,25 @@ export const usePositionOrders = (exchangeAccountId?: string, symbol?: string) =
 
       const orders = response.data.data
 
-      // Filtrar ordens ativas de SL/TP para o símbolo
-      // Status válidos: 'submitted', 'open', 'pending' (não 'new' que causava bug)
+      // CRITICAL FIX: Filtrar ordens PENDENTES de SL/TP para o símbolo
+      // Status 'pending' = ordem criada na exchange mas ainda não executada
+      // Backend agora retorna 'pending' para ordens vindas da API
       const activeOrders = orders.filter(
-        order => ['submitted', 'open', 'pending'].includes(order.status) &&
-                 (!symbol || order.symbol === symbol)
+        order => order.status === 'pending' && (!symbol || order.symbol === symbol)
       )
 
-      // Encontrar Stop Loss (ordem de venda para posição LONG, compra para SHORT)
+      console.log('🔍 usePositionOrders DEBUG:', {
+        totalOrders: orders.length,
+        activeOrders: activeOrders.length,
+        orderTypes: activeOrders.map(o => o.order_type)
+      })
+
+      // Encontrar Stop Loss (ordem com 'stop' no tipo)
       const stopLossOrder = activeOrders.find(order =>
         order.order_type.toLowerCase().includes('stop')
       )
 
-      // Encontrar Take Profit
+      // Encontrar Take Profit (ordem com 'take_profit' no tipo)
       const takeProfitOrders = activeOrders.filter(order =>
         order.order_type.toLowerCase().includes('take_profit') ||
         order.order_type.toLowerCase().includes('takeprofit')
@@ -68,14 +74,24 @@ export const usePositionOrders = (exchangeAccountId?: string, symbol?: string) =
         ? takeProfitOrders[0]
         : undefined
 
+      // Para SL/TP, usar stop_price se price não estiver disponível
+      const stopLossPrice = stopLossOrder?.stop_price || stopLossOrder?.price
+      const takeProfitPrice = takeProfitOrder?.stop_price || takeProfitOrder?.price
+
       // ✅ Filtrar TPs válidos (> 0 e não undefined)
       const validTakeProfits = takeProfitOrders
-        .map(o => o.price)
+        .map(o => o.stop_price || o.price)
         .filter(price => price && price > 0)
 
+      console.log('✅ usePositionOrders RESULT:', {
+        stopLoss: stopLossPrice,
+        takeProfit: takeProfitPrice,
+        allTakeProfits: validTakeProfits
+      })
+
       return {
-        stopLoss: stopLossOrder?.price,
-        takeProfit: takeProfitOrder?.price,
+        stopLoss: stopLossPrice,
+        takeProfit: takeProfitPrice,
         orders: activeOrders,
         allTakeProfits: validTakeProfits
       }

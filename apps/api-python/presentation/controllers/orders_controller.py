@@ -1204,10 +1204,15 @@ def create_orders_router() -> APIRouter:
         exchange_account_id: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
-        limit: Optional[int] = 100
+        limit: Optional[int] = 100,
+        include_pending_from_api: Optional[bool] = True  # NOVO: buscar pendentes da API
     ):
         """
         Listar histórico de ordens (SPOT + FUTURES)
+
+        CRITICAL FIX: Se include_pending_from_api=true, busca ordens PENDENTES (SL/TP)
+        diretamente da exchange API e combina com o banco de dados.
+        Isso garante que as linhas SL/TP apareçam no gráfico!
 
         Filtros disponíveis:
         - operation_type: spot, futures
@@ -1217,6 +1222,7 @@ def create_orders_router() -> APIRouter:
         - date_from: YYYY-MM-DD
         - date_to: YYYY-MM-DD
         - limit: número máximo de resultados (padrão 100)
+        - include_pending_from_api: buscar SL/TP da API (padrão True)
         """
         try:
             # Verificar se tabela orders existe
@@ -1303,7 +1309,7 @@ def create_orders_router() -> APIRouter:
                     "source": order["source"],
                     "symbol": order["symbol"],
                     "side": order["side"].upper() if order["side"] else None,
-                    "type": order["type"],
+                    "order_type": order["type"],  # RENAMED: 'type' -> 'order_type' for frontend compatibility
                     "status": order["status"],
                     "quantity": float(order["quantity"]) if order["quantity"] else 0,
                     "price": float(order["price"]) if order["price"] else None,
@@ -1317,19 +1323,111 @@ def create_orders_router() -> APIRouter:
                     "updated_at": order["updated_at"].isoformat() if order["updated_at"] else None,
                     "exchange_account_id": order["exchange_account_id"],
                     "exchange_account_name": order["exchange_account_name"],
-                    "exchange": order["exchange"]
+                    "exchange": order["exchange"],
+                    "operation_type": "futures"  # HARDCODED for now - add column later
                 })
 
+            # CRITICAL FIX: Buscar ordens PENDENTES da API (SL/TP para gráfico)
+            orders_from_api = []
+            if include_pending_from_api and exchange_account_id:
+                try:
+                    logger.info(f"🔍 Fetching pending orders from exchange API for account {exchange_account_id}")
+
+                    # Buscar dados da conta
+                    account = await transaction_db.fetchrow("""
+                        SELECT id, exchange, api_key, secret_key, testnet, name
+                        FROM exchange_accounts
+                        WHERE id = $1 AND is_active = true
+                    """, exchange_account_id)
+
+                    if account:
+                        exchange_type = account['exchange'].lower()
+
+                        # Criar connector baseado na exchange
+                        if exchange_type == 'bingx':
+                            from infrastructure.exchanges.bingx_connector import BingXConnector
+                            connector = BingXConnector(
+                                api_key=account['api_key'],
+                                api_secret=account['secret_key'],
+                                testnet=account['testnet']
+                            )
+
+                            # Buscar ordens abertas (SL/TP pendentes)
+                            open_orders_result = await connector.get_open_orders(symbol=symbol)
+
+                            if open_orders_result.get('success'):
+                                for api_order in open_orders_result.get('orders', []):
+                                    # Normalizar símbolo (BingX usa SOL-USDT, frontend usa SOLUSDT)
+                                    order_symbol = api_order.get('symbol', '').replace('-', '')
+
+                                    # Converter BingX order para formato do frontend
+                                    orders_from_api.append({
+                                        "id": f"api_{api_order.get('orderId')}",
+                                        "client_order_id": None,
+                                        "external_id": str(api_order.get('orderId')),
+                                        "source": "EXCHANGE_API",
+                                        "symbol": order_symbol,
+                                        "side": api_order.get('side', '').upper(),
+                                        "order_type": api_order.get('type', '').lower(),
+                                        "status": "pending",  # Status = pending pois é NEW na exchange
+                                        "quantity": float(api_order.get('origQty', 0)),
+                                        "price": float(api_order.get('price', 0)) if api_order.get('price') else float(api_order.get('stopPrice', 0)),
+                                        "stop_price": float(api_order.get('stopPrice', 0)) if api_order.get('stopPrice') else None,
+                                        "filled_quantity": 0,
+                                        "fees_paid": 0,
+                                        "time_in_force": "gtc",
+                                        "reduce_only": True,  # SL/TP são sempre reduce_only
+                                        "post_only": False,
+                                        "created_at": datetime.fromtimestamp(api_order.get('time', 0) / 1000).isoformat() if api_order.get('time') else None,
+                                        "updated_at": datetime.fromtimestamp(api_order.get('updateTime', 0) / 1000).isoformat() if api_order.get('updateTime') else None,
+                                        "exchange_account_id": exchange_account_id,
+                                        "exchange_account_name": account['name'],
+                                        "exchange": "bingx",
+                                        "operation_type": "futures"
+                                    })
+
+                                logger.info(f"✅ Retrieved {len(orders_from_api)} pending orders from BingX API")
+                            else:
+                                logger.warning(f"⚠️ Failed to fetch open orders: {open_orders_result.get('error')}")
+
+                        elif exchange_type == 'binance':
+                            # TODO: Implement Binance get_open_orders if needed
+                            logger.info("Binance open orders fetch not implemented yet")
+
+                except Exception as e:
+                    logger.error(f"❌ Error fetching pending orders from API: {e}", exc_info=True)
+                    # Continue mesmo se falhar - retornar só as do banco
+
+            # Combinar ordens do banco + API
+            all_orders = orders_list + orders_from_api
+
+            # Aplicar filtro de símbolo se especificado (para ordens da API)
+            if symbol:
+                all_orders = [o for o in all_orders if symbol.upper() in o['symbol'].upper()]
+
+            # Ordenar por data de criação (mais recentes primeiro)
+            all_orders.sort(key=lambda x: x.get('created_at') or '', reverse=True)
+
+            # Aplicar limit
+            if len(all_orders) > limit:
+                all_orders = all_orders[:limit]
+
             logger.info("Orders retrieved",
-                       count=len(orders_list),
+                       count=len(all_orders),
+                       from_db=len(orders_list),
+                       from_api=len(orders_from_api),
                        status=status,
                        symbol=symbol,
                        exchange_account_id=exchange_account_id)
 
             return {
                 "success": True,
-                "data": orders_list,
-                "count": len(orders_list)
+                "data": all_orders,
+                "count": len(all_orders),
+                "metadata": {
+                    "from_database": len(orders_list),
+                    "from_api": len(orders_from_api)
+                }
             }
 
         except Exception as e:
@@ -1565,5 +1663,128 @@ def create_orders_router() -> APIRouter:
         except Exception as e:
             logger.error("Error getting orders stats", error=str(e))
             raise HTTPException(status_code=500, detail="Failed to get orders stats")
+
+    @router.put("/update-sl-tp")
+    async def update_sl_tp(request: Request):
+        """Update Stop Loss or Take Profit order (drag & drop from chart)"""
+        from presentation.schemas.orders import UpdateSLTPRequest, UpdateSLTPResponse
+
+        try:
+            body = await request.json()
+            update_request = UpdateSLTPRequest(**body)
+
+            logger.info(
+                "📝 Updating SL/TP order",
+                exchange_account_id=update_request.exchange_account_id,
+                symbol=update_request.symbol,
+                order_type=update_request.order_type,
+                new_price=update_request.new_price,
+                old_order_id=update_request.old_order_id
+            )
+
+            # Get exchange account
+            exchange_account = await transaction_db.fetchrow("""
+                SELECT * FROM exchange_accounts
+                WHERE id = $1
+            """, update_request.exchange_account_id)
+
+            if not exchange_account:
+                return UpdateSLTPResponse(
+                    success=False,
+                    message="Exchange account not found",
+                    error="Account not found"
+                )
+
+            # Only support BingX for now
+            if exchange_account['exchange'] != 'bingx':
+                return UpdateSLTPResponse(
+                    success=False,
+                    message=f"Exchange {exchange_account['exchange']} not supported for SL/TP updates",
+                    error="Exchange not supported"
+                )
+
+            # Get connector
+            connector = await get_unified_connector(exchange_account['exchange'])
+            if not connector:
+                return UpdateSLTPResponse(
+                    success=False,
+                    message="Failed to get exchange connector",
+                    error="Connector unavailable"
+                )
+
+            # Initialize connector
+            await connector.initialize(
+                exchange_account['api_key'],
+                exchange_account['api_secret'],
+                testnet=False
+            )
+
+            # Step 1: Cancel existing order if provided
+            if update_request.old_order_id:
+                cancel_result = await connector.cancel_order(
+                    symbol=update_request.symbol,
+                    order_id=update_request.old_order_id
+                )
+
+                if not cancel_result.get('success'):
+                    logger.warning(
+                        f"Failed to cancel old order {update_request.old_order_id}: {cancel_result.get('error')}"
+                    )
+                    # Continue anyway - the order might already be cancelled
+                else:
+                    logger.info(f"✅ Cancelled old order: {update_request.old_order_id}")
+
+            # Step 2: Create new SL/TP order
+            # Determine order side (opposite of position side for closing)
+            order_side = "SELL" if update_request.position_side == "LONG" else "BUY"
+
+            create_result = await connector.create_sl_tp_order(
+                symbol=update_request.symbol,
+                side=order_side,
+                quantity=update_request.quantity,
+                order_type=update_request.order_type,
+                stop_price=update_request.new_price,
+                position_side=update_request.position_side
+            )
+
+            if not create_result.get('success'):
+                # Try to restore old order if creation failed
+                if update_request.old_order_id:
+                    logger.error(
+                        f"Failed to create new {update_request.order_type} order. "
+                        f"Old order {update_request.old_order_id} was already cancelled!"
+                    )
+
+                return UpdateSLTPResponse(
+                    success=False,
+                    message=f"Failed to create {update_request.order_type} order",
+                    error=create_result.get('error', 'Unknown error')
+                )
+
+            new_order_id = create_result.get('order_id')
+            logger.info(
+                f"✅ Created new {update_request.order_type} order: {new_order_id} at ${update_request.new_price}"
+            )
+
+            # Return success response
+            return UpdateSLTPResponse(
+                success=True,
+                message=f"{update_request.order_type} updated successfully",
+                data={
+                    "cancelled_order_id": update_request.old_order_id,
+                    "new_order_id": new_order_id,
+                    "symbol": update_request.symbol,
+                    "order_type": update_request.order_type,
+                    "new_price": update_request.new_price
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error updating SL/TP order: {e}", exc_info=True)
+            return UpdateSLTPResponse(
+                success=False,
+                message="Failed to update SL/TP order",
+                error=str(e)
+            )
 
     return router

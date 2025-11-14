@@ -6,7 +6,7 @@
 
 import { useEffect, useRef } from 'react'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 const POPULAR_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
 const DEFAULT_INTERVALS = ['1h', '4h']  // Intervalos mais comuns
 

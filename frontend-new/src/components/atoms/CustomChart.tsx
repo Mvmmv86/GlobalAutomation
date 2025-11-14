@@ -66,6 +66,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   onPositionEdit,
   onSLTPDrag
 }) => {
+  // 🚨 DEBUG: Log no início do componente para verificar renderização
+  console.log('🔵 CustomChart RENDERIZADO com:', {
+    symbol,
+    interval,
+    positionsLength: positions?.length || 0,
+    positions: positions
+  })
+
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<any>(null)
   const candlestickSeriesRef = useRef<any>(null)
@@ -99,13 +107,16 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       '1': '1m',
       '3': '3m',
       '5': '5m',
+      '10': '10m',   // ✅ NOVO: 10 minutos
       '15': '15m',
       '30': '30m',
       '60': '1h',
+      '120': '2h',   // ✅ NOVO: 2 horas
       '240': '4h',
       '1D': '1d',
-      '1W': '1w',   // ✅ NOVO: Semanal
-      '1M': '1M'    // ✅ NOVO: Mensal
+      '3D': '3d',    // ✅ NOVO: 3 dias
+      '1W': '1w',
+      '1M': '1M'
     }
     return mapping[interval] || '1h'
   }
@@ -116,13 +127,16 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       '1': 500,      // 1m = ~8 horas
       '3': 500,      // 3m = ~1 dia
       '5': 500,      // 5m = ~1.7 dias
+      '10': 720,     // ✅ NOVO: 10m = ~5 dias
       '15': 672,     // 15m = ~7 dias (1 semana)
       '30': 720,     // 30m = ~15 dias
       '60': 720,     // 1h = ~30 dias (1 mês)
+      '120': 720,    // ✅ NOVO: 2h = ~60 dias (2 meses)
       '240': 720,    // 4h = ~120 dias (4 meses)
-      '1D': 730,     // 1D = ~2 anos ✅
-      '1W': 520,     // 1W = ~10 anos ✅
-      '1M': 120      // 1M = ~10 anos ✅
+      '1D': 730,     // 1D = ~2 anos
+      '3D': 730,     // ✅ NOVO: 3D = ~6 anos
+      '1W': 520,     // 1W = ~10 anos
+      '1M': 120      // 1M = ~10 anos
     }
     return limits[interval] || 500
   }
@@ -506,6 +520,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
     }
 
     console.log('🎨 Desenhando', positions.length, 'posições no gráfico')
+    console.log('📊 DEBUG SL/TP - Posições recebidas:', JSON.stringify(positions, null, 2))
 
     // Limpar linhas antigas
     priceLineIdsRef.current.forEach(priceLine => {
@@ -526,8 +541,16 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         symbol: position.symbol,
         side: position.side,
         entryPrice: position.entryPrice,
-        quantity: position.quantity
+        quantity: position.quantity,
+        stopLoss: position.stopLoss,
+        takeProfit: position.takeProfit,
+        allTakeProfits: position.allTakeProfits
       })
+
+      // 🚨 DEBUG CRÍTICO: Verificar se SL/TP existem
+      if (!position.stopLoss && !position.takeProfit) {
+        console.warn(`⚠️ ATENÇÃO: Posição ${idx + 1} SEM SL/TP! Dados:`, position)
+      }
 
       try {
         const color = position.side === 'LONG' ? '#10B981' : '#EF4444'

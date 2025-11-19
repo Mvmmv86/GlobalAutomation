@@ -41,8 +41,20 @@ export class LayerManager implements ViewportListener {
     this.engine = config.engine
     this.theme = config.theme
 
-    // Limpar container
-    this.container.innerHTML = ''
+    // ✅ Limpar container apenas se não estiver vazio E se tiver elementos criados por nós
+    // Evitar conflito com React que pode estar gerenciando o container
+    if (this.container.childNodes.length > 0) {
+      // Remover apenas elementos canvas criados anteriormente
+      Array.from(this.container.childNodes).forEach(node => {
+        if (node instanceof HTMLCanvasElement) {
+          try {
+            this.container.removeChild(node)
+          } catch (e) {
+            // Ignorar - React pode já ter removido
+          }
+        }
+      })
+    }
     this.container.style.position = 'relative'
 
     // Criar ViewportManager compartilhado
@@ -81,7 +93,7 @@ export class LayerManager implements ViewportListener {
 
     // Layer 2: Indicators (overlay indicators like MA, BB)
     const indicatorLayer = new IndicatorLayer('indicators', 2)
-    indicatorLayer.initialize(this.engine, this.dataManager, this.theme)
+    indicatorLayer.initialize(this.engine)
     this.addLayer('indicators', indicatorLayer)
 
     // Layer 3: Overlays (orders, positions, SL/TP)
@@ -109,7 +121,15 @@ export class LayerManager implements ViewportListener {
   removeLayer(name: string): void {
     const layer = this.layers.get(name)
     if (layer) {
-      this.container.removeChild(layer.getCanvas())
+      const canvas = layer.getCanvas()
+      // ✅ Verificar se o canvas ainda está no DOM antes de remover
+      if (canvas && canvas.parentNode === this.container) {
+        try {
+          this.container.removeChild(canvas)
+        } catch (e) {
+          console.warn(`[LayerManager] Não foi possível remover layer ${name}:`, e)
+        }
+      }
       this.layers.delete(name)
     }
   }
@@ -117,14 +137,21 @@ export class LayerManager implements ViewportListener {
   /**
    * Adiciona layer para painel separado
    */
-  addSeparatePanelLayer(panelId: string, indicators: string[]): void {
+  addSeparatePanelLayer(panelId: string, _indicators: string[]): void {
     const layerName = `panel-${panelId}`
 
     // Remover layer anterior se existir
     this.removeLayer(layerName)
 
+    // Obter configuração do painel do PanelManager
+    const panelConfig = this.panelManager.getLayout().panels.find(p => p.id === panelId)
+    if (!panelConfig) {
+      console.warn(`[LayerManager] Panel config not found for ${panelId}`)
+      return
+    }
+
     // Criar nova layer para o painel
-    const layer = new SeparatePanelLayer(layerName, 10 + this.layers.size)
+    const layer = new SeparatePanelLayer(layerName, 10 + this.layers.size, panelConfig)
     layer.initialize(this.engine, this.theme)
     this.addLayer(layerName, layer)
   }
@@ -283,6 +310,8 @@ export class LayerManager implements ViewportListener {
    * Destrói o manager
    */
   destroy(): void {
+    console.log('🔥🔥🔥 [LayerManager] DESTROY CHAMADO - CÓDIGO NOVO V2 🔥🔥🔥')
+
     // Remover listener do viewport
     this.viewportManager.removeListener(this)
 
@@ -292,9 +321,17 @@ export class LayerManager implements ViewportListener {
       this.animationFrameId = null
     }
 
-    // Limpar layers
+    // Limpar layers de forma segura para React
     this.layers.forEach(layer => {
-      this.container.removeChild(layer.getCanvas())
+      const canvas = layer.getCanvas()
+      // ✅ VERIFICAR se o canvas ainda está no DOM antes de remover
+      if (canvas && canvas.parentNode === this.container) {
+        try {
+          this.container.removeChild(canvas)
+        } catch (e) {
+          console.warn('[LayerManager] Canvas já foi removido:', e)
+        }
+      }
     })
     this.layers.clear()
   }

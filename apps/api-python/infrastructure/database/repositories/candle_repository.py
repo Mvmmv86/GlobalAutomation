@@ -1,270 +1,361 @@
 """
-Repositório para operações com candles no banco de dados
+Candle Repository - Gerencia o cache de candles no banco de dados
 """
-
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Tuple
+from datetime import datetime, timedelta
+from sqlalchemy import select, delete, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, and_, desc
 from sqlalchemy.dialects.postgresql import insert
+import structlog
 
 from infrastructure.database.models.candle import Candle
 
 
+logger = structlog.get_logger()
+
+
 class CandleRepository:
-    """Repositório para gerenciar candles no banco de dados"""
+    """Repository para gerenciar cache de candles no banco de dados"""
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def save_candles(self, candles: List[Candle]) -> int:
+        """
+        Salva múltiplos candles no banco usando UPSERT
+
+        Args:
+            candles: Lista de objetos Candle para salvar
+
+        Returns:
+            Número de candles salvos/atualizados
+        """
+        if not candles:
+            return 0
+
+        try:
+            # Preparar dados para bulk upsert
+            candles_data = [
+                {
+                    "symbol": candle.symbol,
+                    "interval": candle.interval,
+                    "time": candle.time,
+                    "open": candle.open,
+                    "high": candle.high,
+                    "low": candle.low,
+                    "close": candle.close,
+                    "volume": candle.volume,
+                    "created_at": candle.created_at,
+                    "updated_at": candle.updated_at,
+                }
+                for candle in candles
+            ]
+
+            # UPSERT usando PostgreSQL ON CONFLICT
+            stmt = insert(Candle).values(candles_data)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol", "interval", "time"],
+                set_={
+                    "open": stmt.excluded.open,
+                    "high": stmt.excluded.high,
+                    "low": stmt.excluded.low,
+                    "close": stmt.excluded.close,
+                    "volume": stmt.excluded.volume,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
+
+            await self.session.execute(stmt)
+            await self.session.commit()
+
+            logger.info(
+                "Candles saved to cache",
+                count=len(candles),
+                symbol=candles[0].symbol if candles else None,
+                interval=candles[0].interval if candles else None,
+            )
+
+            return len(candles)
+
+        except Exception as e:
+            await self.session.rollback()
+            logger.error("Error saving candles to cache", error=str(e))
+            raise
 
     async def get_candles(
         self,
         symbol: str,
         interval: str,
-        start_time: int,
-        end_time: int,
-        limit: Optional[int] = None
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> List[Candle]:
         """
-        Busca candles do banco de dados
+        Busca candles do cache
+
+        Args:
+            symbol: Símbolo do par (ex: BTCUSDT)
+            interval: Intervalo do candle (1m, 5m, 1h, etc)
+            start_time: Timestamp inicial em milissegundos (opcional)
+            end_time: Timestamp final em milissegundos (opcional)
+            limit: Número máximo de candles (opcional)
+
+        Returns:
+            Lista de candles ordenados por tempo
         """
-        query = select(Candle).where(
-            and_(
-                Candle.symbol == symbol,
-                Candle.interval == interval,
-                Candle.time >= start_time,
-                Candle.time <= end_time
+        try:
+            query = select(Candle).where(
+                and_(
+                    Candle.symbol == symbol,
+                    Candle.interval == interval,
+                )
             )
-        ).order_by(Candle.time)
 
-        if limit:
-            query = query.limit(limit)
+            # Aplicar filtros de tempo se fornecidos
+            if start_time is not None:
+                query = query.where(Candle.time >= start_time)
 
-        result = await self.session.execute(query)
-        return result.scalars().all()
+            if end_time is not None:
+                query = query.where(Candle.time <= end_time)
+
+            # Ordenar por tempo
+            query = query.order_by(Candle.time.asc())
+
+            # Aplicar limite se fornecido
+            if limit is not None:
+                query = query.limit(limit)
+
+            result = await self.session.execute(query)
+            candles = result.scalars().all()
+
+            logger.debug(
+                "Candles retrieved from cache",
+                count=len(candles),
+                symbol=symbol,
+                interval=interval,
+            )
+
+            return list(candles)
+
+        except Exception as e:
+            logger.error("Error retrieving candles from cache", error=str(e))
+            raise
 
     async def get_latest_candle(
-        self,
-        symbol: str,
-        interval: str
+        self, symbol: str, interval: str
     ) -> Optional[Candle]:
         """
-        Busca o candle mais recente
+        Busca o candle mais recente para um símbolo/intervalo
+
+        Args:
+            symbol: Símbolo do par
+            interval: Intervalo do candle
+
+        Returns:
+            Candle mais recente ou None se não existir
         """
-        query = select(Candle).where(
-            and_(
-                Candle.symbol == symbol,
-                Candle.interval == interval
+        try:
+            query = (
+                select(Candle)
+                .where(
+                    and_(
+                        Candle.symbol == symbol,
+                        Candle.interval == interval,
+                    )
+                )
+                .order_by(Candle.time.desc())
+                .limit(1)
             )
-        ).order_by(desc(Candle.time)).limit(1)
 
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
+            result = await self.session.execute(query)
+            candle = result.scalar_one_or_none()
 
-    async def upsert_candle(
-        self,
-        symbol: str,
-        interval: str,
-        time: int,
-        open: float,
-        high: float,
-        low: float,
-        close: float,
-        volume: float
-    ) -> Candle:
+            return candle
+
+        except Exception as e:
+            logger.error("Error getting latest candle", error=str(e))
+            raise
+
+    async def update_candle(self, candle: Candle) -> None:
         """
-        Insere ou atualiza um candle
-        Usa UPSERT para evitar duplicatas
+        Atualiza um candle específico
+
+        Args:
+            candle: Objeto Candle com dados atualizados
         """
-        now = int(datetime.now().timestamp() * 1000)
+        try:
+            # Usar merge para atualizar
+            await self.session.merge(candle)
+            await self.session.commit()
 
-        stmt = insert(Candle).values(
-            symbol=symbol,
-            interval=interval,
-            time=time,
-            open=open,
-            high=high,
-            low=low,
-            close=close,
-            volume=volume,
-            created_at=now,
-            updated_at=now
-        )
-
-        # Em caso de conflito, atualizar valores
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "interval", "time"],
-            set_={
-                "open": open,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": volume,
-                "updated_at": now
-            }
-        )
-
-        await self.session.execute(stmt)
-
-        # Retornar o candle
-        return await self.get_candle(symbol, interval, time)
-
-    async def get_candle(
-        self,
-        symbol: str,
-        interval: str,
-        time: int
-    ) -> Optional[Candle]:
-        """
-        Busca um candle específico
-        """
-        query = select(Candle).where(
-            and_(
-                Candle.symbol == symbol,
-                Candle.interval == interval,
-                Candle.time == time
+            logger.debug(
+                "Candle updated",
+                symbol=candle.symbol,
+                interval=candle.interval,
+                time=candle.time,
             )
-        )
 
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
+        except Exception as e:
+            await self.session.rollback()
+            logger.error("Error updating candle", error=str(e))
+            raise
 
-    async def bulk_insert_candles(
-        self,
-        candles: List[dict]
-    ) -> int:
+    async def delete_old_candles(self, days_to_keep: int = 30) -> int:
         """
-        Insere múltiplos candles de uma vez
+        Remove candles antigos do cache
+
+        Args:
+            days_to_keep: Número de dias de dados para manter (padrão: 30)
+
+        Returns:
+            Número de candles deletados
         """
-        if not candles:
-            return 0
+        try:
+            # Calcular timestamp de corte (em milissegundos)
+            cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+            cutoff_timestamp = int(cutoff_date.timestamp() * 1000)
 
-        now = int(datetime.now().timestamp() * 1000)
+            # Deletar candles antigos
+            stmt = delete(Candle).where(Candle.time < cutoff_timestamp)
+            result = await self.session.execute(stmt)
+            await self.session.commit()
 
-        # Preparar dados para insert
-        values = []
-        for candle in candles:
-            values.append({
-                "symbol": candle["symbol"],
-                "interval": candle["interval"],
-                "time": candle["time"],
-                "open": candle["open"],
-                "high": candle["high"],
-                "low": candle["low"],
-                "close": candle["close"],
-                "volume": candle["volume"],
-                "created_at": now,
-                "updated_at": now
-            })
+            deleted_count = result.rowcount
 
-        # Usar insert com on_conflict_do_nothing para evitar erros
-        stmt = insert(Candle).values(values)
-        stmt = stmt.on_conflict_do_nothing(
-            index_elements=["symbol", "interval", "time"]
-        )
+            logger.info(
+                "Old candles deleted from cache",
+                deleted_count=deleted_count,
+                days_to_keep=days_to_keep,
+            )
 
-        result = await self.session.execute(stmt)
-        return result.rowcount
+            return deleted_count
 
-    async def delete_candles(
-        self,
-        symbol: str,
-        interval: Optional[str] = None,
-        before_time: Optional[int] = None
-    ) -> int:
-        """
-        Deleta candles do banco
-        """
-        conditions = [Candle.symbol == symbol]
-
-        if interval:
-            conditions.append(Candle.interval == interval)
-
-        if before_time:
-            conditions.append(Candle.time < before_time)
-
-        stmt = delete(Candle).where(and_(*conditions))
-        result = await self.session.execute(stmt)
-        return result.rowcount
-
-    async def delete_all_candles(self) -> int:
-        """
-        Deleta todos os candles (usar com cuidado!)
-        """
-        stmt = delete(Candle)
-        result = await self.session.execute(stmt)
-        return result.rowcount
-
-    async def get_candle_count(
-        self,
-        symbol: Optional[str] = None,
-        interval: Optional[str] = None
-    ) -> int:
-        """
-        Conta quantos candles existem no banco
-        """
-        from sqlalchemy import func
-
-        query = select(func.count(Candle.time))
-
-        if symbol:
-            query = query.where(Candle.symbol == symbol)
-
-        if interval:
-            query = query.where(Candle.interval == interval)
-
-        result = await self.session.execute(query)
-        return result.scalar() or 0
+        except Exception as e:
+            await self.session.rollback()
+            logger.error("Error deleting old candles", error=str(e))
+            raise
 
     async def get_gaps(
         self,
         symbol: str,
         interval: str,
         start_time: int,
-        end_time: int
-    ) -> List[dict]:
+        end_time: int,
+        expected_interval_ms: int,
+    ) -> List[Tuple[int, int]]:
         """
-        Identifica gaps nos dados de candles
+        Identifica gaps (períodos sem dados) no cache
+
+        Args:
+            symbol: Símbolo do par
+            interval: Intervalo do candle
+            start_time: Timestamp inicial em ms
+            end_time: Timestamp final em ms
+            expected_interval_ms: Intervalo esperado entre candles em ms
+
+        Returns:
+            Lista de tuplas (gap_start, gap_end) em milissegundos
         """
-        candles = await self.get_candles(symbol, interval, start_time, end_time)
+        try:
+            # Buscar todos os candles no período
+            query = (
+                select(Candle.time)
+                .where(
+                    and_(
+                        Candle.symbol == symbol,
+                        Candle.interval == interval,
+                        Candle.time >= start_time,
+                        Candle.time <= end_time,
+                    )
+                )
+                .order_by(Candle.time.asc())
+            )
 
-        if len(candles) < 2:
-            return []
+            result = await self.session.execute(query)
+            timestamps = [row[0] for row in result.all()]
 
-        # Calcular intervalo em millisegundos
-        interval_ms = self._get_interval_ms(interval)
-        gaps = []
+            if not timestamps:
+                # Se não há dados, todo o período é um gap
+                return [(start_time, end_time)]
 
-        for i in range(1, len(candles)):
-            expected_time = candles[i - 1].time + interval_ms
-            actual_time = candles[i].time
+            gaps = []
 
-            if actual_time > expected_time + interval_ms:
-                gaps.append({
-                    "start": candles[i - 1].time,
-                    "end": candles[i].time,
-                    "missing_candles": int((actual_time - expected_time) / interval_ms)
-                })
+            # Verificar gap no início
+            if timestamps[0] > start_time:
+                gaps.append((start_time, timestamps[0] - expected_interval_ms))
 
-        return gaps
+            # Verificar gaps entre candles
+            for i in range(len(timestamps) - 1):
+                current_time = timestamps[i]
+                next_time = timestamps[i + 1]
+                expected_next = current_time + expected_interval_ms
 
-    def _get_interval_ms(self, interval: str) -> int:
-        """Converte intervalo para millisegundos"""
-        intervals = {
-            "1m": 60000,
-            "3m": 180000,
-            "5m": 300000,
-            "15m": 900000,
-            "30m": 1800000,
-            "1h": 3600000,
-            "2h": 7200000,
-            "4h": 14400000,
-            "6h": 21600000,
-            "8h": 28800000,
-            "12h": 43200000,
-            "1d": 86400000,
-            "3d": 259200000,
-            "1w": 604800000,
-            "1M": 2592000000
-        }
-        return intervals.get(interval, 60000)
+                # Se há um gap maior que o esperado
+                if next_time > expected_next + (expected_interval_ms * 0.1):
+                    gaps.append((expected_next, next_time - expected_interval_ms))
+
+            # Verificar gap no final
+            if timestamps[-1] < end_time:
+                gaps.append((timestamps[-1] + expected_interval_ms, end_time))
+
+            logger.debug(
+                "Gaps identified in cache",
+                gaps_count=len(gaps),
+                symbol=symbol,
+                interval=interval,
+            )
+
+            return gaps
+
+        except Exception as e:
+            logger.error("Error identifying gaps", error=str(e))
+            raise
+
+    async def get_cache_stats(self, symbol: str, interval: str) -> dict:
+        """
+        Retorna estatísticas do cache para um símbolo/intervalo
+
+        Args:
+            symbol: Símbolo do par
+            interval: Intervalo do candle
+
+        Returns:
+            Dicionário com estatísticas (count, oldest, newest)
+        """
+        try:
+            # Contar total de candles
+            from sqlalchemy import func
+
+            count_query = select(func.count(Candle.id)).where(
+                and_(
+                    Candle.symbol == symbol,
+                    Candle.interval == interval,
+                )
+            )
+            count_result = await self.session.execute(count_query)
+            total_count = count_result.scalar() or 0
+
+            # Buscar timestamps mais antigo e mais recente
+            stats_query = select(
+                func.min(Candle.time).label("oldest"),
+                func.max(Candle.time).label("newest"),
+            ).where(
+                and_(
+                    Candle.symbol == symbol,
+                    Candle.interval == interval,
+                )
+            )
+            stats_result = await self.session.execute(stats_query)
+            stats = stats_result.one_or_none()
+
+            return {
+                "total_candles": total_count,
+                "oldest_timestamp": stats[0] if stats and stats[0] else None,
+                "newest_timestamp": stats[1] if stats and stats[1] else None,
+                "symbol": symbol,
+                "interval": interval,
+            }
+
+        except Exception as e:
+            logger.error("Error getting cache stats", error=str(e))
+            raise

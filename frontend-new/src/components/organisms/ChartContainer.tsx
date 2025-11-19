@@ -1,16 +1,17 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react'
-import { Maximize2, Minimize2, Settings, TrendingUp, Sun, Moon, BarChart3 } from 'lucide-react'
+import { Maximize2, Minimize2, Settings, TrendingUp, Sun, Moon, BarChart3, Zap } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { PriceDisplay } from '../molecules/PriceDisplay'
 import { SymbolSelector } from '../molecules/SymbolSelector'
-// ❌ IMPORTS DE GRÁFICOS ANTIGOS REMOVIDOS - APENAS CANVASPROCHART
+// ✅ CUSTOMCHART TEMPORARIAMENTE REATIVADO PARA DEBUG
 // import { TradingViewWidget } from '../atoms/TradingViewWidget'
 // import { TradingViewFallback } from '../atoms/TradingViewFallback'
 // import { SimpleChart } from '../atoms/SimpleChart'
-// import { CustomChart } from '../atoms/CustomChart'
+import { CustomChart } from '../atoms/CustomChart'
 import { CanvasProChart, CanvasProChartHandle } from '../charts/CanvasProChart'
+import { CanvasProChartMinimal } from '../charts/CanvasProChart/CanvasProChartMinimal'
 import { IndicatorPanel } from '../charts/CanvasProChart/components/IndicatorPanel'
 import { AnyIndicatorConfig, IndicatorType, INDICATOR_PRESETS } from '../charts/CanvasProChart/indicators/types'
 import { useChartPositions } from '@/hooks/useChartPositions'
@@ -65,8 +66,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     return '60'
   })
 
-  // ✅ APENAS CANVASPROCHART DISPONÍVEL
-  const chartMode = 'canvas' // Fixado em canvas, sem outras opções
+  // 🧪 FASE 1: CanvasProMinimal ATIVO por padrão para teste
+  const [useCanvasProMinimal, setUseCanvasProMinimal] = useState(true)
 
   // const [retryCount, setRetryCount] = useState(0) // ❌ REMOVIDO - não precisa mais
 
@@ -96,20 +97,20 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     exchangeAccountId
   })
 
-  // 🔥 NOVO: Buscar dados de candles para CanvasChart
+  // ✅ Buscar dados de candles usando hook simples (CanvasProChart tem seu próprio RealtimeManager)
   const { data: candleData } = useCandles(symbol, selectedInterval)
 
   // 🔥 NOVO: Buscar ordens de SL/TP para CanvasChart
   const { data: ordersData } = usePositionOrders(exchangeAccountId || '', symbol)
 
-  // 🚨 DEBUG CRÍTICO: Verificar qual modo de gráfico está ativo
+  // 🚨 DEBUG: Verificar estado do componente
   console.log('🔴 ChartContainer RENDERIZADO:', {
-    chartMode,
+    useCanvasProMinimal,
     symbol,
     selectedInterval,
     chartTheme,
     chartPositionsLength: chartPositions?.length || 0,
-    chartPositions
+    candlesCount: candleData?.candles?.length || 0
   })
 
   // ✅ Salvar configurações no localStorage quando mudarem
@@ -285,7 +286,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                   )}
                   onClick={() => {
                     console.log(`🔄 Mudando timeframe de ${selectedInterval} para ${interval.value}`)
-                    console.log(`📊 Estado atual - activeIndicators:`, activeIndicators)
                     setSelectedInterval(interval.value)
                     setIsLoading(true) // Mostra loading apenas durante mudança
                     setChartKey(prev => {
@@ -344,6 +344,22 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               {/* PAINEL DE INDICADORES ANTIGO REMOVIDO - USANDO NOVO PAINEL PROFISSIONAL DO CANVASPROCHART */}
             </div>
 
+            {/* 🧪 BOTÃO DE TESTE: Alternar entre CustomChart e CanvasProMinimal */}
+            <Button
+              variant={useCanvasProMinimal ? "default" : "ghost"}
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => {
+                const newValue = !useCanvasProMinimal
+                console.log(`🧪 Alternando gráfico: ${useCanvasProMinimal ? 'CanvasProMinimal → CustomChart' : 'CustomChart → CanvasProMinimal'}`)
+                setUseCanvasProMinimal(newValue)
+                toast.info(newValue ? 'Testando CanvasProMinimal (Passo 1)' : 'Voltando para CustomChart')
+              }}
+              title={useCanvasProMinimal ? 'Voltar para CustomChart' : 'Testar CanvasProMinimal (Passo 1)'}
+            >
+              <Zap className="h-4 w-4" />
+            </Button>
+
             {/* ❌ BOTÃO DE TROCA DE GRÁFICO REMOVIDO - Apenas Canvas PRO disponível */}
             {false && (
             <Button
@@ -373,7 +389,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
       </div>
 
-      <div className="flex-1 relative">
+      {/* ✅ FIX: Definir altura mínima explícita para o CanvasProChartMinimal */}
+      <div className="flex-1 relative" style={{ minHeight: '500px' }}>
         <div className="relative w-full h-full">
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-10">
@@ -385,115 +402,31 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
           )}
 
           {/* ========================================
-               ✅✅✅ APENAS CANVASPROCHART - SISTEMA PROFISSIONAL 30+ INDICADORES ✅✅✅
+               🧪 TESTE INCREMENTAL: CustomChart OU CanvasProMinimal
                ======================================== */}
-          {/* SEMPRE RENDERIZA CANVASPROCHART - NÃO HÁ OUTRAS OPÇÕES */}
-          {console.log('🎨 RENDERIZANDO CanvasProChart com props:', {
-            symbol,
-            interval: selectedInterval,
-            candlesCount: candleData?.candles?.length || 0,
-            stopLoss: ordersData?.stopLoss,
-            takeProfit: ordersData?.takeProfit,
-            positionsCount: chartPositions?.length || 0
-          })}
-          <CanvasProChart
-              ref={canvasProChartRef}
-              key={`canvas-${chartKey}-${symbol}-${selectedInterval}`}
+
+          {/* 🧪 PASSO 1: Renderizar CanvasProChartMinimal (canvas vazio) */}
+          {useCanvasProMinimal && (
+            <>
+            {console.log('🧪 RENDERIZANDO CanvasProChartMinimal (Passo 1):', {
+              symbol,
+              interval: selectedInterval,
+              candlesCount: candleData?.candles?.length || 0
+            })}
+            <CanvasProChartMinimal
               symbol={symbol}
               interval={selectedInterval}
               theme={chartTheme}
-              candles={candleData?.candles || []}
-              positions={chartPositions}
-              stopLoss={ordersData?.stopLoss}
-              takeProfit={ordersData?.takeProfit}
-              onDragSLTP={async (type, newPrice) => {
-                console.log(`🎯 CanvasChart: ${type} arrastado para $${newPrice.toFixed(2)}`)
-
-                const queryKey = ['position-orders', exchangeAccountId, symbol]
-
-                try {
-                  // Optimistic update
-                  await queryClient.cancelQueries({ queryKey })
-                  const previousData = queryClient.getQueryData(queryKey)
-
-                  queryClient.setQueryData(queryKey, (oldData: any) => {
-                    if (!oldData) return oldData
-                    return {
-                      ...oldData,
-                      [type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit']: newPrice
-                    }
-                  })
-
-                  console.log(`📝 UI atualizada otimisticamente: ${type} -> $${newPrice}`)
-
-                  toast.loading(`Atualizando ${type === 'STOP_LOSS' ? 'Stop Loss' : 'Take Profit'}...`, {
-                    id: `sltp-canvas-${symbol}`
-                  })
-
-                  // Chamar API
-                  const position = chartPositions?.[0]
-                  if (!position) throw new Error('Posição não encontrada')
-
-                  const result = await updatePositionSLTP(
-                    position.id,
-                    type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit',
-                    newPrice
-                  )
-
-                  // Confirmar com backend
-                  queryClient.setQueryData(queryKey, (oldData: any) => {
-                    if (!oldData) return oldData
-                    return {
-                      ...oldData,
-                      [type === 'STOP_LOSS' ? 'stopLoss' : 'takeProfit']: result.new_price
-                    }
-                  })
-
-                  await queryClient.invalidateQueries({ queryKey })
-                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
-
-                  toast.success(result.message, {
-                    id: `sltp-canvas-${symbol}`,
-                    description: `Nova ordem criada: ${result.order_id}`
-                  })
-
-                  console.log('✅ SL/TP CanvasChart confirmado:', result)
-
-                } catch (error: any) {
-                  console.error('❌ Erro ao atualizar SL/TP no CanvasChart:', error)
-
-                  const previousData = queryClient.getQueryData(queryKey)
-                  queryClient.setQueryData(queryKey, previousData)
-
-                  toast.error('Erro ao atualizar ordem', {
-                    id: `sltp-canvas-${symbol}`,
-                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
-                  })
-                }
-              }}
               width="100%"
               height="100%"
+              candles={candleData?.candles || []}
               className="w-full h-full rounded-b-lg overflow-hidden"
             />
-
-          {/* Painel de Indicadores Profissional (30+) */}
-          {showIndicators && (
-            <IndicatorPanel
-              activeIndicators={canvasIndicators}
-              onAddIndicator={handleAddIndicator}
-              onRemoveIndicator={handleRemoveIndicator}
-              onToggleIndicator={handleToggleIndicator}
-              theme={chartTheme}
-              onClose={() => setShowIndicators(false)}
-            />
+            </>
           )}
 
-          {/* ========================================
-               ❌ GRÁFICOS COMENTADOS (DESATIVADOS)
-               ======================================== */}
-
-          {/* ❌❌❌ CUSTOMCHART REMOVIDO COMPLETAMENTE - APENAS CANVASPROCHART ❌❌❌ */}
-          {false && (
+          {/* ✅ CustomChart (fallback seguro) */}
+          {!useCanvasProMinimal && (
             <>
             {console.log('🟢 RENDERIZANDO CustomChart com props:', {
               symbol,
@@ -511,7 +444,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               positions={chartPositions}
               onReady={handleChartReady}
               className="w-full h-full rounded-b-lg overflow-hidden"
-              indicators={activeIndicators}
+              indicators={[]}
               onChartClick={onChartClick}
               onPositionClose={onPositionClose}
               onPositionEdit={onPositionEdit}
@@ -608,7 +541,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               height={height}
               onReady={handleChartReady}
               className="rounded-b-lg overflow-hidden"
-              activeIndicators={activeIndicators}
               positions={chartPositions}
               onPositionAction={onPositionAction}
             />

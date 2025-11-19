@@ -79,13 +79,10 @@ class DatabaseManager:
                 expire_on_commit=False,
             )
 
-            # Test connection
-            from sqlalchemy import text
-
-            async with self._session_factory() as session:
-                await session.execute(text("SELECT 1"))
-
-            logger.info("Database connection established")
+            # Skip connection test for pgBouncer compatibility
+            # pgBouncer in transaction mode doesn't support connection tests properly
+            # Connection will be validated on first actual query
+            logger.info("Database manager initialized (connection will be validated on first use)")
 
         except Exception as e:
             logger.error("Failed to connect to database", error=str(e))

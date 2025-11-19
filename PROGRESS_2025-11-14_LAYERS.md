@@ -131,3 +131,23 @@ Refatoração completa do CanvasProChart para utilizar a arquitetura de layers j
 Hoje descobrimos que a arquitetura profissional de layers já estava 100% implementada mas não estava sendo utilizada. Criamos o LayerManager para integrar tudo e refatoramos o index.tsx. O sistema agora usa a arquitetura correta com múltiplos canvas e otimização de performance.
 
 **Progresso Total:** Sistema de layers operacional e integrado!
+
+
+**Todo o plano de negocio que preciamos esta aqui ai:**
+
+Update Todos
+FASE 1.1: Implementar Sistema de 5 Layers
+FASE 1.2: Implementar Batch Rendering
+FASE 1.3: Implementar Dirty Regions
+FASE 1.4: Implementar OffscreenCanvas + 
+FASE 2.1: Instalar e configurar technicalindicatorsWorkers
+FASE 2.2: Implementar Indicator Engine
+FASE 2.3: Implementar Indicator Renderer
+FASE 3.1: Implementar WebSocket Real-time
+FASE 3.2: Implementar Timeframe Manager
+FASE 3.3: Implementar Historical Loader
+FASE 4.1: Criar Settings Store
+FASE 4.2: Criar Settings Panel UI
+FASE 5: Implementar Tipos de Candles
+
+Verificar com o claud aonde parmos peloaf 

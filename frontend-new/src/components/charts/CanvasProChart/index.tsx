@@ -60,30 +60,45 @@ const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((pr
   const panelManagerRef = useRef<PanelManager | null>(null)
   const dataManagerRef = useRef<DataManager | null>(null)
   const engineRef = useRef<ChartEngine | null>(null)
+  const isCleaningUpRef = useRef(false)
 
   // State
   const [indicators, setIndicators] = useState<any[]>([])
   const [isInitialized, setIsInitialized] = useState(false)
 
   /**
-   * Inicializa todo o sistema de layers
+   * Inicializa todo o sistema de layers usando APENAS o container React
    */
   useEffect(() => {
-    if (!containerRef.current) return
+    const container = containerRef.current
+    if (!container || isCleaningUpRef.current) {
+      return
+    }
 
-    console.log('🎨 [CanvasProChart] Inicializando sistema de layers...')
+    // Obter dimensões ANTES de criar qualquer elemento
+    const rect = container.getBoundingClientRect()
+
+    // ✅ PROTEÇÃO: Não inicializar se as dimensões forem inválidas
+    if (!rect.width || !rect.height || rect.width < 100 || rect.height < 100) {
+      console.warn('⚠️ [CanvasProChart] Dimensões inválidas:', rect)
+      // Tentar novamente após um pequeno delay
+      const retryTimer = setTimeout(() => {
+        const newRect = container.getBoundingClientRect()
+        if (newRect.width > 100 && newRect.height > 100) {
+          console.log('🔄 [CanvasProChart] Dimensões válidas detectadas, forçando re-render')
+          setIsInitialized(false) // Força re-render
+        }
+      }, 100)
+      return () => clearTimeout(retryTimer)
+    }
+
+    console.log('🎨 [CanvasProChart] Inicializando sistema de layers...', rect)
+
+    // ✅ USAR O PRÓPRIO CONTAINER REACT AO INVÉS DE CRIAR UM NOVO
+    // Não criar novos elementos DOM - usar o container que React já gerencia
+    const layerContainer = container
 
     try {
-      // Criar container para layers
-      const layerContainer = document.createElement('div')
-      layerContainer.className = 'chart-layers-container'
-      layerContainer.style.position = 'relative'
-      layerContainer.style.width = '100%'
-      layerContainer.style.height = '100%'
-      containerRef.current.appendChild(layerContainer)
-
-      // Obter dimensões
-      const rect = containerRef.current.getBoundingClientRect()
       const chartTheme = getTheme(theme)
 
       // Criar canvas temporário para o Engine (será substituído pelas layers)
@@ -130,17 +145,22 @@ const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((pr
       console.error('❌ [CanvasProChart] Erro ao inicializar:', error)
     }
 
-    // Cleanup
+    // Cleanup - SIMPLIFICADO: Apenas limpar referências, React cuida do DOM
     return () => {
-      console.log('🧹 [CanvasProChart] Limpando sistema de layers...')
-      layerManagerRef.current?.destroy()
-      panelManagerRef.current?.destroy()
+      console.log('🧹 [CanvasProChart] Cleanup - limpando apenas referências')
+      isCleaningUpRef.current = true
+
+      // ✅ NÃO TOCAR NO DOM - React gerencia completamente
+      // Apenas anular referências para liberar memória
+      layerManagerRef.current = null
+      panelManagerRef.current = null
       dataManagerRef.current = null
       engineRef.current = null
+      setIsInitialized(false)
 
-      if (containerRef.current) {
-        containerRef.current.innerHTML = ''
-      }
+      setTimeout(() => {
+        isCleaningUpRef.current = false
+      }, 50)
     }
   }, [theme])
 
@@ -258,14 +278,15 @@ const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((pr
 
     setIndicators(prev => prev.filter(ind => ind.id !== id))
 
-    // Remover do painel se necessário
+    // Se o indicador estava em painel separado, remover o painel
     if (panelManagerRef.current) {
-      const panels = panelManagerRef.current.getPanels()
-      panels.forEach(panel => {
-        if (panel.indicators.includes(id)) {
-          panelManagerRef.current?.removeIndicatorFromPanel(panel.id, id)
-        }
-      })
+      const layout = panelManagerRef.current.getLayout()
+      const panel = layout.panels.find(p => p.indicators.includes(id))
+
+      if (panel) {
+        panelManagerRef.current.removePanel(panel.id)
+        console.log(`📊 [CanvasProChart] Painel ${panel.id} removido`)
+      }
     }
 
     // Marcar layer de indicadores como dirty
@@ -290,8 +311,15 @@ const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((pr
 
     setIndicators([])
 
-    // Limpar painéis separados
-    panelManagerRef.current?.clearSeparatePanels()
+    // Remover todos os painéis separados
+    if (panelManagerRef.current) {
+      const layout = panelManagerRef.current.getLayout()
+      layout.panels.forEach(panel => {
+        if (panel.type === 'separate') {
+          panelManagerRef.current?.removePanel(panel.id)
+        }
+      })
+    }
 
     // Marcar layer de indicadores como dirty
     layerManagerRef.current?.markLayerDirty('indicators')
@@ -364,9 +392,16 @@ const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((pr
           transform: 'translate(-50%, -50%)',
           color: getTheme(theme).text.primary,
           fontSize: '14px',
-          fontFamily: 'monospace'
+          fontFamily: 'monospace',
+          textAlign: 'center'
         }}>
-          Inicializando gráfico...
+          <div style={{ marginBottom: '10px' }}>
+            <div className="h-8 w-8 border-2 border-primary border-t-transparent rounded-full animate-spin" style={{ display: 'inline-block' }} />
+          </div>
+          <div>Inicializando gráfico profissional...</div>
+          <div style={{ fontSize: '12px', opacity: 0.7, marginTop: '5px' }}>
+            {candles.length} candles carregados
+          </div>
         </div>
       )}
     </div>

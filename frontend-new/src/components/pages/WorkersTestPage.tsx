@@ -6,7 +6,7 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { CanvasProChart } from '../charts/CanvasProChart'
 import { WorkerManager } from '../charts/CanvasProChart/workers/WorkerManager'
-import { darkTheme } from '../charts/CanvasProChart/themes/dark'
+import { DARK_THEME as darkTheme } from '../charts/CanvasProChart/theme'
 
 // Gerar candles de teste
 const generateTestCandles = (count: number) => {

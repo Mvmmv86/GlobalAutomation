@@ -46,6 +46,7 @@ from infrastructure.cache.candles_cache import start_candles_cache_cleanup
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
 from infrastructure.database.connection_transaction_mode import transaction_db
+from infrastructure.database.connection import database_manager
 from infrastructure.services.order_processor import order_processor
 from infrastructure.di import cleanup_container
 
@@ -88,6 +89,10 @@ async def lifespan(app: FastAPI):
         await transaction_db.connect()
         logger.info("Database connected successfully (pgBouncer transaction mode)")
 
+        # Also initialize the regular database manager for chart cache
+        await database_manager.connect()
+        logger.info("Database manager connected successfully (for chart cache)")
+
         # Initialize Redis (temporarily disabled for integration testing)
         # await redis_manager.connect()
         logger.info("Redis connection skipped for integration testing")
@@ -117,6 +122,7 @@ async def lifespan(app: FastAPI):
 
         # Close connections
         await transaction_db.disconnect()
+        await database_manager.disconnect()
         # await redis_manager.disconnect()
 
         # Cleanup DI container

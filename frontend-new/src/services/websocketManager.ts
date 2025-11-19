@@ -92,7 +92,7 @@ class WebSocketManager {
     // Generate WebSocket URL
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.hostname
-    const port = process.env.NODE_ENV === 'production' ? '' : ':8000'
+    const port = process.env.NODE_ENV === 'production' ? '' : ':8001'  // ✅ CORRIGIDO: 8000 → 8001
     const clientId = `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     this.currentUrl = `${protocol}//${host}${port}/api/v1/ws/notifications?user_id=${userId}&client_id=${clientId}`
 

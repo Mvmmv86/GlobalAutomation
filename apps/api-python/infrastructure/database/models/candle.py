@@ -5,7 +5,7 @@ Modelo de banco de dados para armazenar candles (OHLCV)
 from sqlalchemy import Column, String, BigInteger, Float, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
-from infrastructure.database.base import Base
+from .base import Base
 
 
 class Candle(Base):

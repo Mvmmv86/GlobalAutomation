@@ -48,16 +48,69 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
     isInitialized
   })
 
-  // 🎯 TESTE ULTRA SIMPLES: useEffect SEM DEPENDÊNCIAS
+  /**
+   * ✅ INICIALIZAÇÃO DO SISTEMA (BEST PRACTICE - React + Canvas)
+   * Pattern confirmado por:
+   * - TradingView Lightweight Charts
+   * - React Official Docs
+   * - Stack Overflow community
+   */
   useEffect(() => {
-    console.log('🔥🔥🔥 [CanvasProMinimal] useEffect DISPARADO (sem dependências)!')
-    console.log('📦 Estado atual:', { isInitialized, hasLayerManager: !!layerManagerRef.current })
-  }, []) // ✅ SEM dependências - executa UMA VEZ ao montar
+    const container = containerRef.current
 
-  // ✅ CLEANUP quando componente desmonta
-  useEffect(() => {
+    // ✅ Null check (best practice)
+    if (!container) {
+      console.warn('⚠️ [CanvasProMinimal] Container ref não disponível')
+      return
+    }
+
+    // Obter dimensões do container
+    const rect = container.getBoundingClientRect()
+
+    // ✅ Validar dimensões antes de inicializar
+    if (!rect.width || !rect.height || rect.width < 100 || rect.height < 100) {
+      console.warn('⚠️ [CanvasProMinimal] Dimensões inválidas:', rect)
+      // Retry após 100ms (caso container ainda não tenha tamanho)
+      const retryTimer = setTimeout(() => {
+        const newRect = container.getBoundingClientRect()
+        if (newRect.width > 100 && newRect.height > 100) {
+          console.log('🔄 [CanvasProMinimal] Dimensões válidas detectadas, forçando re-init')
+          // Trigger re-render para tentar novamente
+          setIsInitialized(false)
+        }
+      }, 100)
+      return () => clearTimeout(retryTimer)
+    }
+
+    console.log('🎨 [CanvasProMinimal] Inicializando sistema...', {
+      symbol,
+      interval,
+      dimensions: rect
+    })
+
+    try {
+      const chartTheme = getTheme(theme)
+
+      // ✅ CRIAR MANAGERS (seguindo pattern TradingView)
+      // 1. DataManager: armazena e gerencia os candles
+      dataManagerRef.current = new DataManagerMinimal(symbol, interval)
+
+      // 2. LayerManager: cria e gerencia as layers de canvas
+      layerManagerRef.current = new LayerManagerMinimal(container, chartTheme)
+
+      console.log('✅ [CanvasProMinimal] Sistema inicializado com sucesso')
+
+      // ✅ Marcar como inicializado (ativa o useEffect de renderização)
+      setIsInitialized(true)
+
+    } catch (error) {
+      console.error('❌ [CanvasProMinimal] Erro ao inicializar:', error)
+    }
+
+    // ✅ CLEANUP FUNCTION (best practice - React Official Docs)
+    // Executada antes de re-render com dependências mudadas E no unmount
     return () => {
-      console.log('🧹 [CanvasProMinimal] Cleanup (componente desmontando)')
+      console.log('🧹 [CanvasProMinimal] Cleanup - destruindo instâncias')
 
       if (layerManagerRef.current) {
         layerManagerRef.current.destroy()
@@ -69,7 +122,7 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
       }
       setIsInitialized(false)
     }
-  }, [])
+  }, [symbol, interval, theme]) // ✅ Dependencies: re-inicializar se mudar símbolo, intervalo ou tema
 
   /**
    * FASE 5: Atualizar grid E candles quando dados mudam

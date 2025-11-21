@@ -12,6 +12,7 @@ import { SymbolSelector } from '../molecules/SymbolSelector'
 import { CustomChart } from '../atoms/CustomChart'
 import { CanvasProChart, CanvasProChartHandle } from '../charts/CanvasProChart'
 import { CanvasProChartMinimal } from '../charts/CanvasProChart/CanvasProChartMinimal'
+import { CanvasProChartWithIndicators } from '../charts/CanvasProChart/CanvasProChartWithIndicators'
 import { IndicatorPanel } from '../charts/CanvasProChart/components/IndicatorPanel'
 import { AnyIndicatorConfig, IndicatorType, INDICATOR_PRESETS } from '../charts/CanvasProChart/indicators/types'
 import { useChartPositions } from '@/hooks/useChartPositions'
@@ -177,9 +178,9 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     console.log('🚀 ChartContainer: MONTADO - Iniciando carregamento automático')
     console.log('📊 Configurações:', { symbol, selectedInterval, chartTheme })
 
-    // Limpar localStorage se tem valor inválido
+    // Limpar localStorage se tem valor inválido (BingX supported: 1m, 3m, 5m, 15m, 30m, 1h, 4h, 1d, 1w)
     const saved = localStorage.getItem('trading-timeframe')
-    if (saved && !['1', '3', '5', '15', '30', '60', '240', '1D', '1W', '1M'].includes(saved)) {
+    if (saved && !['1', '3', '5', '15', '30', '60', '240', '1D', '1W'].includes(saved)) {
       console.log('⚠️ Limpando timeframe inválido do localStorage:', saved)
       localStorage.removeItem('trading-timeframe')
       setSelectedInterval('60') // Reset para 1h
@@ -234,18 +235,21 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   // ❌ REMOVIDO - getChartModeLabel não é mais necessário (apenas CanvasProChart)
 
   // Intervalos completos - memoizados para evitar re-renders
+  // Todos os intervalos suportados pela Binance API pública
   const intervals = useMemo(() => [
     { label: '1m', value: '1' },
     { label: '3m', value: '3' },
     { label: '5m', value: '5' },
-    { label: '10m', value: '10' },  // ✅ NOVO: 10 minutos
     { label: '15m', value: '15' },
     { label: '30m', value: '30' },
     { label: '1h', value: '60' },
-    { label: '2h', value: '120' },  // ✅ NOVO: 2 horas
+    { label: '2h', value: '120' },
     { label: '4h', value: '240' },
+    { label: '6h', value: '360' },
+    { label: '8h', value: '480' },
+    { label: '12h', value: '720' },
     { label: '1d', value: '1D' },
-    { label: '3d', value: '3D' },   // ✅ NOVO: 3 dias
+    { label: '3d', value: '3D' },
     { label: '1w', value: '1W' },
     { label: '1M', value: '1M' }
   ], [])
@@ -270,16 +274,15 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             />
 
 
-            {/* Timeframes Funcionais */}
-            <div className="flex items-center space-x-1 bg-accent/10 rounded-md px-2 py-1">
-              <span className="text-xs text-muted-foreground mr-1">Tempo:</span>
-              {intervals.slice(0, 6).map((interval) => ( // Mostra só os principais
+            {/* Timeframes Funcionais - Duas linhas para caber todos */}
+            <div className="flex flex-wrap items-center bg-accent/10 rounded-md px-1 py-0.5 gap-0.5">
+              {intervals.map((interval) => (
                 <Button
                   key={interval.value}
                   variant={selectedInterval === interval.value ? "default" : "ghost"}
                   size="sm"
                   className={cn(
-                    "h-6 px-2 text-xs font-medium min-w-0",
+                    "h-5 px-1 text-[9px] font-medium",
                     selectedInterval === interval.value
                       ? "bg-primary text-primary-foreground"
                       : "hover:bg-accent text-muted-foreground"
@@ -287,12 +290,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                   onClick={() => {
                     console.log(`🔄 Mudando timeframe de ${selectedInterval} para ${interval.value}`)
                     setSelectedInterval(interval.value)
-                    setIsLoading(true) // Mostra loading apenas durante mudança
-                    setChartKey(prev => {
-                      const newKey = prev + 1
-                      console.log(`🔑 ChartKey mudando de ${prev} para ${newKey}`)
-                      return newKey
-                    }) // Força recriação completa do widget
+                    setIsLoading(true)
+                    setChartKey(prev => prev + 1)
                   }}
                 >
                   {interval.label}
@@ -405,15 +404,15 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                🧪 TESTE INCREMENTAL: CustomChart OU CanvasProMinimal
                ======================================== */}
 
-          {/* 🧪 PASSO 1: Renderizar CanvasProChartMinimal (canvas vazio) */}
+          {/* 🧪 PASSO 1: Renderizar CanvasProChartWithIndicators (FASE 8: 25+ Indicadores) */}
           {useCanvasProMinimal && (
             <>
-            {console.log('🧪 RENDERIZANDO CanvasProChartMinimal (Passo 1):', {
+            {console.log('🧪 RENDERIZANDO CanvasProChartWithIndicators (Fase 8):', {
               symbol,
               interval: selectedInterval,
               candlesCount: candleData?.candles?.length || 0
             })}
-            <CanvasProChartMinimal
+            <CanvasProChartWithIndicators
               symbol={symbol}
               interval={selectedInterval}
               theme={chartTheme}

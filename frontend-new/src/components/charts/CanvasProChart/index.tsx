@@ -39,6 +39,10 @@ export interface CanvasProChartHandle {
 // Export do painel de indicadores
 export { IndicatorPanel } from './components/IndicatorPanel'
 
+// Export CanvasProChartMinimal e CanvasProChartWithIndicators
+export { CanvasProChartMinimal } from './CanvasProChartMinimal'
+export { CanvasProChartWithIndicators } from './CanvasProChartWithIndicators'
+
 const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((props, ref) => {
   const {
     symbol,

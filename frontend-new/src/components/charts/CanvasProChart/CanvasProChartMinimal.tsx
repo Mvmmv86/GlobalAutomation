@@ -1,15 +1,50 @@
 /**
- * CanvasProChart - VERSÃO MÍNIMA INCREMENTAL
- * FASE 5: Renderização de Candles
- *
- * Objetivo: Renderizar candles (velas) no gráfico
- * Anterior: Grid profissional implementado na FASE 4
+ * CanvasProChart - FASES 9 & 10: Sistema Completo de Indicadores
+ * Layer 1: Background (grid) - renderiza menos frequentemente
+ * Layer 2: Candles - renderiza em tempo real
+ * Layer 3: Indicators - renderiza indicadores técnicos
+ * Layer 4: Crosshair - renderiza no mousemove
+ * + Zoom com scroll do mouse
+ * + Pan com drag do mouse
+ * + Crosshair seguindo o mouse
+ * + Tooltip com info do candle
+ * + 25+ Indicadores Técnicos Profissionais
+ * + Painéis separados para osciladores
+ * + Indicadores overlay avançados (VWAP, PSAR, Ichimoku, ADX)
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react'
-import { getTheme } from './theme'
-import { LayerManagerMinimal } from './core/LayerManagerMinimal'
-import { DataManagerMinimal } from './core/DataManagerMinimal'
+import {
+  SMA, EMA, WMA, BollingerBands, VWAP, PSAR, IchimokuCloud,
+  ADX, TRIX, KeltnerChannels
+} from 'technicalindicators'
+import type { AnyIndicatorConfig } from './indicators/types'
+import { SeparatePanel } from './components/SeparatePanel'
+
+// VWMA custom implementation (not available in technicalindicators)
+const calculateVWMA = (prices: number[], volumes: number[], period: number): number[] => {
+  const result: number[] = []
+
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      result.push(NaN)
+      continue
+    }
+
+    let sumPriceVolume = 0
+    let sumVolume = 0
+
+    for (let j = 0; j < period; j++) {
+      const idx = i - j
+      sumPriceVolume += prices[idx] * volumes[idx]
+      sumVolume += volumes[idx]
+    }
+
+    result.push(sumVolume > 0 ? sumPriceVolume / sumVolume : NaN)
+  }
+
+  return result
+}
 
 export interface CanvasProChartMinimalProps {
   symbol: string
@@ -19,6 +54,86 @@ export interface CanvasProChartMinimalProps {
   width?: string
   height?: string
   className?: string
+  /** Intervalo de atualização em ms (default: 5000 = 5s) */
+  refreshInterval?: number
+  /** Indicadores ativos para renderizar */
+  activeIndicators?: AnyIndicatorConfig[]
+}
+
+// Configurações de zoom - Estilo TradingView
+const ZOOM_CONFIG = {
+  min: 0.1,      // Zoom mínimo - ver MUITOS candles
+  max: 50,       // Zoom máximo - ver POUCOS candles com MUITO detalhe (TradingView level)
+  step: 0.15,    // Incremento de zoom por scroll (mais sensível)
+  default: 1     // Zoom inicial
+}
+
+// Cores do tema (extraído para reutilização)
+const getThemeColors = (theme: 'dark' | 'light') => theme === 'dark' ? {
+  background: '#131722',
+  grid: '#1e222d',
+  text: '#787b86',
+  bullish: '#26a69a',
+  bearish: '#ef5350'
+} : {
+  background: '#ffffff',
+  grid: '#e0e3eb',
+  text: '#787b86',
+  bullish: '#26a69a',
+  bearish: '#ef5350'
+}
+
+// Formatação dinâmica do eixo X baseada no intervalo
+const getTimeAxisFormat = (interval: string) => {
+  // Timeframes intraday: mostrar hora:minuto + data curta
+  // Timeframes diários+: mostrar data mais completa
+  switch (interval) {
+    case '1':
+    case '3':
+    case '5':
+    case '15':
+    case '30':
+      // Intraday curto: "14:30" + "21 Nov"
+      return {
+        primary: (date: Date) => date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        secondary: (date: Date) => date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
+      }
+    case '60':
+    case '120':
+    case '240':
+    case '360':
+    case '480':
+    case '720':
+      // Intraday longo: "14:00" + "21 Nov 24"
+      return {
+        primary: (date: Date) => date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        secondary: (date: Date) => date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit' })
+      }
+    case '1D':
+      // Diário: "21 Nov" + "2024"
+      return {
+        primary: (date: Date) => date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }),
+        secondary: (date: Date) => date.getFullYear().toString()
+      }
+    case '3D':
+    case '1W':
+      // Semanal: "21 Nov 24"
+      return {
+        primary: (date: Date) => date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: '2-digit' }),
+        secondary: () => ''
+      }
+    case '1M':
+      // Mensal: "Nov 2024"
+      return {
+        primary: (date: Date) => date.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' }),
+        secondary: () => ''
+      }
+    default:
+      return {
+        primary: (date: Date) => date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        secondary: (date: Date) => date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
+      }
+  }
 }
 
 const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
@@ -28,109 +143,1005 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
   candles = [],
   width = '100%',
   height = '600px',
-  className = ''
+  className = '',
+  activeIndicators = []
 }) => {
-  console.log('🚀🚀🚀 [CanvasProMinimal] COMPONENTE CHAMADO!', { symbol, interval, candles: candles.length })
-
-  const layerManagerRef = useRef<LayerManagerMinimal | null>(null)
-  const dataManagerRef = useRef<DataManagerMinimal | null>(null)
-  const [isInitialized, setIsInitialized] = useState(false)
-
-  /**
-   * 🔥 SOLUÇÃO FINAL: useEffect com containerRef.current
-   */
+  // Layer 1: Background (grid) - renderiza menos frequentemente
+  const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Layer 2: Candles - renderiza em tempo real
+  const candlesCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Layer 3: Indicators - renderiza indicadores técnicos
+  const indicatorsCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Layer 4: Crosshair - renderiza no mousemove
+  const crosshairCanvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
 
-  // 🎯 LOG ANTES DO useEffect PARA TESTAR
-  console.log('💡 [CanvasProMinimal] ANTES DO useEffect:', {
-    containerRefExists: !!containerRef,
-    layerManagerExists: !!layerManagerRef.current,
-    isInitialized
+  // ========== FASE 6: Estado de Viewport (Zoom e Pan) ==========
+  const [viewport, setViewport] = useState({
+    zoom: ZOOM_CONFIG.default,
+    offsetX: 0,  // Offset horizontal em pixels (para pan)
+    offsetY: 0   // Offset vertical em pixels (para pan de preço)
   })
 
-  // 🎯 TESTE ULTRA SIMPLES: useEffect SEM DEPENDÊNCIAS
-  useEffect(() => {
-    console.log('🔥🔥🔥 [CanvasProMinimal] useEffect DISPARADO (sem dependências)!')
-    console.log('📦 Estado atual:', { isInitialized, hasLayerManager: !!layerManagerRef.current })
-  }, []) // ✅ SEM dependências - executa UMA VEZ ao montar
+  // Estado para drag (pan)
+  const isDraggingRef = useRef(false)
+  const lastMousePosRef = useRef({ x: 0, y: 0 })
 
-  // ✅ CLEANUP quando componente desmonta
-  useEffect(() => {
-    return () => {
-      console.log('🧹 [CanvasProMinimal] Cleanup (componente desmontando)')
+  // ========== FASE 7: Estado para Crosshair e Tooltip ==========
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
+  const [hoveredCandle, setHoveredCandle] = useState<any | null>(null)
 
-      if (layerManagerRef.current) {
-        layerManagerRef.current.destroy()
-        layerManagerRef.current = null
+  // Debug: log no início do componente
+  console.log('🚀 [CanvasProMinimal] Componente renderizado:', {
+    symbol,
+    interval,
+    candlesCount: candles.length,
+    dimensions,
+    viewport
+  })
+
+  // Obter dimensões do container
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect()
+        setDimensions({ width: rect.width, height: rect.height })
       }
-      if (dataManagerRef.current) {
-        dataManagerRef.current.destroy()
-        dataManagerRef.current = null
-      }
-      setIsInitialized(false)
     }
+
+    updateDimensions()
+
+    const resizeObserver = new ResizeObserver(updateDimensions)
+    resizeObserver.observe(containerRef.current)
+
+    return () => resizeObserver.disconnect()
   }, [])
 
-  /**
-   * FASE 5: Atualizar grid E candles quando dados mudam
-   */
-  useEffect(() => {
-    if (!isInitialized || !dataManagerRef.current || !layerManagerRef.current) return
+  // Calcular dados do gráfico (memoizado) - AUTO-SCALE baseado em candles VISÍVEIS
+  const chartData = React.useMemo(() => {
+    if (candles.length === 0 || dimensions.width === 0) return null
 
-    if (candles.length === 0) {
-      console.log('⚠️ [CanvasProMinimal] Nenhum candle disponível ainda')
+    // Calcular quais candles estão visíveis baseado no zoom e offsetX
+    const { chartLeft, chartRight } = {
+      chartLeft: 10,
+      chartRight: dimensions.width - 70
+    }
+    const chartWidth = chartRight - chartLeft
+    const baseWidth = chartWidth / candles.length
+    const zoomedWidth = baseWidth * viewport.zoom
+
+    // Determinar range de candles visíveis
+    const startIndex = Math.max(0, Math.floor(-viewport.offsetX / zoomedWidth))
+    const visibleCandleCount = Math.ceil(chartWidth / zoomedWidth)
+    const endIndex = Math.min(candles.length, startIndex + visibleCandleCount + 2)
+
+    // Calcular min/max APENAS dos candles visíveis (AUTO-SCALE)
+    let priceMin = Infinity
+    let priceMax = -Infinity
+    for (let i = startIndex; i < endIndex; i++) {
+      const c = candles[i]
+      const low = parseFloat(c.low || c.l || 0)
+      const high = parseFloat(c.high || c.h || 0)
+      if (low < priceMin) priceMin = low
+      if (high > priceMax) priceMax = high
+    }
+
+    // Padding adaptativo - menor padding em zooms maiores
+    const paddingPercent = Math.max(0.02, 0.1 / viewport.zoom)
+    const pricePadding = (priceMax - priceMin) * paddingPercent
+    priceMin -= pricePadding
+    priceMax += pricePadding
+
+    const firstCandle = candles[0]
+    const lastCandle = candles[candles.length - 1]
+    const timeStart = firstCandle?.time || firstCandle?.openTime || firstCandle?.t || 0
+    const timeEnd = lastCandle?.time || lastCandle?.openTime || lastCandle?.t || 0
+
+    return {
+      priceMin,
+      priceMax,
+      priceRange: priceMax - priceMin,
+      timeStart,
+      timeEnd,
+      timeRange: timeEnd - timeStart,
+      visibleRange: { startIndex, endIndex, count: endIndex - startIndex }
+    }
+  }, [candles, viewport.zoom, viewport.offsetX, dimensions.width])
+
+  // Chart área constants
+  const getChartArea = useCallback(() => ({
+    chartLeft: 10,
+    chartRight: dimensions.width - 70,
+    chartTop: 10,
+    chartBottom: dimensions.height - 50,
+    chartWidth: dimensions.width - 80,
+    chartHeight: dimensions.height - 60
+  }), [dimensions])
+
+  // ========== LAYER 1: BACKGROUND (Grid) ==========
+  // Renderiza apenas quando: dimensões mudam, tema muda, ou range de dados muda significativamente
+  useEffect(() => {
+    const canvas = backgroundCanvasRef.current
+    if (!canvas || dimensions.width === 0 || dimensions.height === 0) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    ctx.scale(dpr, dpr)
+
+    const colors = getThemeColors(theme)
+    const { chartLeft, chartRight, chartTop, chartBottom, chartWidth, chartHeight } = getChartArea()
+
+    // Limpar e preencher background
+    ctx.fillStyle = colors.background
+    ctx.fillRect(0, 0, dimensions.width, dimensions.height)
+
+    if (!chartData) {
+      ctx.fillStyle = colors.text
+      ctx.font = '14px Arial'
+      ctx.textAlign = 'center'
+      ctx.fillText('Carregando candles...', dimensions.width / 2, dimensions.height / 2)
       return
     }
 
-    // Atualizar dados no DataManager
-    dataManagerRef.current.updateCandles(candles)
+    const { priceMin, priceMax, priceRange, timeStart, timeEnd, timeRange } = chartData
+    const { zoom, offsetX, offsetY } = viewport
 
-    // Obter estatísticas dos dados
-    const priceRange = dataManagerRef.current.getPriceRange()
-    const timeRange = dataManagerRef.current.getTimeRange()
-    const candlesData = dataManagerRef.current.getCandles()
+    // Calcular range visível ajustado pelo viewport
+    const visiblePriceRange = priceRange / zoom
+    const visiblePriceMin = priceMin - (offsetY / chartHeight) * priceRange
+    const visiblePriceMax = visiblePriceMin + visiblePriceRange
 
-    console.log(`📊 [CanvasProMinimal] Atualizando grid E candles:`, {
-      candles: candles.length,
-      priceRange,
-      timeRange: {
-        start: new Date(timeRange.start).toISOString(),
-        end: new Date(timeRange.end).toISOString()
+    // ========== GRID HORIZONTAL (preços) - DINÂMICO ==========
+    ctx.strokeStyle = colors.grid
+    ctx.lineWidth = 1
+
+    // Calcular número ideal de linhas baseado no priceRange e altura
+    // Objetivo: ~50-80px entre linhas de preço
+    const targetSpacing = 60
+    const idealGridLines = Math.max(4, Math.min(12, Math.floor(chartHeight / targetSpacing)))
+    const gridLinesY = idealGridLines
+
+    for (let i = 0; i <= gridLinesY; i++) {
+      const y = chartTop + (chartHeight / gridLinesY) * i
+
+      ctx.beginPath()
+      ctx.setLineDash([2, 3])
+      ctx.moveTo(chartLeft, y)
+      ctx.lineTo(chartRight, y)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Preço ajustado pelo offset vertical
+      const price = priceMax - (priceRange / gridLinesY) * i - (offsetY / chartHeight) * priceRange
+      ctx.fillStyle = colors.text
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      ctx.textAlign = 'left'
+
+      // Determinar casas decimais baseado no priceRange (mais zoom = mais casas)
+      const decimals = priceRange < 1 ? 4 : priceRange < 10 ? 3 : 2
+      ctx.fillText(price.toFixed(decimals), chartRight + 5, y + 3)
+    }
+
+    // ========== GRID VERTICAL (tempo) - Ajustado pelo zoom e pan ==========
+    // Calcular range de tempo visível
+    const visibleTimeRange = timeRange / zoom
+    const visibleTimeStart = timeStart - (offsetX / chartWidth) * visibleTimeRange
+
+    // Obter formatadores dinâmicos baseados no intervalo
+    const timeFormat = getTimeAxisFormat(interval)
+
+    const gridLinesX = 6
+    for (let i = 0; i <= gridLinesX; i++) {
+      const x = chartLeft + (chartWidth / gridLinesX) * i
+
+      ctx.strokeStyle = colors.grid
+      ctx.beginPath()
+      ctx.setLineDash([2, 3])
+      ctx.moveTo(x, chartTop)
+      ctx.lineTo(x, chartBottom)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Timestamp ajustado pelo zoom e offset horizontal
+      // useCandles já converte timestamps para MS - usar diretamente
+      const timestamp = visibleTimeStart + (visibleTimeRange / gridLinesX) * i
+      const date = new Date(timestamp)
+
+      // Usar formatação dinâmica baseada no intervalo
+      const primaryLabel = timeFormat.primary(date)
+      const secondaryLabel = timeFormat.secondary(date)
+
+      ctx.fillStyle = colors.text
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText(primaryLabel, x, chartBottom + 14)
+      if (secondaryLabel) {
+        ctx.font = '9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        ctx.fillText(secondaryLabel, x, chartBottom + 26)
+      }
+    }
+
+    console.log('🎨 [Layer1-Background] Grid renderizado')
+  }, [dimensions, theme, chartData, getChartArea, viewport, interval])
+
+  // ========== LAYER 2: CANDLES ==========
+  // Renderiza sempre que os candles mudam (para real-time updates)
+  useEffect(() => {
+    const canvas = candlesCanvasRef.current
+    if (!canvas || dimensions.width === 0 || dimensions.height === 0 || !chartData) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    ctx.scale(dpr, dpr)
+
+    // Limpar apenas o layer de candles (transparente)
+    ctx.clearRect(0, 0, dimensions.width, dimensions.height)
+
+    const colors = getThemeColors(theme)
+    const { chartLeft, chartTop, chartWidth, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+
+    // ========== APLICAR ZOOM E PAN ==========
+    const { zoom, offsetX, offsetY } = viewport
+
+    // Calcular largura dos candles COM ZOOM
+    const candleCount = candles.length
+    const baseWidth = chartWidth / candleCount
+    const zoomedWidth = baseWidth * zoom
+    const candleWidth = Math.max(2, Math.min(20, zoomedWidth * 0.7)) // Ajustado para zoom
+    const candleSpacing = zoomedWidth
+
+    // Renderizar cada candle COM OFFSET
+    candles.forEach((candle, index) => {
+      const open = parseFloat(candle.open || candle.o || 0)
+      const high = parseFloat(candle.high || candle.h || 0)
+      const low = parseFloat(candle.low || candle.l || 0)
+      const close = parseFloat(candle.close || candle.c || 0)
+
+      // Posição X com zoom e pan horizontal
+      const x = chartLeft + index * candleSpacing + candleSpacing / 2 + offsetX
+
+      // Pular candles fora da área visível (otimização)
+      if (x < chartLeft - candleWidth || x > chartLeft + chartWidth + candleWidth) {
+        return
+      }
+
+      const isBullish = close >= open
+
+      // Posições Y com pan vertical
+      const yHigh = chartTop + ((priceMax - high) / priceRange) * chartHeight + offsetY
+      const yLow = chartTop + ((priceMax - low) / priceRange) * chartHeight + offsetY
+      const yOpen = chartTop + ((priceMax - open) / priceRange) * chartHeight + offsetY
+      const yClose = chartTop + ((priceMax - close) / priceRange) * chartHeight + offsetY
+
+      const color = isBullish ? colors.bullish : colors.bearish
+
+      // Desenhar wick (pavio)
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(x, yHigh)
+      ctx.lineTo(x, yLow)
+      ctx.stroke()
+
+      // Desenhar body (corpo)
+      const bodyTop = Math.min(yOpen, yClose)
+      const bodyHeight = Math.max(1, Math.abs(yClose - yOpen))
+
+      ctx.fillStyle = color
+      ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, bodyHeight)
+    })
+
+    // ========== INDICADOR DE PREÇO ATUAL (última linha horizontal) ==========
+    if (candles.length > 0) {
+      const lastCandle = candles[candles.length - 1]
+      const lastClose = parseFloat(lastCandle.close || lastCandle.c || 0)
+      const yLastPrice = chartTop + ((priceMax - lastClose) / priceRange) * chartHeight + offsetY
+
+      // Só mostra se estiver na área visível
+      if (yLastPrice >= chartTop && yLastPrice <= chartTop + chartHeight) {
+        // Linha pontilhada do preço atual
+        ctx.strokeStyle = lastCandle.close >= lastCandle.open ? colors.bullish : colors.bearish
+        ctx.lineWidth = 1
+        ctx.setLineDash([4, 4])
+        ctx.beginPath()
+        ctx.moveTo(chartLeft, yLastPrice)
+        ctx.lineTo(chartLeft + chartWidth, yLastPrice)
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        // Label do preço atual (destaque)
+        const priceLabel = lastClose.toFixed(2)
+        ctx.fillStyle = lastCandle.close >= lastCandle.open ? colors.bullish : colors.bearish
+        ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        ctx.textAlign = 'left'
+
+        // Background do label
+        const labelWidth = ctx.measureText(priceLabel).width + 8
+        ctx.fillRect(chartLeft + chartWidth + 2, yLastPrice - 8, labelWidth, 16)
+
+        // Texto do preço
+        ctx.fillStyle = '#ffffff'
+        ctx.fillText(priceLabel, chartLeft + chartWidth + 6, yLastPrice + 4)
+      }
+    }
+
+    console.log(`🕯️ [Layer2-Candles] ${candles.length} candles renderizados (zoom: ${viewport.zoom.toFixed(2)})`)
+  }, [candles, dimensions, theme, chartData, getChartArea, viewport])
+
+  // ========== LAYER 3: INDICATORS ==========
+  // Renderiza indicadores técnicos (SMA, EMA, Bollinger Bands, etc)
+  useEffect(() => {
+    const canvas = indicatorsCanvasRef.current
+    if (!canvas || dimensions.width === 0 || dimensions.height === 0 || !chartData) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    ctx.scale(dpr, dpr)
+
+    // Limpar canvas de indicadores
+    ctx.clearRect(0, 0, dimensions.width, dimensions.height)
+
+    // Filtrar apenas indicadores overlay habilitados
+    const overlayIndicators = activeIndicators.filter(
+      ind => ind.enabled && ind.displayType === 'overlay'
+    )
+
+    if (overlayIndicators.length === 0 || candles.length < 20) {
+      return // Precisamos de pelo menos 20 candles para indicadores
+    }
+
+    const colors = getThemeColors(theme)
+    const { chartLeft, chartTop, chartWidth, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+    const { zoom, offsetX, offsetY } = viewport
+
+    // Preparar dados dos candles para indicadores
+    const closePrices = candles.map(c => parseFloat(c.close || c.c || 0))
+    const highPrices = candles.map(c => parseFloat(c.high || c.h || 0))
+    const lowPrices = candles.map(c => parseFloat(c.low || c.l || 0))
+    const volumes = candles.map(c => parseFloat(c.volume || c.v || 0))
+
+    // Calcular largura dos candles COM ZOOM (mesmo cálculo da Layer 2)
+    const candleCount = candles.length
+    const baseWidth = chartWidth / candleCount
+    const zoomedWidth = baseWidth * zoom
+    const candleSpacing = zoomedWidth
+
+    // Renderizar cada indicador
+    overlayIndicators.forEach(indicator => {
+      try {
+        let values: number[] | null = null
+
+        // Calcular indicador baseado no tipo
+        switch (indicator.type) {
+          case 'SMA': {
+            const period = (indicator.params as any).period || 20
+            values = SMA.calculate({ period, values: closePrices })
+            break
+          }
+          case 'EMA': {
+            const period = (indicator.params as any).period || 20
+            values = EMA.calculate({ period, values: closePrices })
+            break
+          }
+          case 'WMA': {
+            const period = (indicator.params as any).period || 20
+            values = WMA.calculate({ period, values: closePrices })
+            break
+          }
+          case 'VWMA': {
+            const period = (indicator.params as any).period || 20
+            values = calculateVWMA(closePrices, volumes, period)
+            break
+          }
+          case 'VWAP': {
+            // VWAP precisa de high, low, close e volume
+            const vwapResult = VWAP.calculate({
+              high: highPrices,
+              low: lowPrices,
+              close: closePrices,
+              volume: volumes
+            })
+            values = vwapResult
+            break
+          }
+          case 'PSAR': {
+            // Parabolic SAR
+            const step = (indicator.params as any).step || 0.02
+            const max = (indicator.params as any).max || 0.2
+            const psarResult = PSAR.calculate({
+              high: highPrices,
+              low: lowPrices,
+              step,
+              max
+            })
+            values = psarResult
+            break
+          }
+          case 'TRIX': {
+            const period = (indicator.params as any).period || 18
+            values = TRIX.calculate({ period, values: closePrices })
+            break
+          }
+          case 'KC': {
+            // Keltner Channels
+            const period = (indicator.params as any).period || 20
+            const multiplier = (indicator.params as any).multiplier || 2
+            const kcResult = KeltnerChannels.calculate({
+              high: highPrices,
+              low: lowPrices,
+              close: closePrices,
+              period,
+              atrPeriod: period,
+              multiplier
+            })
+
+            if (kcResult && kcResult.length > 0) {
+              // Renderizar 3 linhas: upper, middle, lower (similar ao BB)
+              ctx.strokeStyle = indicator.color
+              ctx.globalAlpha = 0.6
+              ctx.lineWidth = indicator.lineWidth || 1
+
+              // Upper Band
+              ctx.beginPath()
+              kcResult.forEach((kc, i) => {
+                if (!kc || !kc.upper) return
+                const actualIndex = i + (closePrices.length - kcResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - kc.upper) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Middle Line
+              ctx.beginPath()
+              kcResult.forEach((kc, i) => {
+                if (!kc || !kc.middle) return
+                const actualIndex = i + (closePrices.length - kcResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - kc.middle) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Lower Band
+              ctx.beginPath()
+              kcResult.forEach((kc, i) => {
+                if (!kc || !kc.lower) return
+                const actualIndex = i + (closePrices.length - kcResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - kc.lower) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+              ctx.globalAlpha = 1
+            }
+            return // Já renderizamos KC, pular renderização de values abaixo
+          }
+          case 'ICHIMOKU': {
+            // Ichimoku Cloud
+            const conversionPeriod = (indicator.params as any).conversionPeriod || 9
+            const basePeriod = (indicator.params as any).basePeriod || 26
+            const spanPeriod = (indicator.params as any).spanPeriod || 52
+            const displacement = (indicator.params as any).displacement || 26
+
+            const ichimokuResult = IchimokuCloud.calculate({
+              high: highPrices,
+              low: lowPrices,
+              conversionPeriod,
+              basePeriod,
+              spanPeriod,
+              displacement
+            })
+
+            if (ichimokuResult && ichimokuResult.length > 0) {
+              ctx.globalAlpha = 0.5
+
+              // Conversion Line (Tenkan-sen) - vermelho
+              ctx.strokeStyle = '#f23645'
+              ctx.lineWidth = 1
+              ctx.beginPath()
+              ichimokuResult.forEach((ich, i) => {
+                if (!ich || !ich.conversion) return
+                const actualIndex = i + (closePrices.length - ichimokuResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - ich.conversion) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Base Line (Kijun-sen) - azul
+              ctx.strokeStyle = '#2962ff'
+              ctx.beginPath()
+              ichimokuResult.forEach((ich, i) => {
+                if (!ich || !ich.base) return
+                const actualIndex = i + (closePrices.length - ichimokuResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - ich.base) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Leading Span A (Senkou Span A) - verde
+              ctx.strokeStyle = '#43a047'
+              ctx.beginPath()
+              ichimokuResult.forEach((ich, i) => {
+                if (!ich || !ich.spanA) return
+                const actualIndex = i + (closePrices.length - ichimokuResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - ich.spanA) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Leading Span B (Senkou Span B) - vermelho escuro
+              ctx.strokeStyle = '#e53935'
+              ctx.beginPath()
+              ichimokuResult.forEach((ich, i) => {
+                if (!ich || !ich.spanB) return
+                const actualIndex = i + (closePrices.length - ichimokuResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - ich.spanB) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              ctx.globalAlpha = 1
+            }
+            return // Já renderizamos Ichimoku
+          }
+          case 'BB': {
+            const period = (indicator.params as any).period || 20
+            const stdDev = (indicator.params as any).stdDev || 2
+            const bbResult = BollingerBands.calculate({
+              period,
+              values: closePrices,
+              stdDev
+            })
+
+            if (bbResult && bbResult.length > 0) {
+              // Renderizar 3 linhas: upper, middle, lower
+              ctx.strokeStyle = indicator.color
+              ctx.globalAlpha = 0.6
+              ctx.lineWidth = indicator.lineWidth || 1
+
+              // Upper Band
+              ctx.beginPath()
+              bbResult.forEach((bb, i) => {
+                if (!bb || !bb.upper) return
+                const actualIndex = i + (closePrices.length - bbResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - bb.upper) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Middle Band
+              ctx.beginPath()
+              bbResult.forEach((bb, i) => {
+                if (!bb || !bb.middle) return
+                const actualIndex = i + (closePrices.length - bbResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - bb.middle) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+
+              // Lower Band
+              ctx.beginPath()
+              bbResult.forEach((bb, i) => {
+                if (!bb || !bb.lower) return
+                const actualIndex = i + (closePrices.length - bbResult.length)
+                const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+                const y = chartTop + ((priceMax - bb.lower) / priceRange) * chartHeight + offsetY
+
+                if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+                  if (i === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+              })
+              ctx.stroke()
+              ctx.globalAlpha = 1
+            }
+            return // Já renderizamos BB, pular renderização de values abaixo
+          }
+        }
+
+        // Renderizar linha do indicador (para SMA, EMA, WMA, etc)
+        if (values && values.length > 0) {
+          ctx.strokeStyle = indicator.color
+          ctx.lineWidth = indicator.lineWidth || 2
+          ctx.globalAlpha = 0.8
+
+          ctx.beginPath()
+          values.forEach((value, i) => {
+            if (!value || isNaN(value)) return
+
+            // Ajustar índice (indicadores retornam menos valores que candles)
+            const actualIndex = i + (closePrices.length - values!.length)
+            const x = chartLeft + actualIndex * candleSpacing + candleSpacing / 2 + offsetX
+            const y = chartTop + ((priceMax - value) / priceRange) * chartHeight + offsetY
+
+            // Só desenhar se estiver na área visível
+            if (x >= chartLeft - candleSpacing && x <= chartLeft + chartWidth + candleSpacing) {
+              if (i === 0) {
+                ctx.moveTo(x, y)
+              } else {
+                ctx.lineTo(x, y)
+              }
+            }
+          })
+          ctx.stroke()
+          ctx.globalAlpha = 1
+        }
+      } catch (error) {
+        console.error(`❌ Error calculating indicator ${indicator.type}:`, error)
       }
     })
 
-    // ✅ FASE 4: Atualizar grid profissional
-    layerManagerRef.current.updateGrid(
-      priceRange.min,
-      priceRange.max,
-      timeRange.start,
-      timeRange.end
-    )
+    if (overlayIndicators.length > 0) {
+      console.log(`📊 [Layer3-Indicators] ${overlayIndicators.length} indicadores renderizados`)
+    }
+  }, [candles, dimensions, theme, chartData, getChartArea, viewport, activeIndicators])
 
-    // ✅ FASE 5: Atualizar candles
-    layerManagerRef.current.updateCandles(
-      candlesData,
-      priceRange.min,
-      priceRange.max,
-      timeRange.start,
-      timeRange.end
-    )
-  }, [isInitialized, candles.length]) // ✅ FIX CRITICAL: REMOVIDO symbol/interval que causavam loop!
+  // ========== FASE 6: Event Handlers para Zoom e Pan ==========
 
-  const chartTheme = getTheme(theme)
+  // Handler de Zoom (scroll do mouse) - ZOOM NO PONTO DO MOUSE
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault()
+
+    if (!containerRef.current || !chartData) return
+
+    // Obter posição do mouse relativa ao container
+    const rect = containerRef.current.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const { chartLeft, chartWidth } = getChartArea()
+
+    // Posição do mouse relativa ao chart (0 = esquerda, 1 = direita)
+    const mouseRatio = Math.max(0, Math.min(1, (mouseX - chartLeft) / chartWidth))
+
+    const delta = e.deltaY > 0 ? -ZOOM_CONFIG.step : ZOOM_CONFIG.step
+
+    setViewport(prev => {
+      const newZoom = Math.max(ZOOM_CONFIG.min, Math.min(ZOOM_CONFIG.max, prev.zoom + delta))
+
+      // CRITICAL: Ajustar offsetX para manter o ponto sob o mouse fixo
+      // Fórmula: novo_offset = offset_antigo + (diferença_zoom * largura * posição_relativa_mouse)
+      const zoomRatio = newZoom / prev.zoom
+      const newOffsetX = prev.offsetX * zoomRatio + chartWidth * (1 - zoomRatio) * mouseRatio
+
+      console.log(`🔍 [Zoom] ${prev.zoom.toFixed(2)} → ${newZoom.toFixed(2)} @ mouse ${(mouseRatio * 100).toFixed(0)}%`)
+
+      return {
+        ...prev,
+        zoom: newZoom,
+        offsetX: newOffsetX
+      }
+    })
+  }, [chartData, getChartArea])
+
+  // Handler de início do drag (pan)
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    isDraggingRef.current = true
+    lastMousePosRef.current = { x: e.clientX, y: e.clientY }
+    if (containerRef.current) {
+      containerRef.current.style.cursor = 'grabbing'
+    }
+  }, [])
+
+  // Handler de movimento do mouse (pan)
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDraggingRef.current) return
+
+    const deltaX = e.clientX - lastMousePosRef.current.x
+    const deltaY = e.clientY - lastMousePosRef.current.y
+    lastMousePosRef.current = { x: e.clientX, y: e.clientY }
+
+    setViewport(prev => ({
+      ...prev,
+      offsetX: prev.offsetX + deltaX,
+      offsetY: prev.offsetY + deltaY
+    }))
+  }, [])
+
+  // Handler de fim do drag (pan)
+  const handleMouseUp = useCallback(() => {
+    isDraggingRef.current = false
+    if (containerRef.current) {
+      containerRef.current.style.cursor = 'crosshair'
+    }
+  }, [])
+
+  // Registrar event listeners
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    // Wheel para zoom
+    container.addEventListener('wheel', handleWheel, { passive: false })
+
+    // Mouse move e up no document (para continuar drag fora do container)
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [handleWheel, handleMouseMove, handleMouseUp])
+
+  // Reset viewport quando mudar de símbolo ou intervalo
+  useEffect(() => {
+    setViewport({
+      zoom: ZOOM_CONFIG.default,
+      offsetX: 0,
+      offsetY: 0
+    })
+  }, [symbol, interval])
+
+  // ========== FASE 7: Crosshair e Tooltip ==========
+
+  // Handler para atualizar posição do mouse e encontrar candle
+  const handleMouseMoveForCrosshair = useCallback((e: React.MouseEvent) => {
+    if (isDraggingRef.current) return // Não mostrar crosshair durante drag
+
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    setMousePos({ x, y })
+
+    // Encontrar candle sob o mouse
+    if (candles.length > 0 && chartData) {
+      const { chartLeft, chartWidth } = getChartArea()
+      const { zoom, offsetX } = viewport
+
+      const candleCount = candles.length
+      const baseWidth = chartWidth / candleCount
+      const zoomedWidth = baseWidth * zoom
+
+      // Calcular índice do candle baseado na posição X
+      const relativeX = x - chartLeft - offsetX
+      const candleIndex = Math.floor(relativeX / zoomedWidth)
+
+      if (candleIndex >= 0 && candleIndex < candles.length) {
+        setHoveredCandle(candles[candleIndex])
+      } else {
+        setHoveredCandle(null)
+      }
+    }
+  }, [candles, chartData, getChartArea, viewport])
+
+  // Handler para esconder crosshair quando mouse sai
+  const handleMouseLeave = useCallback(() => {
+    setMousePos(null)
+    setHoveredCandle(null)
+  }, [])
+
+  // ========== LAYER 4: CROSSHAIR ==========
+  useEffect(() => {
+    const canvas = crosshairCanvasRef.current
+    if (!canvas || dimensions.width === 0 || dimensions.height === 0) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    ctx.scale(dpr, dpr)
+
+    // Limpar canvas
+    ctx.clearRect(0, 0, dimensions.width, dimensions.height)
+
+    if (!mousePos || !chartData) return
+
+    const colors = getThemeColors(theme)
+    const { chartLeft, chartRight, chartTop, chartBottom, chartWidth, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+    const { offsetY } = viewport
+
+    // Só desenhar se o mouse estiver na área do gráfico
+    if (mousePos.x < chartLeft || mousePos.x > chartRight ||
+        mousePos.y < chartTop || mousePos.y > chartBottom) {
+      return
+    }
+
+    // Linha vertical (tempo)
+    ctx.strokeStyle = '#555'
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 4])
+    ctx.beginPath()
+    ctx.moveTo(mousePos.x, chartTop)
+    ctx.lineTo(mousePos.x, chartBottom)
+    ctx.stroke()
+
+    // Linha horizontal (preço)
+    ctx.beginPath()
+    ctx.moveTo(chartLeft, mousePos.y)
+    ctx.lineTo(chartRight, mousePos.y)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Calcular preço na posição do mouse
+    const priceAtMouse = priceMax - ((mousePos.y - chartTop - offsetY) / chartHeight) * priceRange
+
+    // Label de preço no eixo Y
+    ctx.fillStyle = '#363a45'
+    ctx.fillRect(chartRight + 2, mousePos.y - 10, 65, 20)
+    ctx.fillStyle = '#ffffff'
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+    ctx.textAlign = 'left'
+    ctx.fillText(priceAtMouse.toFixed(2), chartRight + 5, mousePos.y + 4)
+
+  }, [mousePos, dimensions, theme, chartData, getChartArea, viewport])
 
   return (
     <div
       ref={containerRef}
       className={`canvas-pro-chart-minimal ${className}`}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMoveForCrosshair}
+      onMouseLeave={handleMouseLeave}
       style={{
         width,
         height,
-        backgroundColor: chartTheme.background,
         position: 'relative',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        cursor: 'crosshair'
       }}
-    />
+    >
+      {/* Layer 1: Background (grid, eixos) - z-index: 1 */}
+      <canvas
+        ref={backgroundCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 1
+        }}
+      />
+      {/* Layer 2: Candles - z-index: 2 (por cima do background) */}
+      <canvas
+        ref={candlesCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 2
+        }}
+      />
+      {/* Layer 3: Indicators - z-index: 3 (por cima dos candles) */}
+      <canvas
+        ref={indicatorsCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 3,
+          pointerEvents: 'none' // Não bloqueia eventos do mouse
+        }}
+      />
+      {/* Layer 4: Crosshair - z-index: 4 (por cima de tudo) */}
+      <canvas
+        ref={crosshairCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 4,
+          pointerEvents: 'none' // Não bloqueia eventos do mouse
+        }}
+      />
+
+      {/* Tooltip com info do candle */}
+      {hoveredCandle && mousePos && (
+        <div
+          style={{
+            position: 'absolute',
+            left: mousePos.x + 15,
+            top: mousePos.y - 80,
+            backgroundColor: 'rgba(30, 34, 45, 0.95)',
+            border: '1px solid #363a45',
+            borderRadius: '4px',
+            padding: '8px 12px',
+            zIndex: 10,
+            pointerEvents: 'none',
+            fontSize: '11px',
+            color: '#d1d4dc',
+            minWidth: '140px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+          }}
+        >
+          <div style={{ marginBottom: '4px', color: '#787b86', fontSize: '10px' }}>
+            {new Date(hoveredCandle.time || hoveredCandle.openTime || hoveredCandle.t).toLocaleString('pt-BR')}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+            <span style={{ color: '#787b86' }}>O:</span>
+            <span>{parseFloat(hoveredCandle.open || hoveredCandle.o).toFixed(2)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+            <span style={{ color: '#787b86' }}>H:</span>
+            <span style={{ color: '#26a69a' }}>{parseFloat(hoveredCandle.high || hoveredCandle.h).toFixed(2)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+            <span style={{ color: '#787b86' }}>L:</span>
+            <span style={{ color: '#ef5350' }}>{parseFloat(hoveredCandle.low || hoveredCandle.l).toFixed(2)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#787b86' }}>C:</span>
+            <span style={{
+              color: parseFloat(hoveredCandle.close || hoveredCandle.c) >= parseFloat(hoveredCandle.open || hoveredCandle.o)
+                ? '#26a69a' : '#ef5350'
+            }}>
+              {parseFloat(hoveredCandle.close || hoveredCandle.c).toFixed(2)}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 

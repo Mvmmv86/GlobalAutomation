@@ -10,21 +10,26 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 const POPULAR_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
 const DEFAULT_INTERVALS = ['1h', '4h']  // Intervalos mais comuns
 
-// 📅 Limite dinâmico baseado no timeframe (mesmo que CustomChart)
+// 📅 Limite dinâmico baseado no timeframe - Max 1000 (limite da API Binance)
 const getOptimalLimit = (interval: string): number => {
   const limits: Record<string, number> = {
-    '1m': 500,
-    '3m': 500,
-    '5m': 500,
-    '15m': 672,
-    '30m': 720,
-    '1h': 720,
-    '4h': 720,
-    '1d': 730,
-    '1w': 520,
-    '1M': 120
+    '1m': 1000,
+    '3m': 1000,
+    '5m': 1000,
+    '15m': 1000,
+    '30m': 1000,
+    '1h': 1000,
+    '2h': 1000,
+    '4h': 1000,
+    '6h': 1000,
+    '8h': 1000,
+    '12h': 1000,
+    '1d': 1000,
+    '3d': 1000,
+    '1w': 1000,
+    '1M': 500
   }
-  return limits[interval] || 500
+  return limits[interval] || 1000
 }
 
 export const useCandlesPrefetch = () => {

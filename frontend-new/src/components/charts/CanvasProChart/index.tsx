@@ -43,6 +43,15 @@ export { IndicatorPanel } from './components/IndicatorPanel'
 export { CanvasProChartMinimal } from './CanvasProChartMinimal'
 export { CanvasProChartWithIndicators } from './CanvasProChartWithIndicators'
 
+// Export CanvasProChartComplete - FASES 11 & 12 (Drawing Tools + Alertas)
+export { CanvasProChartComplete } from './CanvasProChartComplete'
+
+// Export Drawing System
+export * from './drawing'
+
+// Export Alert System
+export * from './alerts'
+
 const CanvasProChart = forwardRef<CanvasProChartHandle, CanvasProChartProps>((props, ref) => {
   const {
     symbol,

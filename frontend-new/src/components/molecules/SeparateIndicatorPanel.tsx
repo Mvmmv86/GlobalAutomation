@@ -50,12 +50,27 @@ export const SeparateIndicatorPanel: React.FC<SeparateIndicatorPanelProps> = ({
   const seriesRefs = useRef<Map<string, ISeriesApi<'Line' | 'Histogram'>>>(new Map())
 
   // Calcular resultado do indicador
+  // 🔥 FIX: Usar JSON.stringify para params para garantir que mudanças nos parâmetros disparem recálculo
+  const paramsKey = JSON.stringify(config.params)
+
+  // 🔧 DEBUG: Log quando config muda
+  console.log(`📊 SeparateIndicatorPanel [${config.type}] RENDER:`, {
+    id: config.id,
+    color: config.color,
+    lineWidth: config.lineWidth,
+    params: config.params,
+    paramsKey
+  })
+
   const indicatorResult = useMemo(() => {
+    console.log(`📊 [${config.type}] useMemo RECALCULANDO indicatorResult`)
     if (!candles.length || !config.enabled) return null
     return indicatorEngine.calculateSync(config, candles)
-  }, [config, candles])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.type, config.enabled, paramsKey, candles])
 
   // Título do painel com parâmetros
+  // 🔥 FIX: Usar paramsKey para garantir atualização do título quando params mudam
   const panelTitle = useMemo(() => {
     const baseName = INDICATOR_NAMES[config.type] || config.type
     const params = config.params
@@ -86,7 +101,8 @@ export const SeparateIndicatorPanel: React.FC<SeparateIndicatorPanelProps> = ({
       default:
         return baseName
     }
-  }, [config])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.type, paramsKey])
 
   // Valor atual
   const currentValue = useMemo(() => {
@@ -172,6 +188,14 @@ export const SeparateIndicatorPanel: React.FC<SeparateIndicatorPanelProps> = ({
 
   // Atualizar dados do indicador
   useEffect(() => {
+    console.log(`📊 [${config.type}] useEffect ATUALIZANDO GRÁFICO:`, {
+      hasChart: !!chartRef.current,
+      hasIndicatorResult: !!indicatorResult,
+      candlesLength: candles.length,
+      color: config.color,
+      lineWidth: config.lineWidth
+    })
+
     if (!chartRef.current || !indicatorResult || !candles.length) return
 
     const chart = chartRef.current
@@ -304,7 +328,7 @@ export const SeparateIndicatorPanel: React.FC<SeparateIndicatorPanelProps> = ({
 
     // Fit content
     chart.timeScale().fitContent()
-  }, [indicatorResult, candles, config])
+  }, [indicatorResult, candles, config.type, config.color, config.lineWidth, config.params])
 
   // Sincronizar timeScale com gráfico principal
   useEffect(() => {

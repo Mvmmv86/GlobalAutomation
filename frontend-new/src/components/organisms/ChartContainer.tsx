@@ -1,16 +1,14 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
-  Maximize2, Minimize2, Settings, TrendingUp, Sun, Moon, BarChart3, Zap,
-  Minus, MinusSquare, Type, ArrowUp, Move, Bell, Pencil, X, ChevronDown
+  Maximize2, Minimize2, TrendingUp, Sun, Moon, BarChart3, X, ChevronDown, Settings
 } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { SymbolSelector } from '../molecules/SymbolSelector'
 import { SeparateIndicatorPanels } from '../molecules/SeparateIndicatorPanels'
 import { IndicatorSettingsModal } from '../molecules/IndicatorSettingsModal'
 import { CustomChart } from '../atoms/CustomChart'
-import { Candle } from '@/utils/indicators'
+import type { Candle } from '@/utils/indicators'
 import { useChartPositions } from '@/hooks/useChartPositions'
 import { useCandles } from '@/hooks/useCandles'
 import { usePositionOrders } from '@/hooks/usePositionOrders'
@@ -56,9 +54,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 }) => {
   const queryClient = useQueryClient()
   const containerRef = useRef<HTMLDivElement>(null)
-  // const canvasProChartRef = useRef<CanvasProChartHandle>(null) // ❌ DESABILITADO
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [isLoading, setIsLoading] = useState(false) // ✅ Iniciar com false - CanvasProChart gerencia seu próprio loading
+  const [isLoading, setIsLoading] = useState(false)
   const [currentPrice, setCurrentPrice] = useState<number>(0)
   const [priceChange, setPriceChange] = useState<number>(0)
 
@@ -70,11 +67,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     }
     return '60'
   })
-
-  // 🧪 FASE 1: CustomChart ATIVO por padrão (CanvasProMinimal desabilitado temporariamente)
-  const [useCanvasProMinimal, setUseCanvasProMinimal] = useState(false)
-
-  // const [retryCount, setRetryCount] = useState(0) // ❌ REMOVIDO - não precisa mais
 
   // ✅ Recuperar tema salvo do localStorage
   const [chartTheme, setChartTheme] = useState<'light' | 'dark'>(() => {
@@ -89,8 +81,22 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
   const [showIndicators, setShowIndicators] = useState(false)
 
-  // ✅ Estado para controlar indicadores ativos
-  const [activeIndicators, setActiveIndicators] = useState<AnyIndicatorConfig[]>([])
+  // ✅ Estado para controlar indicadores ativos - carrega do localStorage por símbolo
+  const [activeIndicators, setActiveIndicators] = useState<AnyIndicatorConfig[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(`indicators-${symbol}`)
+        if (saved) {
+          const parsed = JSON.parse(saved)
+          console.log(`📊 Carregando indicadores salvos para ${symbol}:`, parsed)
+          return parsed
+        }
+      } catch (e) {
+        console.warn('Erro ao carregar indicadores do localStorage:', e)
+      }
+    }
+    return []
+  })
   const [showIndicatorDropdown, setShowIndicatorDropdown] = useState(false)
 
   // ✅ NOVO: Estado para ferramentas de desenho
@@ -137,10 +143,35 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
   // ✅ NOVO: Handler para salvar configurações do indicador
   const handleSaveIndicatorSettings = useCallback((updatedIndicator: AnyIndicatorConfig) => {
-    setActiveIndicators(prev =>
-      prev.map(ind => ind.id === updatedIndicator.id ? updatedIndicator : ind)
-    )
-    toast.success('Configurações aplicadas')
+    console.log('🔧 handleSaveIndicatorSettings CHAMADO com:', updatedIndicator)
+
+    // 🔥 FIX: Criar cópia profunda do indicador para garantir que React detecte a mudança
+    const indicatorCopy: AnyIndicatorConfig = {
+      ...updatedIndicator,
+      params: { ...updatedIndicator.params }  // Cópia profunda dos params
+    }
+
+    setActiveIndicators(prev => {
+      console.log('🔧 Estado anterior:', prev)
+
+      // Criar novo array com cópia profunda de cada item
+      const newIndicators = prev.map(ind => {
+        if (ind.id === indicatorCopy.id) {
+          console.log('🔧 Atualizando indicador:', ind.id, '→', indicatorCopy)
+          return indicatorCopy
+        }
+        return ind
+      })
+
+      console.log('🔧 Novo estado:', newIndicators)
+      return newIndicators
+    })
+
+    // Fechar modal após salvar
+    setIsSettingsModalOpen(false)
+    setSettingsModalIndicator(null)
+
+    toast.success(`Configurações de ${updatedIndicator.type} aplicadas!`)
   }, [])
 
   // Converter indicadores ativos para o formato do CustomChart
@@ -186,61 +217,10 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   // 🔥 NOVO: Buscar ordens de SL/TP para CanvasChart
   const { data: ordersData } = usePositionOrders(exchangeAccountId || '', symbol)
 
-  // 🔥 CRITICAL: Buscar candles para CanvasProChartMinimal
+  // Buscar candles para indicadores separados
   const { data: candlesData, isLoading: isCandlesLoading } = useCandles(symbol, selectedInterval)
 
-  // 🚨 DEBUG: Verificar estado do componente
-  console.log('🔴 ChartContainer RENDERIZADO:', {
-    useCanvasProMinimal,
-    symbol,
-    selectedInterval,
-    chartTheme,
-    chartPositionsLength: chartPositions?.length || 0,
-    chartPositions: chartPositions, // 🔥 LOG COMPLETO das posições
-    candlesCount: candlesData?.candles?.length || 0,
-    isCandlesLoading
-  })
-
   // ✅ Salvar configurações no localStorage quando mudarem
-  // Handlers para gerenciar indicadores - ❌ DESABILITADO (CanvasProChart comentado)
-  /*
-  const handleAddIndicator = (type: IndicatorType) => {
-    if (!canvasProChartRef.current) return
-
-    const preset = INDICATOR_PRESETS[type]
-    const config: AnyIndicatorConfig = {
-      id: `${type.toLowerCase()}-${Date.now()}`,
-      type,
-      enabled: true,
-      displayType: preset.displayType || 'overlay',
-      color: preset.color || '#FFFFFF',
-      lineWidth: preset.lineWidth || 2,
-      params: preset.params || {}
-    } as AnyIndicatorConfig
-
-    canvasProChartRef.current.addIndicator(config)
-    setCanvasIndicators(prev => [...prev, config])
-    toast.success(`${type} adicionado ao gráfico`)
-  }
-
-  const handleRemoveIndicator = (id: string) => {
-    if (!canvasProChartRef.current) return
-
-    canvasProChartRef.current.removeIndicator(id)
-    setCanvasIndicators(prev => prev.filter(ind => ind.id !== id))
-    toast.info('Indicador removido')
-  }
-
-  const handleToggleIndicator = (id: string, enabled: boolean) => {
-    if (!canvasProChartRef.current) return
-
-    canvasProChartRef.current.updateIndicator(id, { enabled })
-    setCanvasIndicators(prev => prev.map(ind =>
-      ind.id === id ? { ...ind, enabled } : ind
-    ))
-  }
-  */
-
   useEffect(() => {
     localStorage.setItem('trading-timeframe', selectedInterval)
   }, [selectedInterval])
@@ -248,6 +228,36 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   useEffect(() => {
     localStorage.setItem('trading-theme', chartTheme)
   }, [chartTheme])
+
+  // ✅ NOVO: Salvar indicadores no localStorage quando mudarem
+  useEffect(() => {
+    if (activeIndicators.length > 0) {
+      console.log(`💾 Salvando indicadores para ${symbol}:`, activeIndicators)
+      localStorage.setItem(`indicators-${symbol}`, JSON.stringify(activeIndicators))
+    } else {
+      // Se não tem indicadores, remover do localStorage
+      localStorage.removeItem(`indicators-${symbol}`)
+    }
+  }, [activeIndicators, symbol])
+
+  // ✅ NOVO: Carregar indicadores quando o símbolo muda
+  useEffect(() => {
+    console.log(`🔄 Símbolo mudou para ${symbol}, carregando indicadores salvos...`)
+    try {
+      const saved = localStorage.getItem(`indicators-${symbol}`)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        console.log(`📊 Indicadores carregados para ${symbol}:`, parsed)
+        setActiveIndicators(parsed)
+      } else {
+        console.log(`📊 Nenhum indicador salvo para ${symbol}, limpando lista`)
+        setActiveIndicators([])
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar indicadores:', e)
+      setActiveIndicators([])
+    }
+  }, [symbol])
 
   // Mock data for price display - In real implementation, this would come from TradingView widget
   useEffect(() => {
@@ -299,12 +309,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     }
   }
 
-  // ❌ REMOVIDO - Apenas Canvas PRO disponível
-  // const switchChartMode = () => {
-  //   setChartMode('canvas')
-  //   setRetryCount(retryCount + 1)
-  // }
-
   // Fechar dropdown de indicadores ao clicar fora
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -319,9 +323,6 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [showIndicatorDropdown])
-
-
-  // ❌ REMOVIDO - getChartModeLabel não é mais necessário (apenas CanvasProChart)
 
   // Intervalos completos - memoizados para evitar re-renders
   // Todos os intervalos suportados pela Binance API pública
@@ -468,9 +469,19 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                     style={{ backgroundColor: ind.color }}
                   >
                     {ind.type}
+                    {/* Botão de configuração */}
+                    <button
+                      onClick={() => handleIndicatorSettings(ind.id)}
+                      className="hover:bg-white/20 rounded-full p-0.5"
+                      title="Configurar indicador"
+                    >
+                      <Settings className="h-2 w-2" />
+                    </button>
+                    {/* Botão de remover */}
                     <button
                       onClick={() => handleRemoveIndicator(ind.id)}
                       className="hover:bg-white/20 rounded-full p-0.5"
+                      title="Remover indicador"
                     >
                       <X className="h-2 w-2" />
                     </button>
@@ -515,36 +526,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                 <BarChart3 className="h-4 w-4" />
               </Button>
 
-              {/* PAINEL DE INDICADORES ANTIGO REMOVIDO - USANDO NOVO PAINEL PROFISSIONAL DO CANVASPROCHART */}
             </div>
 
-            {/* Alertas - DESABILITADO (CanvasProChart comentado) */}
-            {/* {useCanvasProMinimal && (
-              <Button>...</Button>
-            )} */}
-
-            {/* 🧪 BOTÃO DE TESTE - DESABILITADO (CanvasProChart comentado) */}
-            {/* <Button
-              variant={useCanvasProMinimal ? "default" : "ghost"}
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => {...}}
-            >
-              <Zap className="h-4 w-4" />
-            </Button> */}
-
-            {/* ❌ BOTÃO DE TROCA DE GRÁFICO REMOVIDO - Apenas Canvas PRO disponível */}
-            {false && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => {}}
-              title="Apenas Canvas PRO disponível"
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
-            )}
             <Button
               variant="ghost"
               size="icon"
@@ -574,118 +557,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
             </div>
           )}
 
-          {/* ========================================
-               🧪 TESTE INCREMENTAL: CustomChart OU CanvasProMinimal
-               ======================================== */}
-
-          {/* 🎯 FASES 9 & 10: CanvasProChartMinimal - ❌ DESABILITADO TEMPORARIAMENTE */}
-          {false && useCanvasProMinimal && (
-            <>
-            {console.log('🎯 RENDERIZANDO CanvasProChartMinimal:', {
-              symbol,
-              interval: selectedInterval,
-              indicatorsCount: canvasIndicators.length,
-              stopLoss: ordersData?.stopLoss,
-              takeProfit: ordersData?.takeProfit,
-              positionId: chartPositions?.[0]?.id
-            })}
-            <CanvasProChartMinimal
-              key={`chart-${symbol}-${selectedInterval}-${chartKey}`}
-              symbol={symbol}
-              interval={selectedInterval}
-              theme={chartTheme}
-              candles={candlesData?.candles || []}
-              width="100%"
-              height="100%"
-              className="w-full h-full rounded-b-lg overflow-hidden"
-              refreshInterval={5000}
-              activeIndicators={canvasIndicators}
-              positions={chartPositions}
-              stopLoss={ordersData?.stopLoss || null}
-              takeProfit={ordersData?.takeProfit || null}
-              positionId={chartPositions?.[0]?.id || ''}
-              onSLTPDrag={async (positionId, type, newPrice) => {
-                console.log(`🎯 [CanvasProMinimal] Linha ${type} arrastada para $${newPrice.toFixed(2)} - posição ${positionId}`)
-
-                const queryKey = ['position-orders', exchangeAccountId, symbol]
-
-                try {
-                  // ✅ OPTIMISTIC UPDATE: Atualizar UI ANTES da API call
-                  await queryClient.cancelQueries({ queryKey })
-
-                  // Salvar estado anterior para rollback
-                  const previousData = queryClient.getQueryData(queryKey)
-
-                  // Atualizar cache INSTANTANEAMENTE
-                  queryClient.setQueryData(queryKey, (oldData: any) => {
-                    if (!oldData) return oldData
-
-                    return {
-                      ...oldData,
-                      [type === 'stopLoss' ? 'stopLoss' : 'takeProfit']: newPrice
-                    }
-                  })
-
-                  console.log(`📝 UI atualizada otimisticamente: ${type} -> $${newPrice}`)
-
-                  // Mostrar feedback visual
-                  toast.loading(`Atualizando ${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}...`, {
-                    id: `sltp-update-${positionId}`
-                  })
-
-                  // Chamar API de forma assíncrona (não bloqueia UI)
-                  const result = await updatePositionSLTP(positionId, type, newPrice)
-
-                  // Sucesso! Atualizar com preço confirmado do backend
-                  queryClient.setQueryData(queryKey, (oldData: any) => {
-                    if (!oldData) return oldData
-
-                    return {
-                      ...oldData,
-                      [type === 'stopLoss' ? 'stopLoss' : 'takeProfit']: result.new_price
-                    }
-                  })
-
-                  // ✅ CRITICAL: Invalidar cache para forçar refetch imediato dos dados atualizados
-                  await queryClient.invalidateQueries({ queryKey })
-                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
-
-                  toast.success(result.message, {
-                    id: `sltp-update-${positionId}`,
-                    description: `Nova ordem criada: ${result.order_id}`
-                  })
-
-                  console.log('✅ SL/TP confirmado pelo backend:', result)
-
-                } catch (error: any) {
-                  console.error('❌ Erro ao atualizar SL/TP:', error)
-
-                  // ✅ ROLLBACK: Reverter para estado anterior em caso de erro
-                  const previousData = queryClient.getQueryData(queryKey)
-                  queryClient.setQueryData(queryKey, previousData)
-
-                  toast.error('Erro ao atualizar ordem', {
-                    id: `sltp-update-${positionId}`,
-                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
-                  })
-
-                  console.log('🔙 Rollback: linha revertida para posição anterior')
-                }
-              }}
-            />
-            </>
-          )}
-
-          {/* ✅ CustomChart - ATIVO (único gráfico habilitado) */}
-          {true && (
-            <>
-            {console.log('🟢 RENDERIZANDO CustomChart com props:', {
-              symbol,
-              interval: selectedInterval,
-              chartPositions,
-              chartPositionsLength: chartPositions?.length || 0
-            })}
-            <CustomChart
+          {/* CustomChart - Gráfico principal */}
+          <CustomChart
               key={`custom-${chartKey}-${symbol}-${selectedInterval}`}
               symbol={symbol}
               interval={selectedInterval}
@@ -699,6 +572,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               onChartClick={onChartClick}
               onPositionClose={onPositionClose}
               onPositionEdit={onPositionEdit}
+              onIndicatorClick={handleIndicatorSettings}
               onSLTPDrag={async (positionId, type, newPrice) => {
                 console.log(`🎯 Linha ${type} arrastada para $${newPrice.toFixed(2)} - posição ${positionId}`)
 
@@ -752,18 +626,10 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
                   console.log('✅ SL/TP confirmado pelo backend:', result)
 
-                  // ✅ REMOVIDO: onPositionAction causava chamada duplicada PUT /modify que falhava
-                  // Agora usamos apenas optimistic update + PATCH /sltp
-                  // if (onPositionAction) {
-                  //   onPositionAction(positionId, 'modify', {
-                  //     [type === 'stopLoss' ? 'stopLoss' : 'takeProfit']: result.new_price
-                  //   })
-                  // }
-
                 } catch (error: any) {
-                  console.error('❌ Erro ao atualizar SL/TP:', error)
+                  console.error('Erro ao atualizar SL/TP:', error)
 
-                  // ✅ ROLLBACK: Reverter para estado anterior em caso de erro
+                  // Rollback: Reverter para estado anterior em caso de erro
                   const previousData = queryClient.getQueryData(queryKey)
                   queryClient.setQueryData(queryKey, previousData)
 
@@ -771,70 +637,13 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                     id: `sltp-update-${positionId}`,
                     description: error.response?.data?.detail || error.message || 'Erro desconhecido'
                   })
-
-                  console.log('🔙 Rollback: linha revertida para posição anterior')
                 }
               }}
             />
-            </>
-          )}
-
-          {/* ❌❌❌ TRADINGVIEW REMOVIDO COMPLETAMENTE - APENAS CANVASPROCHART ❌❌❌ */}
-          {false && (
-            <>
-            {/* Removido console.log para evitar re-renders */}
-            <TradingViewWidget
-              key={`tv-${chartKey}-${symbol}-${selectedInterval}`}
-              symbol={symbol}
-              interval={selectedInterval}
-              theme={chartTheme}
-              width="100%"
-              height={height}
-              onReady={handleChartReady}
-              className="rounded-b-lg overflow-hidden"
-              positions={chartPositions}
-              onPositionAction={onPositionAction}
-            />
-            </>
-          )}
-
-          {/* ❌❌❌ TRADINGVIEW FALLBACK REMOVIDO - APENAS CANVASPROCHART ❌❌❌ */}
-          {false && (
-            <>
-            {/* Removido console.log para evitar re-renders */}
-            <div
-              className="w-full h-full"
-              style={{
-                filter: chartTheme === 'light' ? 'invert(1) hue-rotate(180deg)' : 'none',
-                transition: 'filter 0.3s ease'
-              }}
-            >
-              <TradingViewFallback
-                key={`${symbol}-${chartKey}`}
-                symbol={symbol}
-                theme="dark"
-                width="100%"
-                height="100%"
-                className="w-full h-full"
-              />
-            </div>
-            </>
-          )}
-
-          {/* ❌❌❌ SIMPLE CHART REMOVIDO - APENAS CANVASPROCHART ❌❌❌ */}
-          {false && (
-            <SimpleChart
-              symbol={symbol}
-              width="100%"
-              height="100%"
-              className="w-full h-full"
-            />
-          )}
         </div>
-
       </div>
 
-      {/* 📊 Painéis de Indicadores Separados (RSI, MACD, etc.) - flex-shrink-0 para não encolher */}
+      {/* Painéis de Indicadores Separados (RSI, MACD, etc.) */}
       {candlesData?.candles && candlesData.candles.length > 0 && (
         <SeparateIndicatorPanels
           indicators={activeIndicators}

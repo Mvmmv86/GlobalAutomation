@@ -168,7 +168,12 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
   // Sincronizar estado local quando o indicador muda
   useEffect(() => {
     if (indicator) {
-      setLocalIndicator({ ...indicator })
+      // 🔥 FIX: Cópia profunda para evitar mutação do estado original
+      console.log('📋 IndicatorSettingsModal - recebeu indicador:', indicator)
+      setLocalIndicator({
+        ...indicator,
+        params: { ...indicator.params }
+      })
     }
   }, [indicator])
 
@@ -225,8 +230,15 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
   // Handler para salvar
   const handleSave = () => {
     if (localIndicator) {
-      onSave(localIndicator)
-      onClose()
+      console.log('📝 IndicatorSettingsModal handleSave - enviando:', localIndicator)
+      // 🔥 FIX: Criar cópia profunda para garantir que React detecte mudança
+      const indicatorToSave: AnyIndicatorConfig = {
+        ...localIndicator,
+        params: { ...localIndicator.params }
+      }
+      console.log('📝 Cópia para salvar:', indicatorToSave)
+      onSave(indicatorToSave)
+      // Não chamar onClose() aqui - o ChartContainer vai fechar o modal
     }
   }
 

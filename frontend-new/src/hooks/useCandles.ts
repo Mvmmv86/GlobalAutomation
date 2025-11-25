@@ -46,27 +46,27 @@ const intervalMap: Record<string, string> = {
   '1M': '1M'
 }
 
-// Limites dinâmicos baseados no timeframe - Backend suporta até 20000 via paginação
-// Otimizado para histórico profissional MÁXIMO (anos de dados)
+// Limites dinâmicos baseados no timeframe - OTIMIZADO PARA PERFORMANCE
+// Reduzido para garantir carregamento rápido em todos os timeframes
 const getOptimalLimit = (interval: string): number => {
   const limits: Record<string, number> = {
-    '1': 5000,    // 1m = ~3.5 dias
-    '3': 8000,    // 3m = ~16 dias
-    '5': 10000,   // 5m = ~35 dias
-    '15': 15000,  // 15m = ~156 dias (~5 meses)
-    '30': 15000,  // 30m = ~312 dias (~10 meses)
-    '60': 15000,  // 1h = ~625 dias (~1.7 anos)
-    '120': 10000, // 2h = ~833 dias (~2.3 anos)
-    '240': 8000,  // 4h = ~1333 dias (~3.6 anos)
-    '360': 6000,  // 6h = ~1500 dias (~4.1 anos)
-    '480': 5000,  // 8h = ~1666 dias (~4.5 anos)
-    '720': 4000,  // 12h = ~2000 dias (~5.4 anos)
-    '1D': 3000,   // 1d = ~8.2 anos (todo histórico)
-    '3D': 2000,   // 3d = ~16 anos
-    '1W': 1000,   // 1w = ~19 anos
-    '1M': 500     // 1M = ~41 anos
+    '1': 2000,    // 1m = ~1.4 dias
+    '3': 2000,    // 3m = ~4 dias
+    '5': 2000,    // 5m = ~7 dias
+    '15': 2000,   // 15m = ~21 dias
+    '30': 2000,   // 30m = ~42 dias
+    '60': 2000,   // 1h = ~83 dias
+    '120': 1500,  // 2h = ~125 dias
+    '240': 1000,  // 4h = ~166 dias
+    '360': 1000,  // 6h = ~250 dias
+    '480': 800,   // 8h = ~266 dias
+    '720': 500,   // 12h = ~250 dias (REDUZIDO)
+    '1D': 365,    // 1d = ~1 ano (REDUZIDO)
+    '3D': 240,    // 3d = ~2 anos (REDUZIDO)
+    '1W': 104,    // 1w = ~2 anos (REDUZIDO)
+    '1M': 48      // 1M = ~4 anos (REDUZIDO)
   }
-  return limits[interval] || 10000
+  return limits[interval] || 1000
 }
 
 /**
@@ -79,6 +79,7 @@ export const useCandles = (symbol: string, interval: string) => {
   return useQuery<CandlesResponse>({
     queryKey: ['candles', symbol, interval],
     queryFn: async () => {
+      const startTime = Date.now()
       console.log(`🔥 useCandles: Fetching ${symbol} ${apiInterval} (limit: ${limit})`)
 
       const response = await fetch(
@@ -93,6 +94,8 @@ export const useCandles = (symbol: string, interval: string) => {
       )
 
       if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`❌ useCandles ERROR: ${response.status} ${response.statusText}`, errorText)
         throw new Error(`Failed to fetch candles: ${response.statusText}`)
       }
 
@@ -108,7 +111,8 @@ export const useCandles = (symbol: string, interval: string) => {
         volume: candle.volume || 0
       }))
 
-      console.log(`✅ useCandles: Loaded ${candles.length} candles for ${symbol}`)
+      const elapsed = Date.now() - startTime
+      console.log(`✅ useCandles: Loaded ${candles.length} candles for ${symbol} in ${elapsed}ms`)
 
       return {
         candles,
@@ -121,6 +125,8 @@ export const useCandles = (symbol: string, interval: string) => {
     gcTime: 300000, // 5 minutos no cache
     refetchInterval: 10000, // Re-fetch a cada 10 segundos para real-time updates
     refetchOnWindowFocus: true,
-    enabled: !!symbol && !!interval
+    enabled: !!symbol && !!interval,
+    retry: 2, // Tentar apenas 2 vezes em caso de erro
+    retryDelay: 1000 // Esperar 1s entre tentativas
   })
 }

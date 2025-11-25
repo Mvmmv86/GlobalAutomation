@@ -12,6 +12,7 @@ import json
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.exchanges.binance_connector import BinanceConnector
+from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.cache.idempotency_cache import check_idempotency, cache_response
 from binance.exceptions import BinanceAPIException
 
@@ -64,7 +65,8 @@ async def update_position_sltp(
                 p.*,
                 ea.api_key,
                 ea.secret_key,
-                ea.testnet
+                ea.testnet,
+                ea.exchange
             FROM positions p
             JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
             WHERE p.id = $1
@@ -74,13 +76,29 @@ async def update_position_sltp(
             raise HTTPException(status_code=404, detail="Posição não encontrada")
 
         logger.info(f"✅ Posição encontrada: {position['symbol']} {position['side']}")
+        logger.info(f"📊 DADOS DA POSIÇÃO DO BANCO:")
+        logger.info(f"   - ID: {position['id']}")
+        logger.info(f"   - Symbol: {position['symbol']}")
+        logger.info(f"   - Side: {position['side']}")
+        logger.info(f"   - Size: {position['size']}")
+        logger.info(f"   - Exchange: {position['exchange']}")
 
-        # 2. Criar connector da Binance
-        connector = BinanceConnector(
-            api_key=position['api_key'],
-            api_secret=position['secret_key'],
-            testnet=position['testnet']
-        )
+        # 2. Criar connector da exchange correta (Binance ou BingX)
+        exchange = position['exchange'].lower()
+        logger.info(f"🏦 Exchange detectada: {exchange}")
+
+        if exchange == 'bingx':
+            connector = BingXConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+        else:  # binance
+            connector = BinanceConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
 
         # 3. Determinar parâmetros
         order_type = update_data.type  # 'stopLoss' ou 'takeProfit'
@@ -88,49 +106,98 @@ async def update_position_sltp(
 
         logger.info(f"🎯 Modificando {order_type} para ${new_price}")
 
-        # 4. Buscar ordem SL/TP existente no banco
+        # 4. Para BingX: Buscar ordens abertas DIRETAMENTE na exchange (não no banco)
+        # O banco pode estar desatualizado, então devemos sempre consultar a exchange
         sl_tp_prefix = 'sl' if order_type == 'stopLoss' else 'tp'
+        symbol_bingx = position['symbol'].replace("USDT", "-USDT") if "-" not in position['symbol'] else position['symbol']
 
-        existing_order = await transaction_db.fetchrow("""
-            SELECT id, external_id
-            FROM orders
-            WHERE symbol = $1
-              AND client_order_id LIKE $2
-              AND status IN ('pending', 'submitted', 'open')
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, position['symbol'], f"{sl_tp_prefix}_%")
+        if exchange == 'bingx':
+            # CRÍTICO: Buscar ordens abertas diretamente da BingX usando o endpoint openOrders
+            logger.info(f"🔍 Buscando ordens abertas na BingX para {symbol_bingx}...")
+            open_orders_result = await connector._make_request(
+                "GET",
+                "/openApi/swap/v2/trade/openOrders",
+                {"symbol": symbol_bingx},
+                signed=True,
+                use_body=False
+            )
 
-        # 5. Cancelar ordem antiga se existir
-        if existing_order and existing_order['external_id']:
-            logger.info(f"🗑️ Cancelando ordem antiga: {existing_order['external_id']}")
+            existing_order_id = None
+            if open_orders_result.get("code") == 0:
+                orders = open_orders_result.get("data", {}).get("orders", [])
+                logger.info(f"📋 Encontradas {len(orders)} ordens abertas na BingX")
 
-            try:
-                await asyncio.to_thread(
-                    connector.client.futures_cancel_order,
-                    symbol=position['symbol'].upper(),
-                    orderId=existing_order['external_id']
-                )
+                # Procurar ordem do tipo correto (STOP_MARKET para SL, TAKE_PROFIT_MARKET para TP)
+                target_type = "STOP_MARKET" if order_type == 'stopLoss' else "TAKE_PROFIT_MARKET"
+                for o in orders:
+                    order_type_bingx = o.get("type", "")
+                    logger.info(f"   - Ordem: {o.get('orderId')} tipo={order_type_bingx} @ ${o.get('stopPrice')}")
+                    if order_type_bingx == target_type:
+                        existing_order_id = str(o.get("orderId"))
+                        logger.info(f"   ✅ Encontrada ordem {target_type} para cancelar: {existing_order_id}")
+                        break
+            else:
+                logger.warning(f"⚠️ Erro ao buscar ordens abertas: {open_orders_result.get('msg')}")
 
-                # Marcar ordem como cancelada no banco
-                await transaction_db.execute("""
-                    UPDATE orders
-                    SET status = 'canceled',
-                        updated_at = $1
-                    WHERE id = $2
-                """, datetime.utcnow(), existing_order['id'])
+            # 5. Cancelar ordem antiga se existir
+            if existing_order_id:
+                logger.info(f"🗑️ Cancelando ordem antiga na BingX: {existing_order_id}")
+                try:
+                    result = await connector.cancel_order(
+                        symbol=symbol_bingx,
+                        order_id=existing_order_id
+                    )
+                    if result.get('success'):
+                        logger.info(f"✅ Ordem antiga cancelada na BingX")
+                        # Pequena pausa para a BingX processar o cancelamento
+                        await asyncio.sleep(0.5)
+                    else:
+                        error_msg = result.get('error', '').lower()
+                        if 'already cancelled' in error_msg or 'does not exist' in error_msg:
+                            logger.warning(f"⚠️ Ordem já cancelada ou não existe: {existing_order_id}")
+                        else:
+                            raise Exception(f"BingX cancel failed: {result.get('error')}")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'already cancelled' in error_msg or 'does not exist' in error_msg:
+                        logger.warning(f"⚠️ Ordem já cancelada ou não existe: {existing_order_id}")
+                    else:
+                        raise
+            else:
+                logger.info(f"ℹ️ Nenhuma ordem {order_type} existente encontrada para cancelar")
+        else:
+            # Binance: Manter lógica do banco (pode funcionar ou não)
+            existing_order = await transaction_db.fetchrow("""
+                SELECT id, external_id
+                FROM orders
+                WHERE symbol = $1
+                  AND client_order_id LIKE $2
+                  AND status IN ('pending', 'submitted', 'open')
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, position['symbol'], f"{sl_tp_prefix}_%")
 
-                logger.info(f"✅ Ordem antiga cancelada")
-
-            except BinanceAPIException as e:
-                if 'Unknown order' in str(e):
-                    logger.warning(f"⚠️ Ordem já não existe na Binance: {existing_order['external_id']}")
-                    # Marcar como cancelada mesmo assim
+            # 5. Cancelar ordem antiga se existir (Binance)
+            if existing_order and existing_order['external_id']:
+                logger.info(f"🗑️ Cancelando ordem antiga na Binance: {existing_order['external_id']}")
+                try:
+                    await asyncio.to_thread(
+                        connector.client.futures_cancel_order,
+                        symbol=position['symbol'].upper(),
+                        orderId=existing_order['external_id']
+                    )
                     await transaction_db.execute("""
                         UPDATE orders SET status = 'canceled', updated_at = $1 WHERE id = $2
                     """, datetime.utcnow(), existing_order['id'])
-                else:
-                    raise
+                    logger.info(f"✅ Ordem antiga cancelada na Binance")
+                except BinanceAPIException as e:
+                    if 'Unknown order' in str(e):
+                        logger.warning(f"⚠️ Ordem já não existe na Binance: {existing_order['external_id']}")
+                        await transaction_db.execute("""
+                            UPDATE orders SET status = 'canceled', updated_at = $1 WHERE id = $2
+                        """, datetime.utcnow(), existing_order['id'])
+                    else:
+                        raise
 
         # 6. Arredondar preço para precisão correta da Binance
         # BTCUSDT: 1 decimal, ETHUSDT: 2 decimais, outros: 2 decimais
@@ -144,35 +211,123 @@ async def update_position_sltp(
 
         logger.info(f"📝 Criando nova ordem {order_type} @ ${rounded_price} (original: ${new_price})")
 
-        # 7. Criar nova ordem SL/TP na Binance
+        # 7. Criar nova ordem SL/TP na Exchange
         side = 'SELL' if position['side'] == 'long' else 'BUY'
 
-        if order_type == 'stopLoss':
-            order_params = {
-                'symbol': position['symbol'].upper(),
-                'side': side,
-                'type': 'STOP_MARKET',
-                'stopPrice': rounded_price,
-                'closePosition': 'true'
-            }
-        else:  # takeProfit
-            order_params = {
-                'symbol': position['symbol'].upper(),
-                'side': side,
-                'type': 'TAKE_PROFIT_MARKET',
-                'stopPrice': rounded_price,
-                'closePosition': 'true'
-            }
+        if exchange == 'bingx':
+            # BingX: Usar create_futures_order diretamente com positionSide (requerido para hedge mode)
+            # IMPORTANTE: BingX em Hedge mode NÃO aceita reduce_only (erro: 'ReduceOnly' field can not be filled)
+            # CRÍTICO: positionSide deve ser da POSIÇÃO ABERTA, não do side da ordem de fechamento
+            # Exemplo: Posição LONG (comprada) → SL usa side=SELL mas positionSide=LONG
+            position_side = position['side'].upper()  # LONG ou SHORT (da posição aberta)
 
-        logger.info(f"🎯 Parâmetros da ordem: {order_params}")
+            # DEBUG: Verificar posições abertas na BingX antes de criar ordem
+            logger.info(f"🔍 Verificando posições abertas na BingX...")
+            bingx_positions = await connector.get_futures_positions()
+            logger.info(f"📊 Posições BingX retornadas: {json.dumps(bingx_positions, indent=2)}")
 
-        order_result = await asyncio.to_thread(
-            connector.client.futures_create_order,
-            **order_params
-        )
+            # Verificar se a posição existe na BingX com o símbolo correto
+            symbol_to_check = position['symbol'].replace("USDT", "-USDT") if "-" not in position['symbol'] else position['symbol']
+            logger.info(f"🔍 Buscando posição com símbolo: {symbol_to_check} e side: {position_side}")
 
-        new_order_id = str(order_result.get('orderId'))
-        logger.info(f"✅ Nova ordem criada na Binance: {new_order_id}")
+            found_position = None
+            if bingx_positions.get('success') and bingx_positions.get('positions'):
+                for pos in bingx_positions['positions']:
+                    pos_symbol = pos.get('symbol', '')
+                    pos_side = pos.get('positionSide', '').upper()
+                    pos_amt = float(pos.get('positionAmt', '0'))
+                    logger.info(f"   - Posição encontrada: {pos_symbol}, side={pos_side}, amt={pos_amt}")
+                    if pos_symbol == symbol_to_check and pos_side == position_side:
+                        found_position = pos
+                        break
+
+            # CRÍTICO: Para Hedge Mode, precisamos usar a quantidade REAL da posição na BingX
+            # O erro "available amount of 0 BTC" ocorre quando a quantidade não bate
+            quantity_to_use = float(position['size'])  # Default do banco
+
+            if found_position:
+                logger.info(f"✅ Posição encontrada na BingX: {found_position}")
+                # CRÍTICO: Usar availableAmt (quantidade disponível) e não positionAmt
+                # availableAmt é a quantidade que pode ser usada para novas ordens
+                # (positionAmt - quantidade já alocada em ordens pendentes)
+                bingx_available = abs(float(found_position.get('availableAmt', 0)))
+                bingx_total = abs(float(found_position.get('positionAmt', 0)))
+                logger.info(f"📊 Quantidade disponível: {bingx_available}, Total: {bingx_total}")
+                if bingx_available > 0:
+                    logger.info(f"📊 Usando availableAmt da BingX: {bingx_available}")
+                    quantity_to_use = bingx_available
+                elif bingx_total > 0:
+                    # Fallback para positionAmt se availableAmt for 0
+                    # (pode acontecer se a ordem antiga não foi cancelada corretamente)
+                    logger.warning(f"⚠️ availableAmt é 0, usando positionAmt: {bingx_total}")
+                    quantity_to_use = bingx_total
+            else:
+                logger.warning(f"⚠️ POSIÇÃO NÃO ENCONTRADA na BingX! Symbol={symbol_to_check}, Side={position_side}")
+                logger.warning(f"   Posições disponíveis: {[p.get('symbol') + '/' + p.get('positionSide', '') for p in bingx_positions.get('positions', [])]}")
+                # Não vamos falhar aqui - tentar criar a ordem mesmo assim e ver o erro real
+
+            logger.info(f"📊 Criando SL/TP BingX: position_side={position_side}, order_side={side}, quantity={quantity_to_use}")
+
+            # IMPORTANTE: Em Hedge Mode, position_side deve ser o lado da POSIÇÃO ABERTA
+            # Exemplo: Posição LONG → SL usa side=SELL mas position_side=LONG
+            # O create_futures_order vai usar position_side se for passado, senão calcula errado
+            # CORREÇÃO: Usar símbolo no formato BingX (BTC-USDT) para criar ordens
+            symbol_bingx = position['symbol'].replace("USDT", "-USDT") if "-" not in position['symbol'] else position['symbol']
+
+            if order_type == 'stopLoss':
+                logger.info(f"🎯 Chamando create_stop_loss_order: symbol={symbol_bingx}, side={side}, qty={quantity_to_use}, stop={rounded_price}, position_side={position_side}")
+                result = await connector.create_stop_loss_order(
+                    symbol=symbol_bingx,
+                    side=side,
+                    quantity=quantity_to_use,
+                    stop_price=rounded_price,
+                    reduce_only=False,  # Hedge mode não usa reduce_only
+                    position_side=position_side  # CRÍTICO: Passar o lado da posição aberta
+                )
+            else:  # takeProfit
+                logger.info(f"🎯 Chamando create_take_profit_order: symbol={symbol_bingx}, side={side}, qty={quantity_to_use}, stop={rounded_price}, position_side={position_side}")
+                result = await connector.create_take_profit_order(
+                    symbol=symbol_bingx,
+                    side=side,
+                    quantity=quantity_to_use,
+                    stop_price=rounded_price,
+                    reduce_only=False,  # Hedge mode não usa reduce_only
+                    position_side=position_side  # CRÍTICO: Passar o lado da posição aberta
+                )
+
+            if not result.get('success'):
+                raise Exception(f"BingX order creation failed: {result.get('error')}")
+
+            new_order_id = str(result.get('order_id'))  # create_futures_order retorna 'order_id'
+            logger.info(f"✅ Nova ordem criada na BingX: {new_order_id}")
+        else:
+            # Binance: usar client.futures_create_order
+            if order_type == 'stopLoss':
+                order_params = {
+                    'symbol': position['symbol'].upper(),
+                    'side': side,
+                    'type': 'STOP_MARKET',
+                    'stopPrice': rounded_price,
+                    'closePosition': 'true'
+                }
+            else:  # takeProfit
+                order_params = {
+                    'symbol': position['symbol'].upper(),
+                    'side': side,
+                    'type': 'TAKE_PROFIT_MARKET',
+                    'stopPrice': rounded_price,
+                    'closePosition': 'true'
+                }
+
+            logger.info(f"🎯 Parâmetros da ordem: {order_params}")
+
+            order_result = await asyncio.to_thread(
+                connector.client.futures_create_order,
+                **order_params
+            )
+
+            new_order_id = str(order_result.get('orderId'))
+            logger.info(f"✅ Nova ordem criada na Binance: {new_order_id}")
 
         # 7. Salvar nova ordem no banco
         client_order_id = f"{sl_tp_prefix}_{uuid.uuid4().hex[:16]}"

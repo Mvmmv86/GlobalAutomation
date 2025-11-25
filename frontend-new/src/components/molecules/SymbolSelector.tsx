@@ -84,7 +84,7 @@ const SymbolSelector: React.FC<SymbolSelectorProps> = ({
       <Button
         variant="outline"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full justify-between min-w-[200px]"
+        className="w-full justify-between min-w-[140px]"
       >
         <div className="flex items-center space-x-2">
           <span className="font-mono font-semibold">{selectedSymbol}</span>

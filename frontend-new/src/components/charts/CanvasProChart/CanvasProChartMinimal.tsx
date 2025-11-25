@@ -58,6 +58,16 @@ export interface CanvasProChartMinimalProps {
   refreshInterval?: number
   /** Indicadores ativos para renderizar */
   activeIndicators?: AnyIndicatorConfig[]
+  /** Posições abertas (para mostrar entry price) */
+  positions?: any[]
+  /** Stop Loss price - linha vermelha draggable */
+  stopLoss?: number | null
+  /** Take Profit price - linha verde draggable */
+  takeProfit?: number | null
+  /** Position ID para callback de drag */
+  positionId?: string
+  /** Callback quando SL/TP é arrastado */
+  onSLTPDrag?: (positionId: string, type: 'stopLoss' | 'takeProfit', newPrice: number) => void
 }
 
 // Configurações de zoom - Estilo TradingView
@@ -144,7 +154,12 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
   width = '100%',
   height = '600px',
   className = '',
-  activeIndicators = []
+  activeIndicators = [],
+  positions = [],
+  stopLoss = null,
+  takeProfit = null,
+  positionId = '',
+  onSLTPDrag
 }) => {
   // Layer 1: Background (grid) - renderiza menos frequentemente
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -154,6 +169,8 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
   const indicatorsCanvasRef = useRef<HTMLCanvasElement>(null)
   // Layer 4: Crosshair - renderiza no mousemove
   const crosshairCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Layer 5: SL/TP Lines - linhas draggable de Stop Loss e Take Profit
+  const sltpCanvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
 
@@ -171,6 +188,12 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
   // ========== FASE 7: Estado para Crosshair e Tooltip ==========
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
   const [hoveredCandle, setHoveredCandle] = useState<any | null>(null)
+
+  // ========== FASE 11: Estado para SL/TP Drag ==========
+  const [draggingSLTP, setDraggingSLTP] = useState<'stopLoss' | 'takeProfit' | null>(null)
+  const [hoveringSLTP, setHoveringSLTP] = useState<'stopLoss' | 'takeProfit' | null>(null)
+  const [dragPrice, setDragPrice] = useState<number | null>(null)
+  const dragStartPriceRef = useRef<number | null>(null)
 
   // Debug: log no início do componente
   console.log('🚀 [CanvasProMinimal] Componente renderizado:', {
@@ -872,17 +895,49 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
     })
   }, [chartData, getChartArea])
 
-  // Handler de início do drag (pan)
+  // Handler de início do drag (pan ou SL/TP)
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    const y = e.clientY - rect.top
+
+    // Verificar se está sobre uma linha SL/TP
+    const sltpHover = checkSLTPHover(y)
+    if (sltpHover && onSLTPDrag && positionId) {
+      // Iniciar drag de SL/TP
+      setDraggingSLTP(sltpHover)
+      dragStartPriceRef.current = sltpHover === 'stopLoss' ? stopLoss : takeProfit
+      setDragPrice(dragStartPriceRef.current)
+      e.preventDefault()
+      e.stopPropagation()
+      console.log(`🎯 [SLTP Drag] Iniciando drag de ${sltpHover} @ ${dragStartPriceRef.current}`)
+      return
+    }
+
+    // Se não está sobre SL/TP, iniciar pan normal
     isDraggingRef.current = true
     lastMousePosRef.current = { x: e.clientX, y: e.clientY }
     if (containerRef.current) {
       containerRef.current.style.cursor = 'grabbing'
     }
-  }, [])
+  }, [checkSLTPHover, onSLTPDrag, positionId, stopLoss, takeProfit])
 
-  // Handler de movimento do mouse (pan)
+  // Handler de movimento do mouse (pan ou SL/TP drag)
   const handleMouseMove = useCallback((e: MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    const y = e.clientY - rect.top
+
+    // Se está arrastando SL/TP, atualizar o preço
+    if (draggingSLTP) {
+      const newPrice = yToPrice(y)
+      setDragPrice(newPrice)
+      return
+    }
+
+    // Pan normal
     if (!isDraggingRef.current) return
 
     const deltaX = e.clientX - lastMousePosRef.current.x
@@ -894,15 +949,37 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
       offsetX: prev.offsetX + deltaX,
       offsetY: prev.offsetY + deltaY
     }))
-  }, [])
+  }, [draggingSLTP, yToPrice])
 
-  // Handler de fim do drag (pan)
+  // Handler de fim do drag (pan ou SL/TP)
   const handleMouseUp = useCallback(() => {
+    // Se estava arrastando SL/TP, finalizar e chamar callback
+    if (draggingSLTP && dragPrice !== null && onSLTPDrag && positionId) {
+      const type = draggingSLTP
+      const newPrice = dragPrice
+      const oldPrice = type === 'stopLoss' ? stopLoss : takeProfit
+
+      // Só chamar callback se o preço mudou significativamente
+      if (oldPrice !== null && Math.abs(newPrice - oldPrice) > 0.01) {
+        console.log(`✅ [SLTP Drag] Finalizando ${type}: ${oldPrice} → ${newPrice}`)
+        onSLTPDrag(positionId, type, newPrice)
+      } else {
+        console.log(`⚠️ [SLTP Drag] Preço não mudou significativamente, ignorando`)
+      }
+
+      // Reset estado de drag
+      setDraggingSLTP(null)
+      setDragPrice(null)
+      dragStartPriceRef.current = null
+      return
+    }
+
+    // Pan normal
     isDraggingRef.current = false
     if (containerRef.current) {
-      containerRef.current.style.cursor = 'crosshair'
+      containerRef.current.style.cursor = hoveringSLTP ? 'ns-resize' : 'crosshair'
     }
-  }, [])
+  }, [draggingSLTP, dragPrice, onSLTPDrag, positionId, stopLoss, takeProfit, hoveringSLTP])
 
   // Registrar event listeners
   useEffect(() => {
@@ -936,7 +1013,8 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
 
   // Handler para atualizar posição do mouse e encontrar candle
   const handleMouseMoveForCrosshair = useCallback((e: React.MouseEvent) => {
-    if (isDraggingRef.current) return // Não mostrar crosshair durante drag
+    if (isDraggingRef.current) return // Não mostrar crosshair durante drag pan
+    if (draggingSLTP) return // Não mudar hover durante drag de SL/TP
 
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -944,6 +1022,15 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
     setMousePos({ x, y })
+
+    // Verificar hover sobre linhas SL/TP
+    const sltpHover = checkSLTPHover(y)
+    setHoveringSLTP(sltpHover)
+
+    // Mudar cursor baseado no hover
+    if (containerRef.current) {
+      containerRef.current.style.cursor = sltpHover ? 'ns-resize' : 'crosshair'
+    }
 
     // Encontrar candle sob o mouse
     if (candles.length > 0 && chartData) {
@@ -964,7 +1051,7 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
         setHoveredCandle(null)
       }
     }
-  }, [candles, chartData, getChartArea, viewport])
+  }, [candles, chartData, getChartArea, viewport, checkSLTPHover, draggingSLTP])
 
   // Handler para esconder crosshair quando mouse sai
   const handleMouseLeave = useCallback(() => {
@@ -1030,6 +1117,153 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
 
   }, [mousePos, dimensions, theme, chartData, getChartArea, viewport])
 
+  // ========== LAYER 5: SL/TP LINES ==========
+  // Renderiza linhas de Stop Loss (vermelha) e Take Profit (verde) draggable
+  useEffect(() => {
+    const canvas = sltpCanvasRef.current
+    if (!canvas || dimensions.width === 0 || dimensions.height === 0 || !chartData) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    ctx.scale(dpr, dpr)
+
+    // Limpar canvas
+    ctx.clearRect(0, 0, dimensions.width, dimensions.height)
+
+    const { chartLeft, chartRight, chartTop, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+    const { offsetY } = viewport
+
+    // Função helper para desenhar linha SL/TP
+    const drawSLTPLine = (price: number, color: string, label: string, isHovered: boolean, isDragging: boolean) => {
+      const y = chartTop + ((priceMax - price) / priceRange) * chartHeight + offsetY
+
+      // Só desenhar se estiver na área visível
+      if (y < chartTop || y > chartTop + chartHeight) return
+
+      // Linha principal
+      ctx.strokeStyle = color
+      ctx.lineWidth = isHovered || isDragging ? 2.5 : 1.5
+      ctx.setLineDash(isDragging ? [8, 4] : [6, 3])
+      ctx.beginPath()
+      ctx.moveTo(chartLeft, y)
+      ctx.lineTo(chartRight, y)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Background do label
+      const labelText = `${label}: ${price.toFixed(2)}`
+      ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      const labelWidth = ctx.measureText(labelText).width + 12
+      const labelHeight = 18
+      const labelX = chartRight + 3
+      const labelY = y - labelHeight / 2
+
+      // Retângulo com borda arredondada
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 3)
+      ctx.fill()
+
+      // Texto do label
+      ctx.fillStyle = '#ffffff'
+      ctx.textAlign = 'left'
+      ctx.fillText(labelText, labelX + 6, y + 4)
+
+      // Indicador de drag (setas)
+      if (isHovered || isDragging) {
+        ctx.fillStyle = color
+        ctx.globalAlpha = 0.8
+        // Seta para cima
+        ctx.beginPath()
+        ctx.moveTo(chartLeft + 15, y - 8)
+        ctx.lineTo(chartLeft + 20, y - 3)
+        ctx.lineTo(chartLeft + 10, y - 3)
+        ctx.closePath()
+        ctx.fill()
+        // Seta para baixo
+        ctx.beginPath()
+        ctx.moveTo(chartLeft + 15, y + 8)
+        ctx.lineTo(chartLeft + 20, y + 3)
+        ctx.lineTo(chartLeft + 10, y + 3)
+        ctx.closePath()
+        ctx.fill()
+        ctx.globalAlpha = 1
+      }
+    }
+
+    // Renderizar Stop Loss (linha vermelha)
+    const slPrice = draggingSLTP === 'stopLoss' && dragPrice !== null ? dragPrice : stopLoss
+    if (slPrice !== null && slPrice !== undefined) {
+      drawSLTPLine(
+        slPrice,
+        '#ef5350', // Vermelho
+        'SL',
+        hoveringSLTP === 'stopLoss',
+        draggingSLTP === 'stopLoss'
+      )
+    }
+
+    // Renderizar Take Profit (linha verde)
+    const tpPrice = draggingSLTP === 'takeProfit' && dragPrice !== null ? dragPrice : takeProfit
+    if (tpPrice !== null && tpPrice !== undefined) {
+      drawSLTPLine(
+        tpPrice,
+        '#26a69a', // Verde
+        'TP',
+        hoveringSLTP === 'takeProfit',
+        draggingSLTP === 'takeProfit'
+      )
+    }
+
+    if ((stopLoss || takeProfit) && !draggingSLTP) {
+      console.log(`📍 [Layer5-SLTP] SL: ${stopLoss}, TP: ${takeProfit}`)
+    }
+  }, [stopLoss, takeProfit, dimensions, chartData, getChartArea, viewport, hoveringSLTP, draggingSLTP, dragPrice])
+
+  // ========== HELPER: Verificar se mouse está sobre linha SL/TP ==========
+  const checkSLTPHover = useCallback((mouseY: number): 'stopLoss' | 'takeProfit' | null => {
+    if (!chartData) return null
+
+    const { chartTop, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+    const { offsetY } = viewport
+    const hitTolerance = 8 // Pixels de tolerância para hover
+
+    // Verificar Stop Loss
+    if (stopLoss !== null && stopLoss !== undefined) {
+      const slY = chartTop + ((priceMax - stopLoss) / priceRange) * chartHeight + offsetY
+      if (Math.abs(mouseY - slY) <= hitTolerance) {
+        return 'stopLoss'
+      }
+    }
+
+    // Verificar Take Profit
+    if (takeProfit !== null && takeProfit !== undefined) {
+      const tpY = chartTop + ((priceMax - takeProfit) / priceRange) * chartHeight + offsetY
+      if (Math.abs(mouseY - tpY) <= hitTolerance) {
+        return 'takeProfit'
+      }
+    }
+
+    return null
+  }, [chartData, getChartArea, viewport, stopLoss, takeProfit])
+
+  // ========== HELPER: Converter Y para preço ==========
+  const yToPrice = useCallback((y: number): number => {
+    if (!chartData) return 0
+
+    const { chartTop, chartHeight } = getChartArea()
+    const { priceMax, priceRange } = chartData
+    const { offsetY } = viewport
+
+    return priceMax - ((y - chartTop - offsetY) / chartHeight) * priceRange
+  }, [chartData, getChartArea, viewport])
+
   return (
     <div
       ref={containerRef}
@@ -1082,7 +1316,7 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
           pointerEvents: 'none' // Não bloqueia eventos do mouse
         }}
       />
-      {/* Layer 4: Crosshair - z-index: 4 (por cima de tudo) */}
+      {/* Layer 4: Crosshair - z-index: 4 */}
       <canvas
         ref={crosshairCanvasRef}
         style={{
@@ -1093,6 +1327,19 @@ const CanvasProChartMinimal: React.FC<CanvasProChartMinimalProps> = ({
           height: '100%',
           zIndex: 4,
           pointerEvents: 'none' // Não bloqueia eventos do mouse
+        }}
+      />
+      {/* Layer 5: SL/TP Lines - z-index: 5 (por cima de tudo, draggable) */}
+      <canvas
+        ref={sltpCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 5,
+          pointerEvents: 'none' // Eventos tratados pelo container
         }}
       />
 

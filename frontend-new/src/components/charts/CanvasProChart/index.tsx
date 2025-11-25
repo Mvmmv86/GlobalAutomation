@@ -46,6 +46,9 @@ export { CanvasProChartWithIndicators } from './CanvasProChartWithIndicators'
 // Export CanvasProChartComplete - FASES 11 & 12 (Drawing Tools + Alertas)
 export { CanvasProChartComplete } from './CanvasProChartComplete'
 
+// Export CanvasProChartWithDrawing - Fabric.js Integration (FUNCTIONAL)
+export { CanvasProChartWithDrawing } from './CanvasProChartWithDrawing'
+
 // Export Drawing System
 export * from './drawing'
 

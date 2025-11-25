@@ -140,9 +140,14 @@ class BingXConnector:
         if params is None:
             params = {}
 
-        headers = {
-            "Content-Type": "application/json"
-        }
+        # IMPORTANTE: DELETE requests na BingX NAO devem ter Content-Type header!
+        # Isso causa erro 109400 "Invalid parameters"
+        if method == "DELETE":
+            headers = {}  # Sem Content-Type para DELETE
+        else:
+            headers = {
+                "Content-Type": "application/json"
+            }
 
         request_data = None  # Will hold form data for body requests
 
@@ -154,8 +159,8 @@ class BingXConnector:
             # IMPORTANTE: _generate_signature adiciona timestamp ao dict params
             query_string, signature = self._generate_signature(params)
 
-            if use_body:
-                # FUTURES v2: Send params in BODY as form-urlencoded
+            if use_body and method != "DELETE":
+                # FUTURES v2: Send params in BODY as form-urlencoded (NOT for DELETE)
                 headers["Content-Type"] = "application/x-www-form-urlencoded"
 
                 # Build data dict with all params (incluindo timestamp) + signature
@@ -169,10 +174,10 @@ class BingXConnector:
                 logger.info(f"   Headers: {headers}")
                 logger.info(f"   Body Data: {request_data}")
             else:
-                # SPOT/GET: Send params in URL
+                # SPOT/GET/DELETE: Send params in URL
                 url = f"{url}?{query_string}&signature={signature}"
 
-                logger.info(f"🔐 BingX Request (URL mode - SPOT/GET):")
+                logger.info(f"🔐 BingX Request (URL mode - SPOT/GET/DELETE):")
                 logger.info(f"   Method: {method}")
                 logger.info(f"   URL: {url[:150]}...")
                 logger.info(f"   Headers: {headers}")
@@ -205,6 +210,29 @@ class BingXConnector:
                     async with session.post(url, headers=headers) as response:
                         response_text = await response.text()
                         logger.info(f"BingX Response (status={response.status}): {response_text[:500]}")
+                        try:
+                            return json.loads(response_text)
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON response: {response_text[:200]}")
+                            return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+
+            elif method == "DELETE":
+                # DELETE para cancelar ordens FUTURES
+                if use_body and request_data:
+                    # BingX SWAP v2: params no body para DELETE
+                    async with session.delete(url, headers=headers, data=request_data) as response:
+                        response_text = await response.text()
+                        logger.info(f"BingX DELETE Response (BODY mode, status={response.status}): {response_text[:500]}")
+                        try:
+                            return json.loads(response_text)
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON response: {response_text[:200]}")
+                            return {"success": False, "error": f"Invalid response: {response_text[:200]}"}
+                else:
+                    # params na URL
+                    async with session.delete(url, headers=headers) as response:
+                        response_text = await response.text()
+                        logger.info(f"BingX DELETE Response (URL mode, status={response.status}): {response_text[:500]}")
                         try:
                             return json.loads(response_text)
                         except json.JSONDecodeError:
@@ -747,7 +775,8 @@ class BingXConnector:
         time_in_force: str = "GTC",
         leverage: Optional[int] = None,
         stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None
+        take_profit: Optional[float] = None,
+        position_side: Optional[str] = None  # LONG or SHORT - se não fornecido, calcula baseado em side
     ) -> Dict[str, Any]:
         """
         Create futures order on BingX
@@ -789,7 +818,12 @@ class BingXConnector:
             await self._sync_time()
 
             # Determine position side
-            position_side = "LONG" if side == "BUY" else "SHORT"
+            # Se position_side foi fornecido explicitamente, usar ele (necessário para SL/TP)
+            # Senão, calcular baseado no side (para ordens de abertura)
+            if position_side is None:
+                position_side = "LONG" if side == "BUY" else "SHORT"
+            else:
+                position_side = position_side.upper()  # Garantir uppercase
 
             # BingX API v2: Construir parâmetros na ordem exata
             # Baseado em exemplos funcionais da documentação
@@ -807,10 +841,20 @@ class BingXConnector:
                 params["price"] = str(price)  # Must be STRING
                 params["timeInForce"] = time_in_force
 
-            if stop_price and "STOP" in order_type:
+            # CORRIGIDO: stopPrice é necessário tanto para STOP_MARKET quanto TAKE_PROFIT_MARKET
+            if stop_price and order_type.upper() in ["STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT"]:
                 params["stopPrice"] = str(stop_price)  # Must be STRING
 
-            if reduce_only:
+            # CRITICAL: Para ordens STOP_MARKET e TAKE_PROFIT_MARKET, adicionar workingType
+            # Isso é necessário para que a BingX reconheça a posição corretamente em Hedge Mode
+            if order_type.upper() in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]:
+                params["workingType"] = "MARK_PRICE"
+
+            # IMPORTANTE: Em Hedge Mode (quando positionSide é especificado),
+            # NÃO podemos usar reduceOnly - a BingX retorna erro 109400
+            # "In the Hedge mode, the 'ReduceOnly' field can not be filled."
+            # reduceOnly só funciona em One-Way Mode
+            if reduce_only and not position_side:
                 params["reduceOnly"] = "true"
 
             # Add stop loss and take profit if provided
@@ -936,45 +980,66 @@ class BingXConnector:
         side: str,
         quantity: float,
         stop_price: float,
-        reduce_only: bool = False
+        reduce_only: bool = False,
+        position_side: Optional[str] = None  # LONG or SHORT - OBRIGATÓRIO para Hedge Mode
     ) -> Dict[str, Any]:
-        """Create stop loss order for futures (reduce_only=False for Hedge mode compatibility)"""
+        """
+        Create stop loss order for futures (reduce_only=False for Hedge mode compatibility)
+
+        IMPORTANTE para Hedge Mode:
+        - position_side deve ser o lado da POSIÇÃO ABERTA (LONG ou SHORT)
+        - side deve ser o lado OPOSTO (SELL para fechar LONG, BUY para fechar SHORT)
+        """
         return await self.create_futures_order(
             symbol=symbol,
             side=side,
             order_type="STOP_MARKET",
             quantity=quantity,
             stop_price=stop_price,
-            reduce_only=reduce_only
+            reduce_only=reduce_only,
+            position_side=position_side  # Passar position_side para create_futures_order
         )
 
     async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
-        """Cancel a specific order by ID"""
+        """Cancel a FUTURES order by ID (for SL/TP orders)"""
         try:
-            symbol_bingx = self._format_symbol(symbol)
+            # Format symbol for BingX (BTCUSDT -> BTC-USDT)
+            symbol_bingx = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
+
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "order_id": order_id,
+                    "symbol": symbol_bingx,
+                    "status": "CANCELED"
+                }
 
             params = {
                 "symbol": symbol_bingx,
                 "orderId": order_id
             }
 
-            logger.info(f"🚫 Canceling order - Symbol: {symbol_bingx}, OrderID: {order_id}")
+            logger.info(f"🚫 Canceling FUTURES order - Symbol: {symbol_bingx}, OrderID: {order_id}")
 
-            result = await self.api_request(
-                method="DELETE",
-                path="/openApi/swap/v2/trade/order",
-                params=params
+            # BingX SWAP v2 usa DELETE com params na URL (query string)
+            result = await self._make_request(
+                "DELETE",
+                "/openApi/swap/v2/trade/order",
+                params,
+                signed=True,
+                use_body=False  # BingX v2 DELETE requer params na URL
             )
 
             if result.get("code") == 0:
-                logger.info(f"✅ Order cancelled successfully: {order_id}")
+                logger.info(f"✅ FUTURES Order cancelled successfully: {order_id}")
                 return {
                     "success": True,
                     "order_id": order_id,
                     "data": result.get("data")
                 }
             else:
-                logger.error(f"❌ Failed to cancel order: {result}")
+                logger.error(f"❌ Failed to cancel FUTURES order: {result}")
                 return {
                     "success": False,
                     "error": result.get("msg", "Failed to cancel order"),
@@ -982,7 +1047,7 @@ class BingXConnector:
                 }
 
         except Exception as e:
-            logger.error(f"Error canceling order: {e}")
+            logger.error(f"Error canceling FUTURES order: {e}")
             return {"success": False, "error": str(e)}
 
     async def create_sl_tp_order(
@@ -996,7 +1061,8 @@ class BingXConnector:
     ) -> Dict[str, Any]:
         """Create a Stop Loss or Take Profit order"""
         try:
-            symbol_bingx = self._format_symbol(symbol)
+            # Format symbol for BingX (BTCUSDT -> BTC-USDT)
+            symbol_bingx = symbol.replace("USDT", "-USDT") if "USDT" in symbol else symbol
 
             # Map order type
             bingx_order_type = {
@@ -1004,12 +1070,13 @@ class BingXConnector:
                 "TAKE_PROFIT": "TAKE_PROFIT_MARKET"
             }.get(order_type.upper(), order_type)
 
+            # BingX API v2 expects STRING values for numeric parameters!
             params = {
                 "symbol": symbol_bingx,
                 "side": side.upper(),
                 "type": bingx_order_type,
-                "stopPrice": stop_price,
-                "quantity": quantity,
+                "stopPrice": str(stop_price),  # Must be STRING
+                "quantity": str(quantity),      # Must be STRING
                 "workingType": "MARK_PRICE"
             }
 
@@ -1017,12 +1084,16 @@ class BingXConnector:
             if position_side:
                 params["positionSide"] = position_side.upper()
 
-            logger.info(f"📝 Creating {order_type} order - Symbol: {symbol_bingx}, Side: {side}, Stop: {stop_price}")
+            logger.info(f"📝 Creating {order_type} order - Symbol: {symbol_bingx}, Side: {side}, Stop: {stop_price}, PositionSide: {position_side}")
+            logger.info(f"📝 Params: {params}")
 
-            result = await self.api_request(
-                method="POST",
-                path="/openApi/swap/v2/trade/order",
-                params=params
+            # Usar _make_request (método correto do BingXConnector)
+            result = await self._make_request(
+                "POST",
+                "/openApi/swap/v2/trade/order",
+                params,
+                signed=True,
+                use_body=True
             )
 
             if result.get("code") == 0:
@@ -1052,16 +1123,24 @@ class BingXConnector:
         side: str,
         quantity: float,
         stop_price: float,
-        reduce_only: bool = False
+        reduce_only: bool = False,
+        position_side: Optional[str] = None  # LONG or SHORT - OBRIGATÓRIO para Hedge Mode
     ) -> Dict[str, Any]:
-        """Create take profit order for futures (reduce_only=False for Hedge mode compatibility)"""
+        """
+        Create take profit order for futures (reduce_only=False for Hedge mode compatibility)
+
+        IMPORTANTE para Hedge Mode:
+        - position_side deve ser o lado da POSIÇÃO ABERTA (LONG ou SHORT)
+        - side deve ser o lado OPOSTO (SELL para fechar LONG, BUY para fechar SHORT)
+        """
         return await self.create_futures_order(
             symbol=symbol,
             side=side,
             order_type="TAKE_PROFIT_MARKET",
             quantity=quantity,
             stop_price=stop_price,
-            reduce_only=reduce_only
+            reduce_only=reduce_only,
+            position_side=position_side  # Passar position_side para create_futures_order
         )
 
     # ============================================================================
@@ -1132,12 +1211,12 @@ class BingXConnector:
             logger.error(f"Error creating BingX limit order: {e}")
             return {"success": False, "error": str(e)}
 
-    async def cancel_order(
+    async def cancel_spot_order(
         self,
         symbol: str,
         order_id: str
     ) -> Dict[str, Any]:
-        """Cancel an order"""
+        """Cancel a SPOT order (use cancel_order for FUTURES)"""
         try:
             symbol_bingx = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
 
@@ -1173,7 +1252,7 @@ class BingXConnector:
                 }
 
         except Exception as e:
-            logger.error(f"Error canceling BingX order: {e}")
+            logger.error(f"Error canceling BingX spot order: {e}")
             return {"success": False, "error": str(e)}
 
     async def create_spot_order(

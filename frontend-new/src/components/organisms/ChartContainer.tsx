@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react'
-import { Maximize2, Minimize2, Settings, TrendingUp, Sun, Moon, BarChart3, Zap } from 'lucide-react'
+import {
+  Maximize2, Minimize2, Settings, TrendingUp, Sun, Moon, BarChart3, Zap,
+  Minus, MinusSquare, Type, ArrowUp, Move, Bell, Pencil
+} from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
@@ -10,11 +13,14 @@ import { SymbolSelector } from '../molecules/SymbolSelector'
 // import { TradingViewFallback } from '../atoms/TradingViewFallback'
 // import { SimpleChart } from '../atoms/SimpleChart'
 import { CustomChart } from '../atoms/CustomChart'
-import { CanvasProChart, CanvasProChartHandle } from '../charts/CanvasProChart'
-import { CanvasProChartMinimal } from '../charts/CanvasProChart/CanvasProChartMinimal'
-import { CanvasProChartWithIndicators } from '../charts/CanvasProChart/CanvasProChartWithIndicators'
-import { IndicatorPanel } from '../charts/CanvasProChart/components/IndicatorPanel'
-import { AnyIndicatorConfig, IndicatorType, INDICATOR_PRESETS } from '../charts/CanvasProChart/indicators/types'
+// ❌ CANVAS PRO CHART DESABILITADO TEMPORARIAMENTE
+// import { CanvasProChart, CanvasProChartHandle } from '../charts/CanvasProChart'
+// import { CanvasProChartMinimal } from '../charts/CanvasProChart/CanvasProChartMinimal'
+// import { CanvasProChartWithIndicators } from '../charts/CanvasProChart/CanvasProChartWithIndicators'
+// import { CanvasProChartComplete } from '../charts/CanvasProChart/CanvasProChartComplete'
+// import { CanvasProChartWithDrawing } from '../charts/CanvasProChart/CanvasProChartWithDrawing'
+// import { IndicatorPanel } from '../charts/CanvasProChart/components/IndicatorPanel'
+// import { AnyIndicatorConfig, IndicatorType, INDICATOR_PRESETS } from '../charts/CanvasProChart/indicators/types'
 import { useChartPositions } from '@/hooks/useChartPositions'
 import { useCandles } from '@/hooks/useCandles'
 import { usePositionOrders } from '@/hooks/usePositionOrders'
@@ -52,9 +58,9 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 }) => {
   const queryClient = useQueryClient()
   const containerRef = useRef<HTMLDivElement>(null)
-  const canvasProChartRef = useRef<CanvasProChartHandle>(null)
+  // const canvasProChartRef = useRef<CanvasProChartHandle>(null) // ❌ DESABILITADO
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [isLoading, setIsLoading] = useState(false) // ✅ Iniciar com false para carregamento automático
+  const [isLoading, setIsLoading] = useState(false) // ✅ Iniciar com false - CanvasProChart gerencia seu próprio loading
   const [currentPrice, setCurrentPrice] = useState<number>(0)
   const [priceChange, setPriceChange] = useState<number>(0)
 
@@ -67,8 +73,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     return '60'
   })
 
-  // 🧪 FASE 1: CanvasProMinimal ATIVO por padrão para teste
-  const [useCanvasProMinimal, setUseCanvasProMinimal] = useState(true)
+  // 🧪 FASE 1: CustomChart ATIVO por padrão (CanvasProMinimal desabilitado temporariamente)
+  const [useCanvasProMinimal, setUseCanvasProMinimal] = useState(false)
 
   // const [retryCount, setRetryCount] = useState(0) // ❌ REMOVIDO - não precisa mais
 
@@ -86,7 +92,12 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   const [showIndicators, setShowIndicators] = useState(false)
 
   // ✅ NOVO: Estado para controlar indicadores do sistema profissional (30+)
-  const [canvasIndicators, setCanvasIndicators] = useState<AnyIndicatorConfig[]>([])
+  // const [canvasIndicators, setCanvasIndicators] = useState<AnyIndicatorConfig[]>([]) // ❌ DESABILITADO
+  const [canvasIndicators, setCanvasIndicators] = useState<any[]>([])
+
+  // ✅ NOVO: Estado para ferramentas de desenho
+  const [activeDrawingTool, setActiveDrawingTool] = useState<string | null>(null)
+  const [showAlerts, setShowAlerts] = useState(false)
 
   // Buscar posições do símbolo atual
   const {
@@ -98,11 +109,11 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     exchangeAccountId
   })
 
-  // ✅ Buscar dados de candles usando hook simples (CanvasProChart tem seu próprio RealtimeManager)
-  const { data: candleData } = useCandles(symbol, selectedInterval)
-
   // 🔥 NOVO: Buscar ordens de SL/TP para CanvasChart
   const { data: ordersData } = usePositionOrders(exchangeAccountId || '', symbol)
+
+  // 🔥 CRITICAL: Buscar candles para CanvasProChartMinimal
+  const { data: candlesData, isLoading: isCandlesLoading } = useCandles(symbol, selectedInterval)
 
   // 🚨 DEBUG: Verificar estado do componente
   console.log('🔴 ChartContainer RENDERIZADO:', {
@@ -111,11 +122,14 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
     selectedInterval,
     chartTheme,
     chartPositionsLength: chartPositions?.length || 0,
-    candlesCount: candleData?.candles?.length || 0
+    chartPositions: chartPositions, // 🔥 LOG COMPLETO das posições
+    candlesCount: candlesData?.candles?.length || 0,
+    isCandlesLoading
   })
 
   // ✅ Salvar configurações no localStorage quando mudarem
-  // Handlers para gerenciar indicadores
+  // Handlers para gerenciar indicadores - ❌ DESABILITADO (CanvasProChart comentado)
+  /*
   const handleAddIndicator = (type: IndicatorType) => {
     if (!canvasProChartRef.current) return
 
@@ -151,6 +165,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
       ind.id === id ? { ...ind, enabled } : ind
     ))
   }
+  */
 
   useEffect(() => {
     localStorage.setItem('trading-timeframe', selectedInterval)
@@ -299,6 +314,13 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               ))}
             </div>
 
+            {/* 🎨 Ferramentas de Desenho - DESABILITADO (CanvasProChart comentado) */}
+            {/* {useCanvasProMinimal && (
+              <div className="flex items-center bg-accent/10 rounded-md px-1 py-0.5 gap-0.5 ml-2">
+                ...
+              </div>
+            )} */}
+
             {!isLoading && (
               <PriceDisplay
                 price={currentPrice}
@@ -343,21 +365,20 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               {/* PAINEL DE INDICADORES ANTIGO REMOVIDO - USANDO NOVO PAINEL PROFISSIONAL DO CANVASPROCHART */}
             </div>
 
-            {/* 🧪 BOTÃO DE TESTE: Alternar entre CustomChart e CanvasProMinimal */}
-            <Button
+            {/* Alertas - DESABILITADO (CanvasProChart comentado) */}
+            {/* {useCanvasProMinimal && (
+              <Button>...</Button>
+            )} */}
+
+            {/* 🧪 BOTÃO DE TESTE - DESABILITADO (CanvasProChart comentado) */}
+            {/* <Button
               variant={useCanvasProMinimal ? "default" : "ghost"}
               size="icon"
               className="h-8 w-8"
-              onClick={() => {
-                const newValue = !useCanvasProMinimal
-                console.log(`🧪 Alternando gráfico: ${useCanvasProMinimal ? 'CanvasProMinimal → CustomChart' : 'CustomChart → CanvasProMinimal'}`)
-                setUseCanvasProMinimal(newValue)
-                toast.info(newValue ? 'Testando CanvasProMinimal (Passo 1)' : 'Voltando para CustomChart')
-              }}
-              title={useCanvasProMinimal ? 'Voltar para CustomChart' : 'Testar CanvasProMinimal (Passo 1)'}
+              onClick={() => {...}}
             >
               <Zap className="h-4 w-4" />
-            </Button>
+            </Button> */}
 
             {/* ❌ BOTÃO DE TROCA DE GRÁFICO REMOVIDO - Apenas Canvas PRO disponível */}
             {false && (
@@ -404,28 +425,106 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
                🧪 TESTE INCREMENTAL: CustomChart OU CanvasProMinimal
                ======================================== */}
 
-          {/* 🧪 PASSO 1: Renderizar CanvasProChartWithIndicators (FASE 8: 25+ Indicadores) */}
-          {useCanvasProMinimal && (
+          {/* 🎯 FASES 9 & 10: CanvasProChartMinimal - ❌ DESABILITADO TEMPORARIAMENTE */}
+          {false && useCanvasProMinimal && (
             <>
-            {console.log('🧪 RENDERIZANDO CanvasProChartWithIndicators (Fase 8):', {
+            {console.log('🎯 RENDERIZANDO CanvasProChartMinimal:', {
               symbol,
               interval: selectedInterval,
-              candlesCount: candleData?.candles?.length || 0
+              indicatorsCount: canvasIndicators.length,
+              stopLoss: ordersData?.stopLoss,
+              takeProfit: ordersData?.takeProfit,
+              positionId: chartPositions?.[0]?.id
             })}
-            <CanvasProChartWithIndicators
+            <CanvasProChartMinimal
+              key={`chart-${symbol}-${selectedInterval}-${chartKey}`}
               symbol={symbol}
               interval={selectedInterval}
               theme={chartTheme}
+              candles={candlesData?.candles || []}
               width="100%"
               height="100%"
-              candles={candleData?.candles || []}
               className="w-full h-full rounded-b-lg overflow-hidden"
+              refreshInterval={5000}
+              activeIndicators={canvasIndicators}
+              positions={chartPositions}
+              stopLoss={ordersData?.stopLoss || null}
+              takeProfit={ordersData?.takeProfit || null}
+              positionId={chartPositions?.[0]?.id || ''}
+              onSLTPDrag={async (positionId, type, newPrice) => {
+                console.log(`🎯 [CanvasProMinimal] Linha ${type} arrastada para $${newPrice.toFixed(2)} - posição ${positionId}`)
+
+                const queryKey = ['position-orders', exchangeAccountId, symbol]
+
+                try {
+                  // ✅ OPTIMISTIC UPDATE: Atualizar UI ANTES da API call
+                  await queryClient.cancelQueries({ queryKey })
+
+                  // Salvar estado anterior para rollback
+                  const previousData = queryClient.getQueryData(queryKey)
+
+                  // Atualizar cache INSTANTANEAMENTE
+                  queryClient.setQueryData(queryKey, (oldData: any) => {
+                    if (!oldData) return oldData
+
+                    return {
+                      ...oldData,
+                      [type === 'stopLoss' ? 'stopLoss' : 'takeProfit']: newPrice
+                    }
+                  })
+
+                  console.log(`📝 UI atualizada otimisticamente: ${type} -> $${newPrice}`)
+
+                  // Mostrar feedback visual
+                  toast.loading(`Atualizando ${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}...`, {
+                    id: `sltp-update-${positionId}`
+                  })
+
+                  // Chamar API de forma assíncrona (não bloqueia UI)
+                  const result = await updatePositionSLTP(positionId, type, newPrice)
+
+                  // Sucesso! Atualizar com preço confirmado do backend
+                  queryClient.setQueryData(queryKey, (oldData: any) => {
+                    if (!oldData) return oldData
+
+                    return {
+                      ...oldData,
+                      [type === 'stopLoss' ? 'stopLoss' : 'takeProfit']: result.new_price
+                    }
+                  })
+
+                  // ✅ CRITICAL: Invalidar cache para forçar refetch imediato dos dados atualizados
+                  await queryClient.invalidateQueries({ queryKey })
+                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
+
+                  toast.success(result.message, {
+                    id: `sltp-update-${positionId}`,
+                    description: `Nova ordem criada: ${result.order_id}`
+                  })
+
+                  console.log('✅ SL/TP confirmado pelo backend:', result)
+
+                } catch (error: any) {
+                  console.error('❌ Erro ao atualizar SL/TP:', error)
+
+                  // ✅ ROLLBACK: Reverter para estado anterior em caso de erro
+                  const previousData = queryClient.getQueryData(queryKey)
+                  queryClient.setQueryData(queryKey, previousData)
+
+                  toast.error('Erro ao atualizar ordem', {
+                    id: `sltp-update-${positionId}`,
+                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
+                  })
+
+                  console.log('🔙 Rollback: linha revertida para posição anterior')
+                }
+              }}
             />
             </>
           )}
 
-          {/* ✅ CustomChart (fallback seguro) */}
-          {!useCanvasProMinimal && (
+          {/* ✅ CustomChart - ATIVO (único gráfico habilitado) */}
+          {true && (
             <>
             {console.log('🟢 RENDERIZANDO CustomChart com props:', {
               symbol,

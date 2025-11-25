@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
 import type { ChartPosition } from '@/hooks/useChartPositions'
+import { indicatorEngine, AnyIndicatorConfig, IndicatorResult, INDICATOR_PRESETS } from '@/utils/indicators'
 
 // Get API URL from environment variable
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+
+// Quantidade de candles para carregar por página no lazy loading
+const LAZY_LOAD_PAGE_SIZE = 1000
 
 interface DraggableLine {
   id: string
@@ -23,7 +27,8 @@ interface CustomChartProps {
   positions?: ChartPosition[]
   onReady?: () => void
   className?: string
-  indicators?: {
+  // Novo formato: aceita configs do IndicatorEngine diretamente
+  indicators?: AnyIndicatorConfig[] | {
     ema9?: boolean
     ema20?: boolean
     ema50?: boolean
@@ -90,7 +95,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   const candlesDataRef = useRef<CandleData[] | null>(null)
   const candlesCacheKey = useRef<string>('')
 
-  // Refs para indicadores
+  // 🔄 LAZY LOADING: Estado para controlar carregamento incremental
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [hasMoreData, setHasMoreData] = useState(true)
+  const hasMoreDataRef = useRef(true) // Ref para usar em closures
+  const oldestTimestampRef = useRef<number | null>(null)
+  const isLoadingMoreRef = useRef(false) // Ref para evitar múltiplas chamadas
+
+  // Refs para indicadores (legacy)
   const ema9SeriesRef = useRef<any>(null)
   const ema20SeriesRef = useRef<any>(null)
   const ema50SeriesRef = useRef<any>(null)
@@ -100,6 +112,9 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   const upperBandRef = useRef<any>(null)
   const lowerBandRef = useRef<any>(null)
   const middleBandRef = useRef<any>(null)
+
+  // 🆕 Refs para indicadores dinâmicos do IndicatorEngine
+  const indicatorSeriesMapRef = useRef<Map<string, any[]>>(new Map())
 
   // Mapear interval do frontend para Binance API
   const mapIntervalToBinance = (interval: string): string => {
@@ -170,6 +185,93 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
     return smaData
   }, [])
+
+  // 🔄 LAZY LOADING: Função para carregar mais candles históricos
+  const loadMoreCandles = useCallback(async () => {
+    if (isLoadingMoreRef.current || !hasMoreDataRef.current || !oldestTimestampRef.current) {
+      console.log('📍 [LazyLoad] Ignorando chamada:', {
+        isLoadingMore: isLoadingMoreRef.current,
+        hasMoreData: hasMoreDataRef.current,
+        oldestTimestamp: oldestTimestampRef.current
+      })
+      return
+    }
+
+    isLoadingMoreRef.current = true
+    setIsLoadingMore(true)
+
+    try {
+      const binanceInterval = mapIntervalToBinance(interval)
+      // endTime deve ser 1ms antes do candle mais antigo atual (em milissegundos)
+      const endTime = oldestTimestampRef.current * 1000 - 1
+
+      console.log(`📜 [LazyLoad] Carregando mais candles antes de ${new Date(endTime).toISOString()}`)
+
+      const response = await fetch(
+        `${API_URL}/api/v1/market/candles/history?symbol=${symbol}&interval=${binanceInterval}&end_time=${endTime}&limit=${LAZY_LOAD_PAGE_SIZE}`
+      )
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        console.error('❌ [LazyLoad] Erro ao buscar candles históricos:', data)
+        setHasMoreData(false)
+        hasMoreDataRef.current = false
+        return
+      }
+
+      const newCandles: CandleData[] = data.candles.map((candle: any) => ({
+        time: candle.time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      }))
+
+      if (newCandles.length === 0) {
+        console.log('📭 [LazyLoad] Não há mais dados históricos disponíveis')
+        setHasMoreData(false)
+        hasMoreDataRef.current = false
+        return
+      }
+
+      // Atualizar timestamp mais antigo
+      oldestTimestampRef.current = newCandles[0].time
+
+      // Verificar se há mais dados
+      setHasMoreData(data.has_more)
+      hasMoreDataRef.current = data.has_more
+
+      // Combinar com dados existentes (novos no início)
+      if (candlesDataRef.current) {
+        const combined = [...newCandles, ...candlesDataRef.current]
+        candlesDataRef.current = combined
+
+        // Atualizar gráfico
+        if (candlestickSeriesRef.current) {
+          candlestickSeriesRef.current.setData(combined)
+          console.log(`✅ [LazyLoad] ${newCandles.length} candles adicionados. Total: ${combined.length}`)
+        }
+
+        // Atualizar volume também
+        if (volumeSeriesRef.current) {
+          const volumeData = combined.map((candle: CandleData) => ({
+            time: candle.time,
+            value: 0, // Volume não está disponível no endpoint history ainda
+            color: candle.close >= candle.open ? '#10B98180' : '#EF444480',
+          }))
+          volumeSeriesRef.current.setData(volumeData)
+        }
+      }
+
+    } catch (err) {
+      console.error('❌ [LazyLoad] Erro:', err)
+    } finally {
+      isLoadingMoreRef.current = false
+      setIsLoadingMore(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, interval])
 
   // 🚀 PERFORMANCE: Memoize Bollinger Bands calculation to avoid recalculation
   const calculateBollingerBands = useCallback((data: CandleData[], period: number, stdDev: number) => {
@@ -295,13 +397,31 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
     console.log('✅ CustomChart: Gráfico criado com sucesso')
 
+    // 🔄 LAZY LOADING: Listener para detectar scroll para a esquerda (passado)
+    const timeScale = chart.timeScale()
+    timeScale.subscribeVisibleLogicalRangeChange((logicalRange) => {
+      if (!logicalRange || !candlesDataRef.current || candlesDataRef.current.length === 0) {
+        return
+      }
+
+      // Se o usuário scrollou até perto do início dos dados (candles antigos)
+      // logicalRange.from é o índice lógico do primeiro candle visível
+      // Se from < 10, significa que estamos vendo os candles mais antigos
+      // Usando refs para evitar problemas de closure
+      if (logicalRange.from !== null && logicalRange.from < 10 && hasMoreDataRef.current && !isLoadingMoreRef.current) {
+        console.log(`📍 [LazyLoad] Perto do início dos dados (from=${logicalRange.from}), carregando mais...`)
+        loadMoreCandles()
+      }
+    })
+
     // Cleanup
     return () => {
       resizeObserver.disconnect()
       chart.remove()
       console.log('🧹 CustomChart: Gráfico removido')
     }
-  }, [theme, width, height, onChartClick])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme, width, height, onChartClick, loadMoreCandles])
 
   // Buscar dados de candles da API
   useEffect(() => {
@@ -370,6 +490,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         // 🚀 PERFORMANCE: Cache the data for future use
         candlesDataRef.current = candleData
         candlesCacheKey.current = `${symbol}:${interval}`
+
+        // 🔄 LAZY LOADING: Salvar timestamp do candle mais antigo
+        if (candleData.length > 0) {
+          oldestTimestampRef.current = candleData[0].time
+          setHasMoreData(true) // Reset para permitir carregar mais
+          hasMoreDataRef.current = true
+          console.log(`📅 [LazyLoad] Oldest timestamp: ${new Date(candleData[0].time * 1000).toISOString()}, hasMoreData: true`)
+        }
 
         // Atualizar séries
         if (candlestickSeriesRef.current && volumeSeriesRef.current) {
@@ -796,7 +924,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   useEffect(() => {
     if (!chartRef.current || !candlestickSeriesRef.current) return
 
-    const updateIndicators = () => {
+    const updateIndicators = async () => {
       try {
         // 🚀 RETRY LOGIC: Esperar dados estarem disponíveis
         if (!candlesDataRef.current || candlesDataRef.current.length === 0) {
@@ -816,174 +944,341 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         const candleData = candlesDataRef.current
         console.log('📊 Aplicando indicadores INSTANTANEAMENTE com', candleData.length, 'candles')
 
-        // EMA 9
-        if (indicators.ema9) {
-          if (!ema9SeriesRef.current && chartRef.current) {
-            ema9SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#2196F3',
-              lineWidth: 2,
-              title: 'EMA (9)',
-            })
-          }
-          if (ema9SeriesRef.current) {
-            const emaData = calculateEMA(candleData, 9)
-            ema9SeriesRef.current.setData(emaData)
-            console.log('✅ EMA (9) ativado')
-          }
-        } else if (ema9SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(ema9SeriesRef.current)
-          ema9SeriesRef.current = null
-          console.log('❌ EMA (9) desativado')
-        }
+        // 🆕 DETECTAR FORMATO: Array de configs OU objeto booleano
+        const isArrayFormat = Array.isArray(indicators)
 
-        // EMA 20
-        if (indicators.ema20) {
-          if (!ema20SeriesRef.current && chartRef.current) {
-            ema20SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#2962FF',
-              lineWidth: 2,
-              title: 'EMA (20)',
-            })
-          }
-          if (ema20SeriesRef.current) {
-            const emaData = calculateEMA(candleData, 20)
-            ema20SeriesRef.current.setData(emaData)
-            console.log('✅ EMA (20) ativado')
-          }
-        } else if (ema20SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(ema20SeriesRef.current)
-          ema20SeriesRef.current = null
-          console.log('❌ EMA (20) desativado')
-        }
+        if (isArrayFormat) {
+          // ========================================
+          // 🆕 NOVO FORMATO: Array de AnyIndicatorConfig
+          // Usa IndicatorEngine para cálculo
+          // ========================================
+          const indicatorConfigs = indicators as AnyIndicatorConfig[]
+          console.log('📊 Processando', indicatorConfigs.length, 'indicadores via IndicatorEngine')
 
-        // EMA 50
-        if (indicators.ema50) {
-          if (!ema50SeriesRef.current && chartRef.current) {
-            ema50SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#1565C0',
-              lineWidth: 2,
-              title: 'EMA (50)',
-            })
-          }
-          if (ema50SeriesRef.current) {
-            const emaData = calculateEMA(candleData, 50)
-            ema50SeriesRef.current.setData(emaData)
-            console.log('✅ EMA (50) ativado')
-          }
-        } else if (ema50SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(ema50SeriesRef.current)
-          ema50SeriesRef.current = null
-          console.log('❌ EMA (50) desativado')
-        }
+          // Converter candles para formato do IndicatorEngine
+          // 🔥 FIX: Usar volume real dos candles para indicadores como MFI, VP, OBV, ADL, FI, VWAP
+          const engineCandles = candleData.map(c => ({
+            time: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume || 0 // 🔥 Agora usando volume real!
+          }))
 
-        // SMA 20
-        if (indicators.sma20) {
-          if (!sma20SeriesRef.current && chartRef.current) {
-            sma20SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#FF9800',
-              lineWidth: 2,
-              title: 'SMA (20)',
-            })
-          }
-          if (sma20SeriesRef.current) {
-            const smaData = calculateSMA(candleData, 20)
-            sma20SeriesRef.current.setData(smaData)
-            console.log('✅ SMA (20) ativado')
-          }
-        } else if (sma20SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(sma20SeriesRef.current)
-          sma20SeriesRef.current = null
-          console.log('❌ SMA (20) desativado')
-        }
+          // IDs dos indicadores atuais
+          const currentIndicatorIds = new Set(indicatorConfigs.map(c => c.id))
 
-        // SMA 50
-        if (indicators.sma50) {
-          if (!sma50SeriesRef.current && chartRef.current) {
-            sma50SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#FF6D00',
-              lineWidth: 2,
-              title: 'SMA (50)',
-            })
-          }
-          if (sma50SeriesRef.current) {
-            const smaData = calculateSMA(candleData, 50)
-            sma50SeriesRef.current.setData(smaData)
-            console.log('✅ SMA (50) ativado')
-          }
-        } else if (sma50SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(sma50SeriesRef.current)
-          sma50SeriesRef.current = null
-          console.log('❌ SMA (50) desativado')
-        }
+          // Remover séries de indicadores que não estão mais ativos
+          indicatorSeriesMapRef.current.forEach((seriesArray, id) => {
+            if (!currentIndicatorIds.has(id)) {
+              seriesArray.forEach(series => {
+                try {
+                  chartRef.current?.removeSeries(series)
+                } catch (e) {
+                  console.warn('Erro ao remover série:', e)
+                }
+              })
+              indicatorSeriesMapRef.current.delete(id)
+              console.log(`❌ Indicador ${id} removido`)
+            }
+          })
 
-        // SMA 200
-        if (indicators.sma200) {
-          if (!sma200SeriesRef.current && chartRef.current) {
-            sma200SeriesRef.current = chartRef.current.addLineSeries({
-              color: '#E65100',
-              lineWidth: 2,
-              title: 'SMA (200)',
-            })
-          }
-          if (sma200SeriesRef.current) {
-            const smaData = calculateSMA(candleData, 200)
-            sma200SeriesRef.current.setData(smaData)
-            console.log('✅ SMA (200) ativado')
-          }
-        } else if (sma200SeriesRef.current && chartRef.current) {
-          chartRef.current.removeSeries(sma200SeriesRef.current)
-          sma200SeriesRef.current = null
-          console.log('❌ SMA (200) desativado')
-        }
+          // Processar cada indicador
+          for (const config of indicatorConfigs) {
+            if (!config.enabled) continue
 
-        // Bollinger Bands
-        if (indicators.bollingerBands) {
-          const bbData = calculateBollingerBands(candleData, 20, 2)
+            // Calcular usando IndicatorEngine
+            const result = indicatorEngine.calculateSync(config, engineCandles)
+            if (!result) {
+              console.warn(`⚠️ Indicador ${config.type} retornou null`)
+              continue
+            }
 
-          if (!upperBandRef.current && chartRef.current) {
-            upperBandRef.current = chartRef.current.addLineSeries({
-              color: '#9E9E9E',
-              lineWidth: 1,
-              lineStyle: 2,
-              title: 'BB Upper',
-            })
+            // Verificar se já existe série para este indicador
+            let seriesArray = indicatorSeriesMapRef.current.get(config.id)
+
+            // Determinar tipo de indicador (overlay vs separate)
+            const isOverlay = config.displayType === 'overlay'
+
+            if (!seriesArray) {
+              // Criar novas séries
+              seriesArray = []
+
+              // Série principal
+              if (isOverlay) {
+                // Indicadores overlay usam LineSeries
+                const mainSeries = chartRef.current!.addLineSeries({
+                  color: config.color || INDICATOR_PRESETS[config.type]?.color || '#FFFFFF',
+                  lineWidth: config.lineWidth || 2,
+                  title: config.type,
+                  priceLineVisible: false,
+                  lastValueVisible: true,
+                })
+                seriesArray.push(mainSeries)
+              } else {
+                // Indicadores separate usam HistogramSeries para MACD histogram, ou LineSeries
+                const mainSeries = chartRef.current!.addLineSeries({
+                  color: config.color || INDICATOR_PRESETS[config.type]?.color || '#FFFFFF',
+                  lineWidth: config.lineWidth || 2,
+                  title: config.type,
+                  priceLineVisible: false,
+                  lastValueVisible: true,
+                  priceScaleId: `indicator-${config.id}`,
+                })
+
+                // Configurar escala de preço separada
+                mainSeries.priceScale().applyOptions({
+                  scaleMargins: {
+                    top: 0.8,
+                    bottom: 0,
+                  },
+                })
+
+                seriesArray.push(mainSeries)
+              }
+
+              // Séries adicionais (signal, upper, lower, etc.)
+              if (result.additionalLines) {
+                const additionalColors: Record<string, string> = {
+                  signal: '#FF6D00',
+                  upper: '#9E9E9E',
+                  lower: '#9E9E9E',
+                  d: '#FF6D00',
+                  pdi: '#10B981',
+                  mdi: '#EF4444',
+                  base: '#2962FF',
+                  spanA: '#10B98180',
+                  spanB: '#EF444480',
+                  overbought: '#EF4444',
+                  oversold: '#10B981',
+                }
+
+                Object.keys(result.additionalLines).forEach(lineKey => {
+                  const additionalSeries = chartRef.current!.addLineSeries({
+                    color: additionalColors[lineKey] || '#888888',
+                    lineWidth: 1,
+                    lineStyle: (lineKey === 'upper' || lineKey === 'lower') ? 2 : 0,
+                    title: `${config.type} ${lineKey}`,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    priceScaleId: isOverlay ? undefined : `indicator-${config.id}`,
+                  })
+                  seriesArray!.push(additionalSeries)
+                })
+              }
+
+              indicatorSeriesMapRef.current.set(config.id, seriesArray)
+              console.log(`✅ Indicador ${config.type} criado com ${seriesArray.length} séries`)
+            }
+
+            // Atualizar dados da série principal
+            const mainSeriesData = result.values
+              .map((value, idx) => ({
+                time: candleData[idx].time,
+                value: value
+              }))
+              .filter(d => !isNaN(d.value) && d.value !== null)
+
+            seriesArray[0]?.setData(mainSeriesData)
+
+            // Atualizar séries adicionais
+            if (result.additionalLines && seriesArray.length > 1) {
+              const additionalKeys = Object.keys(result.additionalLines)
+              additionalKeys.forEach((key, idx) => {
+                const additionalData = result.additionalLines![key]
+                  .map((value, i) => ({
+                    time: candleData[i].time,
+                    value: value
+                  }))
+                  .filter(d => !isNaN(d.value) && d.value !== null)
+
+                seriesArray![idx + 1]?.setData(additionalData)
+              })
+            }
+
+            console.log(`✅ Indicador ${config.type} atualizado`)
           }
 
-          if (!middleBandRef.current && chartRef.current) {
-            middleBandRef.current = chartRef.current.addLineSeries({
-              color: '#9E9E9E',
-              lineWidth: 1,
-              title: 'BB Middle',
-            })
-          }
-
-          if (!lowerBandRef.current && chartRef.current) {
-            lowerBandRef.current = chartRef.current.addLineSeries({
-              color: '#9E9E9E',
-              lineWidth: 1,
-              lineStyle: 2,
-              title: 'BB Lower',
-            })
-          }
-
-          upperBandRef.current?.setData(bbData.upper)
-          middleBandRef.current?.setData(bbData.middle)
-          lowerBandRef.current?.setData(bbData.lower)
-          console.log('✅ Bollinger Bands ativado')
         } else {
-          if (upperBandRef.current && chartRef.current) {
-            chartRef.current.removeSeries(upperBandRef.current)
-            upperBandRef.current = null
+          // ========================================
+          // FORMATO LEGADO: Objeto booleano
+          // ========================================
+          const legacyIndicators = indicators as {
+            ema9?: boolean; ema20?: boolean; ema50?: boolean;
+            sma20?: boolean; sma50?: boolean; sma200?: boolean;
+            bollingerBands?: boolean;
           }
-          if (middleBandRef.current && chartRef.current) {
-            chartRef.current.removeSeries(middleBandRef.current)
-            middleBandRef.current = null
+
+          // EMA 9
+          if (legacyIndicators.ema9) {
+            if (!ema9SeriesRef.current && chartRef.current) {
+              ema9SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#2196F3',
+                lineWidth: 2,
+                title: 'EMA (9)',
+              })
+            }
+            if (ema9SeriesRef.current) {
+              const emaData = calculateEMA(candleData, 9)
+              ema9SeriesRef.current.setData(emaData)
+              console.log('✅ EMA (9) ativado')
+            }
+          } else if (ema9SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(ema9SeriesRef.current)
+            ema9SeriesRef.current = null
+            console.log('❌ EMA (9) desativado')
           }
-          if (lowerBandRef.current && chartRef.current) {
-            chartRef.current.removeSeries(lowerBandRef.current)
-            lowerBandRef.current = null
+
+          // EMA 20
+          if (legacyIndicators.ema20) {
+            if (!ema20SeriesRef.current && chartRef.current) {
+              ema20SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#2962FF',
+                lineWidth: 2,
+                title: 'EMA (20)',
+              })
+            }
+            if (ema20SeriesRef.current) {
+              const emaData = calculateEMA(candleData, 20)
+              ema20SeriesRef.current.setData(emaData)
+              console.log('✅ EMA (20) ativado')
+            }
+          } else if (ema20SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(ema20SeriesRef.current)
+            ema20SeriesRef.current = null
+            console.log('❌ EMA (20) desativado')
           }
-          console.log('❌ Bollinger Bands desativado')
+
+          // EMA 50
+          if (legacyIndicators.ema50) {
+            if (!ema50SeriesRef.current && chartRef.current) {
+              ema50SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#1565C0',
+                lineWidth: 2,
+                title: 'EMA (50)',
+              })
+            }
+            if (ema50SeriesRef.current) {
+              const emaData = calculateEMA(candleData, 50)
+              ema50SeriesRef.current.setData(emaData)
+              console.log('✅ EMA (50) ativado')
+            }
+          } else if (ema50SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(ema50SeriesRef.current)
+            ema50SeriesRef.current = null
+            console.log('❌ EMA (50) desativado')
+          }
+
+          // SMA 20
+          if (legacyIndicators.sma20) {
+            if (!sma20SeriesRef.current && chartRef.current) {
+              sma20SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#FF9800',
+                lineWidth: 2,
+                title: 'SMA (20)',
+              })
+            }
+            if (sma20SeriesRef.current) {
+              const smaData = calculateSMA(candleData, 20)
+              sma20SeriesRef.current.setData(smaData)
+              console.log('✅ SMA (20) ativado')
+            }
+          } else if (sma20SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(sma20SeriesRef.current)
+            sma20SeriesRef.current = null
+            console.log('❌ SMA (20) desativado')
+          }
+
+          // SMA 50
+          if (legacyIndicators.sma50) {
+            if (!sma50SeriesRef.current && chartRef.current) {
+              sma50SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#FF6D00',
+                lineWidth: 2,
+                title: 'SMA (50)',
+              })
+            }
+            if (sma50SeriesRef.current) {
+              const smaData = calculateSMA(candleData, 50)
+              sma50SeriesRef.current.setData(smaData)
+              console.log('✅ SMA (50) ativado')
+            }
+          } else if (sma50SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(sma50SeriesRef.current)
+            sma50SeriesRef.current = null
+            console.log('❌ SMA (50) desativado')
+          }
+
+          // SMA 200
+          if (legacyIndicators.sma200) {
+            if (!sma200SeriesRef.current && chartRef.current) {
+              sma200SeriesRef.current = chartRef.current.addLineSeries({
+                color: '#E65100',
+                lineWidth: 2,
+                title: 'SMA (200)',
+              })
+            }
+            if (sma200SeriesRef.current) {
+              const smaData = calculateSMA(candleData, 200)
+              sma200SeriesRef.current.setData(smaData)
+              console.log('✅ SMA (200) ativado')
+            }
+          } else if (sma200SeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(sma200SeriesRef.current)
+            sma200SeriesRef.current = null
+            console.log('❌ SMA (200) desativado')
+          }
+
+          // Bollinger Bands
+          if (legacyIndicators.bollingerBands) {
+            const bbData = calculateBollingerBands(candleData, 20, 2)
+
+            if (!upperBandRef.current && chartRef.current) {
+              upperBandRef.current = chartRef.current.addLineSeries({
+                color: '#9E9E9E',
+                lineWidth: 1,
+                lineStyle: 2,
+                title: 'BB Upper',
+              })
+            }
+
+            if (!middleBandRef.current && chartRef.current) {
+              middleBandRef.current = chartRef.current.addLineSeries({
+                color: '#9E9E9E',
+                lineWidth: 1,
+                title: 'BB Middle',
+              })
+            }
+
+            if (!lowerBandRef.current && chartRef.current) {
+              lowerBandRef.current = chartRef.current.addLineSeries({
+                color: '#9E9E9E',
+                lineWidth: 1,
+                lineStyle: 2,
+                title: 'BB Lower',
+              })
+            }
+
+            upperBandRef.current?.setData(bbData.upper)
+            middleBandRef.current?.setData(bbData.middle)
+            lowerBandRef.current?.setData(bbData.lower)
+            console.log('✅ Bollinger Bands ativado')
+          } else {
+            if (upperBandRef.current && chartRef.current) {
+              chartRef.current.removeSeries(upperBandRef.current)
+              upperBandRef.current = null
+            }
+            if (middleBandRef.current && chartRef.current) {
+              chartRef.current.removeSeries(middleBandRef.current)
+              middleBandRef.current = null
+            }
+            if (lowerBandRef.current && chartRef.current) {
+              chartRef.current.removeSeries(lowerBandRef.current)
+              lowerBandRef.current = null
+            }
+            console.log('❌ Bollinger Bands desativado')
+          }
         }
 
       } catch (err) {
@@ -1027,6 +1322,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
             <div className="h-8 w-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
             <div className="text-sm text-muted-foreground">Carregando dados de {symbol}...</div>
           </div>
+        </div>
+      )}
+
+      {/* 🔄 LAZY LOADING: Indicador de carregamento de mais dados */}
+      {isLoadingMore && (
+        <div className="absolute top-2 left-2 flex items-center space-x-2 bg-background/90 backdrop-blur-sm border rounded-md px-3 py-1.5 shadow-md z-20">
+          <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-xs text-muted-foreground">Carregando histórico...</span>
         </div>
       )}
 

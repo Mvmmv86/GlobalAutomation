@@ -377,9 +377,9 @@ const TradingPage: React.FC = () => {
       {/* Main Trading Layout - Com 1cm (10px) de espaço da navbar */}
       <div className="flex-1 flex overflow-hidden pr-2.5 gap-2.5">
         {/* Left Section - Chart Máximo */}
-        <div className="flex-1 flex flex-col">
-          {/* Chart - Ocupando tudo */}
-          <div className="flex-1 py-2.5">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {/* Chart - Ocupando tudo com overflow-hidden para conter indicadores */}
+          <div className="flex-1 py-2.5 min-h-0 overflow-hidden">
             <ChartContainer
               symbol={selectedSymbol}
               height="100%"
@@ -402,8 +402,8 @@ const TradingPage: React.FC = () => {
             />
           </div>
 
-          {/* Positions Card com Abas (FUTURES/SPOT) */}
-          <div className="h-48 pb-2.5">
+          {/* Positions Card com Abas (FUTURES/SPOT) - altura fixa, não encolhe */}
+          <div className="h-48 pb-2.5 flex-shrink-0">
             <PositionsCard
               openPositions={openPositions}
               closedPositions={closedPositions}

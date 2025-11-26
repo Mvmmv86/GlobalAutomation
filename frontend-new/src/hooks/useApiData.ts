@@ -254,6 +254,62 @@ export const useBalancesSummary = () => {
   })
 }
 
+// NEW: Dashboard Stats Hook (positions count, orders today, orders 3 months)
+export const useDashboardStats = () => {
+  return useQuery({
+    queryKey: ['dashboard-stats'],
+    queryFn: dashboardService.getDashboardStats,
+    staleTime: 15 * 1000, // 15 seconds
+    refetchInterval: 30 * 1000, // 30 seconds
+    refetchIntervalInBackground: true,
+  })
+}
+
+// NEW: Recent Orders from Exchange Hook (last 7 days)
+export const useRecentOrdersFromExchange = (days: number = 7) => {
+  return useQuery({
+    queryKey: ['recent-orders-exchange', days],
+    queryFn: () => dashboardService.getRecentOrders(days),
+    staleTime: 15 * 1000, // 15 seconds
+    refetchInterval: 30 * 1000, // 30 seconds
+  })
+}
+
+// NEW: Active Positions from Exchange Hook (real-time)
+export const useActivePositionsFromExchange = () => {
+  return useQuery({
+    queryKey: ['active-positions-exchange'],
+    queryFn: dashboardService.getActivePositions,
+    staleTime: 5 * 1000, // 5 seconds - positions need real-time updates
+    refetchInterval: 10 * 1000, // 10 seconds polling
+    refetchIntervalInBackground: true,
+  })
+}
+
+// NEW: Close Position Mutation
+export const useClosePositionFromDashboard = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: dashboardService.closePosition,
+    onSuccess: async () => {
+      // Invalidate all related caches
+      queryClient.invalidateQueries({ queryKey: ['active-positions-exchange'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['balances-summary-v2'] })
+      queryClient.invalidateQueries({ queryKey: ['positions'] })
+      queryClient.invalidateQueries({ queryKey: ['position-metrics'] })
+
+      // Invalidate backend cache via API
+      try {
+        await apiClient.post('/dashboard/cache/invalidate')
+        console.log('✅ Backend cache invalidated after position close')
+      } catch (error) {
+        console.warn('⚠️ Failed to invalidate backend cache:', error)
+      }
+    },
+  })
+}
+
 export const usePnlChart = (days: number = 7) => {
   return useQuery({
     queryKey: ['pnl-chart', days],

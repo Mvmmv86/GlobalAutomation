@@ -309,6 +309,96 @@ async def get_candles(
         )
 
 
+@router.get("/candles/history")
+async def get_candles_history(
+    symbol: str = Query(..., description="Symbol (ex: BTCUSDT)"),
+    interval: str = Query("1h", description="Interval (1m, 5m, 15m, 30m, 1h, 4h, 1d, etc)"),
+    end_time: int = Query(..., description="End time in milliseconds (fetch candles BEFORE this time)"),
+    limit: int = Query(1000, ge=1, le=1000, description="Number of candles (max 1000)"),
+    market_type: Optional[str] = Query("auto", description="Market type: auto, spot, futures")
+):
+    """
+    Busca candles HISTÓRICOS (para lazy loading / infinite scroll)
+    Retorna candles ANTES do endTime especificado
+
+    **Uso típico:**
+    1. Frontend carrega candles iniciais com /candles
+    2. Quando usuário scrolla para a esquerda (passado), chama /candles/history
+       com endTime = timestamp do candle mais antigo atual
+    3. Repete até não haver mais dados
+
+    **Parâmetros:**
+    - symbol: Par de trading (ex: BTCUSDT)
+    - interval: Timeframe
+    - end_time: Timestamp em MS - busca candles ANTES deste momento
+    - limit: Quantidade (max 1000)
+
+    **Retorna:**
+    - candles: Array ordenado do mais antigo ao mais recente
+    - has_more: Boolean indicando se há mais dados históricos
+    - oldest_time: Timestamp do candle mais antigo retornado
+    """
+    try:
+        logger.info(f"📜 Fetching historical candles: {symbol} {interval} before {end_time} (limit={limit})")
+
+        # Determinar tipo de mercado inicial
+        initial_market = "futures" if market_type in ["auto", "futures"] else "spot"
+
+        # Buscar candles com endTime
+        result = await fetch_binance_public_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+            market_type=initial_market,
+            end_time=end_time
+        )
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch historical candles: {result.get('error', 'Unknown error')}"
+            )
+
+        # Formatar dados
+        candles = []
+        for kline in result["data"]:
+            candles.append({
+                "time": int(kline[0] / 1000),  # MS para seconds
+                "open": float(kline[1]),
+                "high": float(kline[2]),
+                "low": float(kline[3]),
+                "close": float(kline[4]),
+                "volume": float(kline[5])
+            })
+
+        # Verificar se há mais dados (se retornou menos que o pedido, não há mais)
+        has_more = len(result["data"]) >= limit
+        oldest_time = candles[0]["time"] * 1000 if candles else None
+
+        logger.info(f"✅ Historical candles: {len(candles)} fetched, has_more={has_more}")
+
+        return {
+            "success": True,
+            "symbol": symbol,
+            "interval": interval,
+            "market_type": result.get("market_type", initial_market),
+            "count": len(candles),
+            "has_more": has_more,
+            "oldest_time": oldest_time,
+            "candles": candles
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching historical candles: {str(e)}"
+        )
+
+
 @router.get("/cache/metrics")
 async def get_cache_metrics():
     """

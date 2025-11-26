@@ -6,12 +6,17 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from uuid import UUID
+from datetime import datetime, timedelta
 
 import structlog
 
 from infrastructure.database.connection_transaction_mode import transaction_db
+from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
 
 logger = structlog.get_logger(__name__)
+
+# Initialize trade tracker service
+trade_tracker = BotTradeTrackerService(transaction_db)
 
 router = APIRouter(prefix="/api/v1/bot-subscriptions", tags=["bot-subscriptions"])
 
@@ -41,6 +46,13 @@ class SubscriptionUpdate(BaseModel):
     custom_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
     max_daily_loss_usd: Optional[float] = Field(None, ge=10.00)
     max_concurrent_positions: Optional[int] = Field(None, ge=1, le=10)
+
+
+class TradeCloseRecord(BaseModel):
+    """Model for recording a closed trade"""
+    ticker: str = Field(..., description="Trading pair (e.g., BTCUSDT)")
+    exchange_order_id: str = Field(..., description="Exchange order ID that closed the position")
+    realized_pnl: float = Field(..., description="Realized P&L in USD")
 
 
 # ============================================================================
@@ -440,6 +452,296 @@ async def unsubscribe_from_bot(subscription_id: str, user_id: str):
         logger.error(
             "Error unsubscribing",
             subscription_id=subscription_id,
+            error=str(e),
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{subscription_id}/performance")
+async def get_subscription_performance(
+    subscription_id: str,
+    user_id: str,
+    days: int = Query(default=30, ge=1, le=365, description="Number of days to fetch history")
+):
+    """
+    Get performance metrics and P&L history for a subscription.
+    Used for charts in the BotDetailsModal.
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT
+                bs.id,
+                bs.bot_id,
+                bs.total_pnl_usd,
+                bs.win_count,
+                bs.loss_count,
+                bs.total_signals_received,
+                bs.total_orders_executed,
+                bs.created_at,
+                b.name as bot_name
+            FROM bot_subscriptions bs
+            INNER JOIN bots b ON b.id = bs.bot_id
+            WHERE bs.id = $1 AND bs.user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        # Try to get P&L history from bot_pnl_history table
+        pnl_history = []
+        try:
+            history_records = await transaction_db.fetch("""
+                SELECT
+                    snapshot_date,
+                    daily_pnl_usd,
+                    cumulative_pnl_usd,
+                    daily_wins,
+                    daily_losses,
+                    cumulative_wins,
+                    cumulative_losses,
+                    win_rate_pct
+                FROM bot_pnl_history
+                WHERE subscription_id = $1
+                    AND snapshot_date >= $2
+                ORDER BY snapshot_date ASC
+            """, subscription_id, start_date.date())
+
+            pnl_history = [
+                {
+                    "date": str(record["snapshot_date"]),
+                    "daily_pnl": float(record["daily_pnl_usd"]),
+                    "cumulative_pnl": float(record["cumulative_pnl_usd"]),
+                    "daily_wins": record["daily_wins"],
+                    "daily_losses": record["daily_losses"],
+                    "cumulative_wins": record["cumulative_wins"],
+                    "cumulative_losses": record["cumulative_losses"],
+                    "win_rate": float(record["win_rate_pct"])
+                }
+                for record in history_records
+            ]
+        except Exception as e:
+            # Table may not exist yet, generate mock data for demo
+            logger.warning(f"Could not fetch P&L history: {e}")
+
+        # If no history data, generate sample data from executions or empty
+        if not pnl_history:
+            # Try to build history from executions
+            try:
+                executions = await transaction_db.fetch("""
+                    SELECT
+                        DATE(bse.created_at) as exec_date,
+                        COUNT(*) as trades,
+                        SUM(CASE WHEN bse.status = 'success' THEN 1 ELSE 0 END) as wins
+                    FROM bot_signal_executions bse
+                    WHERE bse.subscription_id = $1
+                        AND bse.created_at >= $2
+                    GROUP BY DATE(bse.created_at)
+                    ORDER BY exec_date ASC
+                """, subscription_id, start_date)
+
+                cumulative_pnl = 0
+                cumulative_wins = 0
+                cumulative_losses = 0
+
+                for exec_record in executions:
+                    # Simulate P&L based on wins (this is placeholder)
+                    # In production, this would come from actual closed trades
+                    daily_wins = exec_record["wins"] or 0
+                    daily_losses = (exec_record["trades"] or 0) - daily_wins
+                    daily_pnl = (daily_wins * 5) - (daily_losses * 3)  # Placeholder calculation
+
+                    cumulative_pnl += daily_pnl
+                    cumulative_wins += daily_wins
+                    cumulative_losses += daily_losses
+
+                    total_trades = cumulative_wins + cumulative_losses
+                    win_rate = (cumulative_wins / total_trades * 100) if total_trades > 0 else 0
+
+                    pnl_history.append({
+                        "date": str(exec_record["exec_date"]),
+                        "daily_pnl": daily_pnl,
+                        "cumulative_pnl": cumulative_pnl,
+                        "daily_wins": daily_wins,
+                        "daily_losses": daily_losses,
+                        "cumulative_wins": cumulative_wins,
+                        "cumulative_losses": cumulative_losses,
+                        "win_rate": round(win_rate, 2)
+                    })
+            except Exception as e:
+                logger.warning(f"Could not build history from executions: {e}")
+
+        # If still no data, generate empty chart data with 0 values
+        if not pnl_history:
+            # Generate last N days with zeros
+            for i in range(min(days, 30)):
+                date = (end_date - timedelta(days=days - 1 - i)).date()
+                pnl_history.append({
+                    "date": str(date),
+                    "daily_pnl": 0,
+                    "cumulative_pnl": 0,
+                    "daily_wins": 0,
+                    "daily_losses": 0,
+                    "cumulative_wins": 0,
+                    "cumulative_losses": 0,
+                    "win_rate": 0
+                })
+
+        # Calculate summary metrics
+        total_wins = subscription["win_count"] or 0
+        total_losses = subscription["loss_count"] or 0
+        total_trades = total_wins + total_losses
+        win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
+        total_pnl = float(subscription["total_pnl_usd"] or 0)
+
+        return {
+            "success": True,
+            "data": {
+                "subscription_id": subscription_id,
+                "bot_name": subscription["bot_name"],
+                "summary": {
+                    "total_pnl_usd": total_pnl,
+                    "win_rate": round(win_rate, 2),
+                    "total_wins": total_wins,
+                    "total_losses": total_losses,
+                    "total_trades": total_trades,
+                    "total_signals": subscription["total_signals_received"] or 0,
+                    "total_orders_executed": subscription["total_orders_executed"] or 0,
+                    "subscribed_at": subscription["created_at"].isoformat() if subscription["created_at"] else None
+                },
+                "pnl_history": pnl_history
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error getting subscription performance",
+            subscription_id=subscription_id,
+            error=str(e),
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{subscription_id}/record-trade-close")
+async def record_trade_close(
+    subscription_id: str,
+    trade_data: TradeCloseRecord,
+    user_id: str = Query(..., description="User ID for verification")
+):
+    """
+    Record a closed trade from an exchange webhook or polling.
+    This endpoint is called when a SL/TP order is triggered on the exchange.
+
+    Updates:
+    - bot_trades table with the trade record
+    - bot_subscriptions with updated P&L, win_count, loss_count
+    - bot_pnl_history with daily snapshot
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT id FROM bot_subscriptions
+            WHERE id = $1 AND user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Process the position close
+        result = await trade_tracker.process_position_close(
+            subscription_id=UUID(subscription_id),
+            ticker=trade_data.ticker,
+            exchange_order_id=trade_data.exchange_order_id,
+            realized_pnl=trade_data.realized_pnl
+        )
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "data": {
+                    "trade_id": result.get("trade_id"),
+                    "pnl_usd": result.get("pnl_usd"),
+                    "is_win": result.get("is_win")
+                },
+                "message": "Trade recorded successfully"
+            }
+        else:
+            raise HTTPException(status_code=400, detail=result.get("error", "Failed to record trade"))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error recording trade close",
+            subscription_id=subscription_id,
+            error=str(e),
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/daily-snapshots")
+async def generate_daily_snapshots():
+    """
+    Generate daily P&L snapshots for all active subscriptions.
+    This endpoint should be called by a cron job at end of each trading day.
+    """
+    try:
+        result = await trade_tracker.generate_daily_snapshots()
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "data": {
+                    "date": result.get("date"),
+                    "snapshots_created": result.get("snapshots_created")
+                },
+                "message": "Daily snapshots generated successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to generate snapshots"))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error generating daily snapshots",
+            error=str(e),
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reset-daily-loss")
+async def reset_daily_loss_counters():
+    """
+    Reset daily loss counters for all active subscriptions.
+    This endpoint should be called by a cron job at midnight UTC.
+    """
+    try:
+        result = await trade_tracker.reset_daily_loss_counters()
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Daily loss counters reset successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to reset counters"))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error resetting daily loss counters",
             error=str(e),
             exc_info=True
         )

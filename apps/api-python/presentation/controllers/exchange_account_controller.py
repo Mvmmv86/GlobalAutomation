@@ -4,10 +4,40 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import List, Optional
 import structlog
 from datetime import datetime
+import jwt
+import uuid as uuid_module
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 
 logger = structlog.get_logger(__name__)
+
+# JWT Secret Key (should be in environment variable in production)
+JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+
+
+def get_user_id_from_request(request: Request) -> Optional[str]:
+    """Extract user_id from JWT token in Authorization header"""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+        return payload.get("user_id")
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+
+def get_user_uuid_from_request(request: Request) -> Optional[uuid_module.UUID]:
+    """Extract user_id from JWT and convert to UUID"""
+    user_id = get_user_id_from_request(request)
+    if not user_id:
+        return None
+    try:
+        return uuid_module.UUID(user_id) if isinstance(user_id, str) else user_id
+    except ValueError:
+        return None
 
 def create_exchange_account_router() -> APIRouter:
     """Create and configure the exchange account router"""
@@ -17,17 +47,22 @@ def create_exchange_account_router() -> APIRouter:
     async def get_exchange_accounts(request: Request):
         """Get all exchange accounts for the authenticated user"""
         try:
-            # TODO: Extract user_id from JWT token when auth middleware is ready
-            # For now, get all accounts
-            
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+
+            # If no user authenticated, return empty list
+            if not user_uuid:
+                return {"success": True, "data": []}
+
+            # Get accounts FILTERED BY USER_ID
             accounts = await transaction_db.fetch("""
                 SELECT
                     id, name, exchange, testnet, is_active, is_main,
                     created_at, updated_at, user_id
                 FROM exchange_accounts
-                WHERE testnet = false AND is_active = true
+                WHERE testnet = false AND is_active = true AND user_id = $1
                 ORDER BY created_at DESC
-            """)
+            """, user_uuid)
             
             accounts_list = []
             for account in accounts:
@@ -52,15 +87,23 @@ def create_exchange_account_router() -> APIRouter:
 
     @router.get("/{account_id}")
     async def get_exchange_account(account_id: str, request: Request):
-        """Get a specific exchange account by ID"""
+        """Get a specific exchange account by ID - filtered by user"""
         try:
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+
+            # If no user authenticated, return 401
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Get account FILTERED BY USER_ID
             account = await transaction_db.fetchrow("""
                 SELECT
                     id, name, exchange, testnet, is_active, is_main,
                     created_at, updated_at, user_id
                 FROM exchange_accounts
-                WHERE id = $1
-            """, account_id)
+                WHERE id = $1 AND user_id = $2
+            """, account_id, user_uuid)
             
             if not account:
                 raise HTTPException(status_code=404, detail="Exchange account not found")
@@ -122,15 +165,13 @@ def create_exchange_account_router() -> APIRouter:
             if exchange not in ["binance", "bybit", "bingx", "okx", "bitget", "coinbase"]:
                 raise HTTPException(status_code=400, detail=f"Unsupported exchange '{exchange}'. Supported: binance, bybit, bingx, okx, bitget, coinbase")
             
-            # TODO: Get user_id from JWT token
-            # For now, use a default user (first user in database)
-            logger.info("🔍 STEP 1: Buscando usuário no banco...")
-            user = await transaction_db.fetchrow("SELECT id FROM users LIMIT 1")
-            if not user:
-                raise HTTPException(status_code=400, detail="No users found. Please create a user first.")
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
 
-            user_id = user["id"]
-            logger.info("✅ STEP 1: Usuário encontrado", user_id=str(user_id))
+            user_id = user_uuid
+            logger.info("✅ STEP 1: Usuário autenticado via JWT", user_id=str(user_id))
 
             # Se esta conta está sendo marcada como principal, desmarcar todas as outras
             if is_main:
@@ -186,13 +227,18 @@ def create_exchange_account_router() -> APIRouter:
 
     @router.put("/{account_id}")
     async def update_exchange_account(account_id: str, request: Request):
-        """Update an existing exchange account"""
+        """Update an existing exchange account - validates user ownership"""
         try:
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
             body = await request.json()
-            
-            # Check if account exists
+
+            # Check if account exists AND belongs to user
             existing = await transaction_db.fetchrow(
-                "SELECT id FROM exchange_accounts WHERE id = $1", account_id
+                "SELECT id FROM exchange_accounts WHERE id = $1 AND user_id = $2", account_id, user_uuid
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Exchange account not found")
@@ -260,18 +306,23 @@ def create_exchange_account_router() -> APIRouter:
 
     @router.delete("/{account_id}")
     async def delete_exchange_account(account_id: str, request: Request):
-        """Delete an exchange account"""
+        """Delete an exchange account - validates user ownership"""
         try:
-            # Check if account exists
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Check if account exists AND belongs to user
             existing = await transaction_db.fetchrow(
-                "SELECT id FROM exchange_accounts WHERE id = $1", account_id
+                "SELECT id FROM exchange_accounts WHERE id = $1 AND user_id = $2", account_id, user_uuid
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Exchange account not found")
-            
-            # Delete the account
+
+            # Delete the account (only if belongs to user)
             await transaction_db.execute(
-                "DELETE FROM exchange_accounts WHERE id = $1", account_id
+                "DELETE FROM exchange_accounts WHERE id = $1 AND user_id = $2", account_id, user_uuid
             )
             
             logger.info("Exchange account deleted", account_id=account_id)

@@ -1,10 +1,12 @@
 """Dashboard Controller - API endpoints for home dashboard metrics"""
 
 from fastapi import APIRouter, HTTPException, Request
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import structlog
 from datetime import datetime, timedelta
 from decimal import Decimal
+import jwt
+import uuid as uuid_module
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.cache import get_positions_cache
@@ -16,6 +18,34 @@ from infrastructure.pricing.binance_price_service import BinancePriceService
 
 logger = structlog.get_logger(__name__)
 cache = get_positions_cache()
+
+# JWT Secret Key (should be in environment variable in production)
+JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+
+
+def get_user_id_from_request(request: Request) -> Optional[str]:
+    """Extract user_id from JWT token in Authorization header"""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+        return payload.get("user_id")
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+
+def get_user_uuid_from_request(request: Request) -> Optional[uuid_module.UUID]:
+    """Extract user_id from JWT and convert to UUID"""
+    user_id = get_user_id_from_request(request)
+    if not user_id:
+        return None
+    try:
+        return uuid_module.UUID(user_id) if isinstance(user_id, str) else user_id
+    except ValueError:
+        return None
 
 def create_dashboard_router() -> APIRouter:
     """Create and configure the dashboard router"""
@@ -214,25 +244,44 @@ def create_dashboard_router() -> APIRouter:
 
     @router.get("/balances")
     async def get_balances_summary(request: Request):
-        """Get futures and spot balances summary with cache"""
+        """Get futures and spot balances summary with cache - filtered by authenticated user"""
         try:
-            # Try to get from cache first
-            # For now, we use user_id=1 as default (single-user system)
-            # TODO: Extract user_id from JWT when auth is fully implemented
-            user_id = 1
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
 
-            # Get main account FIRST to include in cache key
+            # If no user authenticated, return empty data
+            if not user_uuid:
+                return {
+                    "success": True,
+                    "data": {
+                        "futures": {"total_balance_usd": 0, "unrealized_pnl": 0, "net_balance": 0, "assets": []},
+                        "spot": {"total_balance_usd": 0, "unrealized_pnl": 0, "net_balance": 0, "assets": []},
+                        "total": {"balance_usd": 0, "pnl": 0, "net_worth": 0}
+                    },
+                    "message": "No authenticated user"
+                }
+
+            # Use user_id for cache key
+            user_id = str(user_uuid)
+
+            # Get main account FIRST - FILTERED BY USER_ID
             main_account = await transaction_db.fetchrow("""
                 SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
                 FROM exchange_accounts
-                WHERE testnet = false AND is_active = true AND is_main = true
+                WHERE testnet = false AND is_active = true AND is_main = true AND user_id = $1
                 LIMIT 1
-            """)
+            """, user_uuid)
 
             if not main_account:
+                # User has no main exchange account - return empty balances
                 return {
-                    "success": False,
-                    "error": "No main exchange account configured"
+                    "success": True,
+                    "data": {
+                        "futures": {"total_balance_usd": 0, "unrealized_pnl": 0, "net_balance": 0, "assets": []},
+                        "spot": {"total_balance_usd": 0, "unrealized_pnl": 0, "net_balance": 0, "assets": []},
+                        "total": {"balance_usd": 0, "pnl": 0, "net_worth": 0}
+                    },
+                    "message": "No main exchange account configured. Please add an exchange account."
                 }
 
             # Cache key includes exchange account ID to differentiate between exchanges
@@ -470,17 +519,22 @@ def create_dashboard_router() -> APIRouter:
 
     @router.get("/balances/{account_id}")
     async def get_account_balances(request: Request, account_id: str):
-        """Get futures and spot balances for a specific account (works with all exchanges)"""
+        """Get futures and spot balances for a specific account (works with all exchanges) - filtered by user"""
         try:
-            user_id = 1
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
             connector = None
 
-            # Get account info
+            # If no user authenticated, return error
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Get account info - FILTERED BY USER_ID
             account = await transaction_db.fetchrow("""
                 SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
                 FROM exchange_accounts
-                WHERE id = $1 AND is_active = true
-            """, account_id)
+                WHERE id = $1 AND is_active = true AND user_id = $2
+            """, account_id, user_uuid)
 
             if not account:
                 raise HTTPException(status_code=404, detail="Exchange account not found")
@@ -582,16 +636,25 @@ def create_dashboard_router() -> APIRouter:
         """
         Get all SPOT balances (wallet assets) for a specific exchange account
         Returns ALL assets with balance > 0 + USD value calculated
+        Filtered by authenticated user
         """
         try:
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+
+            # If no user authenticated, return error
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
             logger.info(f"💰 Getting SPOT balances for account {exchange_account_id}")
 
             # Get SPOT balances from exchange API in real-time (MULTI-EXCHANGE SUPPORT)
+            # FILTERED BY USER_ID
             account_info = await transaction_db.fetchrow("""
                 SELECT id, exchange, api_key, secret_key, testnet, passphrase
                 FROM exchange_accounts
-                WHERE id = $1 AND is_active = true
-            """, exchange_account_id)
+                WHERE id = $1 AND is_active = true AND user_id = $2
+            """, exchange_account_id, user_uuid)
 
             if not account_info:
                 raise HTTPException(status_code=404, detail="Exchange account not found or inactive")
@@ -815,5 +878,657 @@ def create_dashboard_router() -> APIRouter:
         except Exception as e:
             logger.error(f"Error getting SPOT balances: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to get SPOT balances: {str(e)}")
+
+    @router.get("/stats")
+    async def get_dashboard_stats(request: Request):
+        """
+        Get aggregated stats for dashboard cards:
+        - active_positions: Total open positions from exchange (Futures + Spot)
+        - orders_today: Number of orders executed today
+        - orders_3_months: Total orders in last 3 months
+
+        All data comes from the MAIN exchange account
+        """
+        try:
+            user_uuid = get_user_uuid_from_request(request)
+
+            if not user_uuid:
+                return {
+                    "success": True,
+                    "data": {
+                        "active_positions": 0,
+                        "orders_today": 0,
+                        "orders_3_months": 0
+                    },
+                    "message": "No authenticated user"
+                }
+
+            # Get main account for this user
+            main_account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                FROM exchange_accounts
+                WHERE testnet = false AND is_active = true AND is_main = true AND user_id = $1
+                LIMIT 1
+            """, user_uuid)
+
+            if not main_account:
+                return {
+                    "success": True,
+                    "data": {
+                        "active_positions": 0,
+                        "orders_today": 0,
+                        "orders_3_months": 0
+                    },
+                    "message": "No main exchange account configured"
+                }
+
+            logger.info(f"📊 Getting dashboard stats from {main_account['exchange'].upper()}")
+
+            # Create connector based on exchange
+            api_key = main_account.get('api_key')
+            secret_key = main_account.get('secret_key')
+            passphrase = main_account.get('passphrase')
+            exchange = main_account['exchange'].lower()
+            testnet = main_account['testnet']
+            connector = None
+
+            try:
+                if exchange == 'binance':
+                    connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bybit':
+                    connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bingx':
+                    connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bitget':
+                    connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                else:
+                    raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+                # 1. Get active positions count from exchange API (Futures + Spot)
+                active_positions_count = 0
+
+                # Get Futures positions
+                positions_result = await connector.get_futures_positions()
+                if positions_result.get('success'):
+                    active_positions_count = len(positions_result.get('positions', []))
+
+                # Get Spot holdings (altcoins > $1) for BingX
+                if exchange == 'bingx' and hasattr(connector, 'get_spot_holdings_as_positions'):
+                    spot_result = await connector.get_spot_holdings_as_positions(min_value_usd=1.0)
+                    if spot_result.get('success'):
+                        active_positions_count += len(spot_result.get('positions', []))
+
+                # 2. Get orders count - today and 3 months
+                # IMPORTANT: BingX uses UTC timestamps, so we must use UTC for comparison
+                from datetime import timezone
+                now = datetime.now(timezone.utc)
+                today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+                three_months_ago = now - timedelta(days=90)
+
+                today_start_ms = int(today_start.timestamp() * 1000)
+                three_months_ago_ms = int(three_months_ago.timestamp() * 1000)
+                now_ms = int(now.timestamp() * 1000)
+
+                orders_today = 0
+                orders_3_months = 0
+
+                # Try to fetch orders from exchange API
+                try:
+                    orders_result = await connector.get_futures_orders(
+                        start_time=three_months_ago_ms,
+                        end_time=now_ms,
+                        limit=500
+                    )
+                    if orders_result.get('success'):
+                        all_orders = orders_result.get('orders', [])
+                        orders_3_months = len(all_orders)
+
+                        # Filter orders from today using updateTime (more reliable than time)
+                        for order in all_orders:
+                            # BingX uses 'updateTime' in milliseconds
+                            order_time = int(order.get('updateTime', order.get('time', 0)))
+                            if order_time >= today_start_ms:
+                                orders_today += 1
+
+                        logger.info(f"📊 Stats: Orders API returned {orders_3_months} total, {orders_today} today")
+                except Exception as e:
+                    logger.warning(f"Could not fetch orders from exchange API: {e}")
+
+                # If no orders from API, try database as fallback
+                if orders_3_months == 0:
+                    try:
+                        # Count from database (orders table)
+                        db_orders_3m = await transaction_db.fetchval("""
+                            SELECT COUNT(*) FROM orders o
+                            JOIN exchange_accounts ea ON o.exchange_account_id = ea.id
+                            WHERE ea.user_id = $1 AND ea.is_main = true
+                            AND o.created_at >= $2
+                        """, user_uuid, three_months_ago)
+                        orders_3_months = db_orders_3m or 0
+
+                        db_orders_today = await transaction_db.fetchval("""
+                            SELECT COUNT(*) FROM orders o
+                            JOIN exchange_accounts ea ON o.exchange_account_id = ea.id
+                            WHERE ea.user_id = $1 AND ea.is_main = true
+                            AND o.created_at >= $2
+                        """, user_uuid, today_start)
+                        orders_today = db_orders_today or 0
+
+                        logger.info(f"📊 Orders from DB fallback: today={orders_today}, 3m={orders_3_months}")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch orders from database: {e}")
+
+                logger.info(f"📊 Stats: positions={active_positions_count}, orders_today={orders_today}, orders_3m={orders_3_months}")
+
+                return {
+                    "success": True,
+                    "data": {
+                        "active_positions": active_positions_count,
+                        "orders_today": orders_today,
+                        "orders_3_months": orders_3_months
+                    }
+                }
+
+            finally:
+                if connector:
+                    try:
+                        await connector.close()
+                    except:
+                        pass
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting dashboard stats: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to get dashboard stats: {str(e)}")
+
+    @router.get("/recent-orders")
+    async def get_recent_orders(request: Request, days: int = 7):
+        """
+        Get recent orders from the last N days (default 7)
+        Returns: tipo operação, ativo, data, volume, margem USDT, P&L
+
+        All data comes from the MAIN exchange account
+        """
+        try:
+            user_uuid = get_user_uuid_from_request(request)
+
+            if not user_uuid:
+                return {"success": True, "data": [], "message": "No authenticated user"}
+
+            # Get main account
+            main_account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                FROM exchange_accounts
+                WHERE testnet = false AND is_active = true AND is_main = true AND user_id = $1
+                LIMIT 1
+            """, user_uuid)
+
+            if not main_account:
+                return {"success": True, "data": [], "message": "No main exchange account"}
+
+            logger.info(f"📋 Getting recent orders ({days} days) from {main_account['exchange'].upper()}")
+
+            api_key = main_account.get('api_key')
+            secret_key = main_account.get('secret_key')
+            passphrase = main_account.get('passphrase')
+            exchange = main_account['exchange'].lower()
+            testnet = main_account['testnet']
+            connector = None
+
+            try:
+                if exchange == 'binance':
+                    connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bybit':
+                    connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bingx':
+                    connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bitget':
+                    connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                else:
+                    raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+                # Calculate time range
+                now = datetime.now()
+                start_date = now - timedelta(days=days)
+                start_time_ms = int(start_date.timestamp() * 1000)
+                end_time_ms = int(now.timestamp() * 1000)
+
+                normalized_orders = []
+
+                # Try to get futures orders from exchange API
+                try:
+                    orders_result = await connector.get_futures_orders(
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        limit=100
+                    )
+
+                    if orders_result.get('success'):
+                        raw_orders = orders_result.get('orders', [])
+
+                        for order in raw_orders:
+                            # Normalize based on exchange format
+                            if exchange == 'bingx':
+                                symbol = order.get('symbol', '').replace('-', '')
+                                side = order.get('side', 'UNKNOWN')
+                                position_side = order.get('positionSide', 'UNKNOWN')
+                                order_type = order.get('type', 'UNKNOWN')
+                                status = order.get('status', 'UNKNOWN')
+                                quantity = float(order.get('executedQty', order.get('origQty', 0)))
+                                price = float(order.get('avgPrice', order.get('price', 0)))
+                                timestamp = int(order.get('time', 0))
+                                pnl = float(order.get('profit', 0))
+                            else:
+                                symbol = order.get('symbol', '')
+                                side = order.get('side', 'UNKNOWN')
+                                position_side = order.get('positionSide', 'UNKNOWN')
+                                order_type = order.get('type', 'UNKNOWN')
+                                status = order.get('status', 'UNKNOWN')
+                                quantity = float(order.get('executedQty', order.get('origQty', 0)))
+                                price = float(order.get('avgPrice', order.get('price', 0)))
+                                timestamp = int(order.get('time', order.get('updateTime', 0)))
+                                pnl = float(order.get('realizedPnl', 0))
+
+                            volume_usdt = quantity * price if price > 0 else 0
+
+                            # Determine trade_direction (ENTRADA/SAÍDA)
+                            # LONG + BUY = ENTRADA (opening long)
+                            # LONG + SELL = SAÍDA (closing long)
+                            # SHORT + SELL = ENTRADA (opening short)
+                            # SHORT + BUY = SAÍDA (closing short)
+                            side_upper = side.upper()
+                            position_side_upper = position_side.upper()
+                            if position_side_upper == 'LONG':
+                                trade_direction = 'ENTRADA' if side_upper == 'BUY' else 'SAÍDA'
+                            elif position_side_upper == 'SHORT':
+                                trade_direction = 'ENTRADA' if side_upper == 'SELL' else 'SAÍDA'
+                            else:
+                                # For one-way mode or unknown
+                                trade_direction = 'ENTRADA' if side_upper == 'BUY' else 'SAÍDA'
+
+                            # Include filled or partially filled orders
+                            if status in ['FILLED', 'filled', 'PARTIALLY_FILLED', 'NEW', 'CANCELED']:
+                                normalized_orders.append({
+                                    "id": str(order.get('orderId', '')),
+                                    "symbol": symbol,
+                                    "side": side_upper,
+                                    "position_side": position_side_upper,
+                                    "trade_direction": trade_direction,
+                                    "type": order_type.upper(),
+                                    "status": status.upper(),
+                                    "quantity": quantity,
+                                    "price": price,
+                                    "volume_usdt": round(volume_usdt, 2),
+                                    "margin_usdt": round(volume_usdt / 10, 2),
+                                    "pnl": round(pnl, 2),
+                                    "market_type": "FUTURES",
+                                    "operation_type": "futures",
+                                    "created_at": datetime.fromtimestamp(timestamp / 1000).isoformat() if timestamp > 0 else None,
+                                    "exchange": exchange
+                                })
+                except Exception as e:
+                    logger.warning(f"Could not fetch orders from exchange API: {e}")
+
+                # If no orders from API, try database as fallback
+                if len(normalized_orders) == 0:
+                    try:
+                        db_orders = await transaction_db.fetch("""
+                            SELECT o.id, o.symbol, o.side, o.type, o.status,
+                                   o.quantity, o.price, o.average_fill_price,
+                                   o.realized_pnl, o.created_at, ea.exchange
+                            FROM orders o
+                            JOIN exchange_accounts ea ON o.exchange_account_id = ea.id
+                            WHERE ea.user_id = $1 AND ea.is_main = true
+                            AND o.created_at >= $2
+                            ORDER BY o.created_at DESC
+                            LIMIT 100
+                        """, user_uuid, start_date)
+
+                        for order in db_orders:
+                            quantity = float(order['quantity']) if order['quantity'] else 0
+                            price = float(order['average_fill_price'] or order['price'] or 0)
+                            volume_usdt = quantity * price if price > 0 else 0
+                            side_upper = (order['side'] or 'UNKNOWN').upper()
+                            # DB fallback - default to ENTRADA for BUY, SAÍDA for SELL
+                            trade_direction = 'ENTRADA' if side_upper == 'BUY' else 'SAÍDA'
+
+                            normalized_orders.append({
+                                "id": str(order['id']),
+                                "symbol": order['symbol'],
+                                "side": side_upper,
+                                "position_side": "UNKNOWN",
+                                "trade_direction": trade_direction,
+                                "type": (order['type'] or 'UNKNOWN').upper(),
+                                "status": (order['status'] or 'UNKNOWN').upper(),
+                                "quantity": quantity,
+                                "price": price,
+                                "volume_usdt": round(volume_usdt, 2),
+                                "margin_usdt": round(volume_usdt / 10, 2),
+                                "pnl": round(float(order['realized_pnl'] or 0), 2),
+                                "market_type": "FUTURES",
+                                "operation_type": "futures",
+                                "created_at": order['created_at'].isoformat() if order['created_at'] else None,
+                                "exchange": order['exchange']
+                            })
+
+                        logger.info(f"📋 Found {len(normalized_orders)} orders from DB fallback")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch orders from database: {e}")
+
+                # Sort by date descending
+                normalized_orders.sort(key=lambda x: x['created_at'] or '', reverse=True)
+
+                logger.info(f"📋 Found {len(normalized_orders)} recent orders total")
+
+                return {
+                    "success": True,
+                    "data": normalized_orders,
+                    "total": len(normalized_orders)
+                }
+
+            finally:
+                if connector:
+                    try:
+                        await connector.close()
+                    except:
+                        pass
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting recent orders: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to get recent orders: {str(e)}")
+
+    @router.get("/active-positions")
+    async def get_active_positions(request: Request):
+        """
+        Get active/open positions in real-time from exchange API
+        Returns BOTH Futures positions AND Spot holdings (altcoins > $1)
+
+        All data comes from the MAIN exchange account
+        """
+        try:
+            user_uuid = get_user_uuid_from_request(request)
+
+            if not user_uuid:
+                return {"success": True, "data": [], "message": "No authenticated user"}
+
+            # Get main account
+            main_account = await transaction_db.fetchrow("""
+                SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                FROM exchange_accounts
+                WHERE testnet = false AND is_active = true AND is_main = true AND user_id = $1
+                LIMIT 1
+            """, user_uuid)
+
+            if not main_account:
+                return {"success": True, "data": [], "message": "No main exchange account"}
+
+            logger.info(f"🎯 Getting active positions (Futures + Spot) from {main_account['exchange'].upper()}")
+
+            api_key = main_account.get('api_key')
+            secret_key = main_account.get('secret_key')
+            passphrase = main_account.get('passphrase')
+            exchange = main_account['exchange'].lower()
+            testnet = main_account['testnet']
+            account_id = str(main_account['id'])
+            connector = None
+
+            try:
+                if exchange == 'binance':
+                    connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bybit':
+                    connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bingx':
+                    connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bitget':
+                    connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                else:
+                    raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+                normalized_positions = []
+
+                # 1. Get FUTURES positions from exchange API
+                positions_result = await connector.get_futures_positions()
+
+                if positions_result.get('success'):
+                    raw_positions = positions_result.get('positions', [])
+
+                    for pos in raw_positions:
+                        # Normalize based on exchange format
+                        if exchange == 'bingx':
+                            symbol = pos.get('symbol', '').replace('-', '')
+                            position_side = pos.get('positionSide', 'BOTH')
+                            position_amt = float(pos.get('positionAmt', 0))
+                            side = 'LONG' if position_amt > 0 else 'SHORT'
+                            size = abs(position_amt)
+                            entry_price = float(pos.get('avgPrice', pos.get('entryPrice', 0)))
+                            mark_price = float(pos.get('markPrice', 0))
+                            unrealized_pnl = float(pos.get('unrealizedProfit', pos.get('unRealizedProfit', 0)))
+                            leverage = int(pos.get('leverage', 1))
+                            margin = float(pos.get('isolatedMargin', pos.get('initialMargin', 0)))
+                            liquidation_price = float(pos.get('liquidationPrice', 0))
+                        else:
+                            symbol = pos.get('symbol', '')
+                            position_side = pos.get('positionSide', 'BOTH')
+                            position_amt = float(pos.get('positionAmt', 0))
+                            side = 'LONG' if position_amt > 0 else 'SHORT'
+                            size = abs(position_amt)
+                            entry_price = float(pos.get('entryPrice', 0))
+                            mark_price = float(pos.get('markPrice', 0))
+                            unrealized_pnl = float(pos.get('unRealizedProfit', pos.get('unrealizedProfit', 0)))
+                            leverage = int(pos.get('leverage', 1))
+                            margin = float(pos.get('isolatedMargin', pos.get('initialMargin', 0)))
+                            liquidation_price = float(pos.get('liquidationPrice', 0))
+
+                        notional = size * entry_price if entry_price > 0 else 0
+                        initial_margin = notional / leverage if leverage > 0 else notional
+                        pnl_percentage = (unrealized_pnl / initial_margin * 100) if initial_margin > 0 else 0
+
+                        if size > 0:
+                            normalized_positions.append({
+                                "id": f"{account_id}_{symbol}_{side}_futures",
+                                "symbol": symbol,
+                                "side": side,
+                                "position_side": position_side,
+                                "size": size,
+                                "entry_price": round(entry_price, 4),
+                                "mark_price": round(mark_price, 4),
+                                "unrealized_pnl": round(unrealized_pnl, 2),
+                                "pnl_percentage": round(pnl_percentage, 2),
+                                "margin": round(margin, 2),
+                                "leverage": leverage,
+                                "liquidation_price": round(liquidation_price, 4),
+                                "notional": round(notional, 2),
+                                "market_type": "FUTURES",
+                                "operation_type": "futures",
+                                "exchange": exchange,
+                                "exchange_account_id": account_id
+                            })
+
+                futures_count = len(normalized_positions)
+                logger.info(f"🎯 Found {futures_count} Futures positions")
+
+                # 2. Get SPOT holdings as positions (altcoins > $1)
+                if exchange == 'bingx' and hasattr(connector, 'get_spot_holdings_as_positions'):
+                    spot_result = await connector.get_spot_holdings_as_positions(min_value_usd=1.0)
+                    if spot_result.get('success'):
+                        for spot_pos in spot_result.get('positions', []):
+                            spot_pos['id'] = f"{account_id}_{spot_pos['symbol']}_LONG_spot"
+                            spot_pos['exchange'] = exchange
+                            spot_pos['exchange_account_id'] = account_id
+                            normalized_positions.append(spot_pos)
+
+                        spot_count = len(spot_result.get('positions', []))
+                        logger.info(f"🎯 Found {spot_count} Spot holdings (> $1)")
+
+                total_count = len(normalized_positions)
+                logger.info(f"🎯 Total positions: {total_count} (Futures: {futures_count}, Spot: {total_count - futures_count})")
+
+                return {
+                    "success": True,
+                    "data": normalized_positions,
+                    "total": total_count,
+                    "futures_count": futures_count,
+                    "spot_count": total_count - futures_count
+                }
+
+            finally:
+                if connector:
+                    try:
+                        await connector.close()
+                    except:
+                        pass
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting active positions: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to get active positions: {str(e)}")
+
+    @router.post("/close-position")
+    async def close_position(request: Request):
+        """
+        Close an active position by creating a market order in the opposite direction.
+
+        Request body:
+        {
+            "symbol": "BTCUSDT",
+            "side": "LONG" or "SHORT",
+            "size": 0.001,  // Quantity to close
+            "exchange_account_id": "uuid"  // Optional - uses main account if not provided
+        }
+
+        For LONG positions: Creates a SELL order
+        For SHORT positions: Creates a BUY order
+        """
+        try:
+            user_uuid = get_user_uuid_from_request(request)
+
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Parse request body
+            body = await request.json()
+            symbol = body.get('symbol')
+            side = body.get('side', '').upper()  # LONG or SHORT
+            size = body.get('size')
+            exchange_account_id = body.get('exchange_account_id')
+
+            if not symbol:
+                raise HTTPException(status_code=400, detail="Symbol is required")
+            if not side or side not in ['LONG', 'SHORT']:
+                raise HTTPException(status_code=400, detail="Side must be LONG or SHORT")
+            if not size or float(size) <= 0:
+                raise HTTPException(status_code=400, detail="Size must be a positive number")
+
+            size = float(size)
+
+            # Get exchange account (specific or main)
+            if exchange_account_id:
+                account = await transaction_db.fetchrow("""
+                    SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                    FROM exchange_accounts
+                    WHERE id = $1 AND is_active = true AND user_id = $2
+                """, exchange_account_id, user_uuid)
+            else:
+                # Use main account
+                account = await transaction_db.fetchrow("""
+                    SELECT id, name, exchange, api_key, secret_key, testnet, passphrase
+                    FROM exchange_accounts
+                    WHERE testnet = false AND is_active = true AND is_main = true AND user_id = $1
+                    LIMIT 1
+                """, user_uuid)
+
+            if not account:
+                raise HTTPException(status_code=404, detail="Exchange account not found")
+
+            logger.info(f"🔴 Closing {side} position on {symbol} ({size} qty) via {account['exchange'].upper()}")
+
+            api_key = account.get('api_key')
+            secret_key = account.get('secret_key')
+            passphrase = account.get('passphrase')
+            exchange = account['exchange'].lower()
+            testnet = account['testnet']
+            connector = None
+
+            try:
+                if exchange == 'binance':
+                    connector = BinanceConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bybit':
+                    connector = BybitConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bingx':
+                    connector = BingXConnector(api_key=api_key, api_secret=secret_key, testnet=testnet)
+                elif exchange == 'bitget':
+                    connector = BitgetConnector(api_key=api_key, api_secret=secret_key, passphrase=passphrase, testnet=testnet)
+                else:
+                    raise HTTPException(status_code=400, detail=f"Exchange {exchange} not supported")
+
+                # Determine order side (opposite of position side)
+                # LONG position -> SELL to close
+                # SHORT position -> BUY to close
+                order_side = 'SELL' if side == 'LONG' else 'BUY'
+
+                # Create market order to close position
+                if exchange == 'bingx':
+                    # BingX: Use create_futures_order with reduce_only=True
+                    # In Hedge Mode, we need to specify position_side
+                    order_result = await connector.create_futures_order(
+                        symbol=symbol,
+                        side=order_side,
+                        order_type='MARKET',
+                        quantity=size,
+                        reduce_only=True,
+                        position_side=side  # LONG or SHORT for hedge mode
+                    )
+                elif exchange == 'binance':
+                    # Binance: Use create_futures_order with reduceOnly=True
+                    order_result = await connector.create_futures_order(
+                        symbol=symbol,
+                        side=order_side,
+                        order_type='MARKET',
+                        quantity=size
+                    )
+                else:
+                    # Other exchanges: Try generic create_futures_order
+                    order_result = await connector.create_futures_order(
+                        symbol=symbol,
+                        side=order_side,
+                        order_type='MARKET',
+                        quantity=size
+                    )
+
+                if order_result.get('success'):
+                    logger.info(f"✅ Position closed successfully: {symbol} {side} {size}")
+                    return {
+                        "success": True,
+                        "message": f"Position {symbol} {side} closed successfully",
+                        "data": {
+                            "symbol": symbol,
+                            "side": side,
+                            "size": size,
+                            "order_side": order_side,
+                            "order_id": order_result.get('order_id', order_result.get('orderId')),
+                            "exchange": exchange
+                        }
+                    }
+                else:
+                    error_msg = order_result.get('error', 'Unknown error')
+                    logger.error(f"❌ Failed to close position: {error_msg}")
+                    raise HTTPException(status_code=500, detail=f"Failed to close position: {error_msg}")
+
+            finally:
+                if connector:
+                    try:
+                        await connector.close()
+                    except:
+                        pass
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error closing position: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to close position: {str(e)}")
 
     return router

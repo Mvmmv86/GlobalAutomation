@@ -87,9 +87,115 @@ export interface DashboardMetrics {
   }>
 }
 
+// Dashboard Stats (posições ativas, ordens hoje, ordens 3 meses)
+export interface DashboardStats {
+  active_positions: number
+  orders_today: number
+  orders_3_months: number
+}
+
+// Recent Orders from exchange
+export interface RecentOrder {
+  id: string
+  symbol: string
+  side: string
+  type: string
+  status: string
+  quantity: number
+  price: number
+  volume_usdt: number
+  margin_usdt: number
+  pnl: number
+  operation_type: string
+  created_at: string
+  exchange: string
+}
+
+// Active Position from exchange
+export interface ActivePosition {
+  id: string
+  symbol: string
+  side: string
+  position_side: string
+  size: number
+  entry_price: number
+  mark_price: number
+  unrealized_pnl: number
+  pnl_percentage: number
+  margin: number
+  leverage: number
+  liquidation_price: number
+  notional: number
+  operation_type: string
+  exchange: string
+  exchange_account_id: string
+}
+
 export const dashboardService = {
   async getDashboardMetrics(): Promise<DashboardMetrics> {
     return await api.get<DashboardMetrics>('/dashboard/metrics')
+  },
+
+  // NEW: Get dashboard stats (positions count, orders today, orders 3 months)
+  async getDashboardStats(): Promise<DashboardStats> {
+    try {
+      console.log('📊 getDashboardStats: Fetching stats from main exchange...')
+      const data = await api.get<DashboardStats>('/dashboard/stats')
+      console.log('✅ getDashboardStats: Data received:', data)
+      return data
+    } catch (error) {
+      console.error('❌ getDashboardStats: Error:', error)
+      throw error
+    }
+  },
+
+  // NEW: Get recent orders from exchange (last 7 days by default)
+  async getRecentOrders(days: number = 7): Promise<RecentOrder[]> {
+    try {
+      console.log(`📋 getRecentOrders: Fetching orders from last ${days} days...`)
+      // api.get() already extracts 'data' from {success: true, data: [...]} response
+      const orders = await api.get<RecentOrder[]>(`/dashboard/recent-orders?days=${days}`)
+      console.log('✅ getRecentOrders: Data received:', orders)
+      return Array.isArray(orders) ? orders : []
+    } catch (error) {
+      console.error('❌ getRecentOrders: Error:', error)
+      throw error
+    }
+  },
+
+  // NEW: Get active positions from exchange in real-time
+  async getActivePositions(): Promise<ActivePosition[]> {
+    try {
+      console.log('🎯 getActivePositions: Fetching active positions from exchange...')
+      // api.get() already extracts 'data' from {success: true, data: [...]} response
+      const positions = await api.get<ActivePosition[]>('/dashboard/active-positions')
+      console.log('✅ getActivePositions: Data received:', positions)
+      return Array.isArray(positions) ? positions : []
+    } catch (error) {
+      console.error('❌ getActivePositions: Error:', error)
+      throw error
+    }
+  },
+
+  // NEW: Close position via market order
+  async closePosition(params: {
+    symbol: string
+    side: string
+    size: number
+    exchange_account_id?: string
+  }): Promise<{ success: boolean; message: string; data?: any }> {
+    try {
+      console.log('🔴 closePosition: Closing position...', params)
+      const response = await api.post<{ success: boolean; message: string; data?: any }>(
+        '/dashboard/close-position',
+        params
+      )
+      console.log('✅ closePosition: Position closed:', response)
+      return response
+    } catch (error) {
+      console.error('❌ closePosition: Error:', error)
+      throw error
+    }
   },
 
   async getBalancesSummary(): Promise<BalanceData> {

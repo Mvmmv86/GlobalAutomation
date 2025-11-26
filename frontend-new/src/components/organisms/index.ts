@@ -2,6 +2,7 @@
 export { TradingPanel } from './TradingPanel'
 export { PositionsTable } from './PositionsTable'
 export { ChartContainer } from './ChartContainer'
+export { AdvancedChartContainer } from './AdvancedChartContainer'
 export { NotificationCenter, useNotifications } from './NotificationCenter'
 
 export type { TradingPanelProps, OrderData } from './TradingPanel'

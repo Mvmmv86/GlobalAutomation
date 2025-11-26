@@ -66,7 +66,7 @@ class ApiClient {
     }
 
     const response = await axios.post(
-      '/api/v1/auth/refresh',
+      `${this.instance.defaults.baseURL}/auth/refresh`,
       { refreshToken }
     )
 

@@ -15,6 +15,7 @@ from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
+from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,7 @@ class BotBroadcastService:
 
     def __init__(self, db_pool):
         self.db = db_pool
+        self.trade_tracker = BotTradeTrackerService(db_pool)
         self.exchange_connectors = {
             "binance": BinanceConnector,
             "bybit": BybitConnector,
@@ -352,8 +354,22 @@ class BotBroadcastService:
                     quantity=quantity
                 )
             elif action.lower() == "close":
-                # Close existing position
+                # Close existing position and record the trade
+                # First, get position info before closing to calculate P&L
+                position_before = await connector.get_position(ticker)
+
                 order_result = await connector.close_position(ticker)
+
+                # Track the closed trade for P&L metrics
+                if order_result and position_before:
+                    realized_pnl = float(position_before.get("unRealizedProfit", 0))
+                    if realized_pnl != 0:
+                        await self.trade_tracker.process_position_close(
+                            subscription_id=subscription_id,
+                            ticker=ticker,
+                            exchange_order_id=str(order_result.get("orderId", "")),
+                            realized_pnl=realized_pnl
+                        )
 
             # 8. Create Stop Loss and Take Profit for BUY/SELL orders
             if order_result and action.lower() in ["buy", "sell"]:

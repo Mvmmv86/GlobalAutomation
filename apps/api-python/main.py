@@ -35,6 +35,7 @@ from presentation.controllers.bots_controller import router as bots_router
 from presentation.controllers.bot_subscriptions_controller import router as bot_subscriptions_router
 from presentation.controllers.admin_controller import router as admin_router
 from presentation.controllers.chart_data_controller import router as chart_data_router
+from presentation.controllers.notifications_controller import create_notifications_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -288,6 +289,7 @@ def create_app() -> FastAPI:
     app.include_router(bot_subscriptions_router)  # Bot subscriptions
     app.include_router(admin_router)  # Admin management (dashboard, users, bots CRUD)
     app.include_router(chart_data_router)  # Chart data and WebSocket support
+    app.include_router(create_notifications_router())  # Notifications CRUD endpoints
 
 
     return app
@@ -1313,6 +1315,72 @@ async def create_test_order():
         )
 
 
+# 🔐 ENDPOINT DE REGISTRO FUNCIONANDO COM MESMA CONEXÃO DOS ORDERS
+@app.post("/api/v1/auth/register")
+async def auth_register(request: Request):
+    """Registrar novo usuário"""
+    try:
+        body = await request.json()
+        email = body.get("email")
+        password = body.get("password")
+        name = body.get("name", "")
+
+        if not email or not password:
+            return JSONResponse(
+                status_code=400, content={"detail": "Email and password required"}
+            )
+
+        # Validar tamanho mínimo da senha
+        if len(password) < 8:
+            return JSONResponse(
+                status_code=400, content={"detail": "Password must be at least 8 characters"}
+            )
+
+        # Verificar se email já existe
+        existing_user = await transaction_db.fetchrow(
+            "SELECT id FROM users WHERE email = $1",
+            email.lower()
+        )
+
+        if existing_user:
+            return JSONResponse(
+                status_code=400, content={"detail": "Email already registered"}
+            )
+
+        # Hash da senha com bcrypt
+        import bcrypt
+        import uuid
+
+        salt = bcrypt.gensalt()
+        password_hash = bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+        # Criar novo usuário
+        user_id = str(uuid.uuid4())
+
+        await transaction_db.execute(
+            """
+            INSERT INTO users (id, email, name, password_hash, is_active, is_verified, totp_enabled, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, true, false, false, NOW(), NOW())
+            """,
+            user_id,
+            email.lower(),
+            name or email.split("@")[0],
+            password_hash
+        )
+
+        logger.info(f"New user registered: {email}")
+
+        return {
+            "user_id": user_id,
+            "email": email.lower(),
+            "message": "User registered successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
 # 🔐 ENDPOINT DE LOGIN FUNCIONANDO COM MESMA CONEXÃO DOS ORDERS
 @app.post("/api/v1/auth/login")
 async def auth_login_override(request: Request):
@@ -1424,14 +1492,25 @@ async def get_current_user(request: Request):
         except jwt.InvalidTokenError:
             return JSONResponse(status_code=401, content={"detail": "Invalid token"})
 
-        # Buscar usuário atual no banco
+        # Buscar usuário atual no banco usando UUID corretamente
+        import uuid as uuid_module
+
+        try:
+            # Converter string para UUID se necessário
+            if isinstance(user_id, str):
+                user_uuid = uuid_module.UUID(user_id)
+            else:
+                user_uuid = user_id
+        except ValueError:
+            return JSONResponse(status_code=401, content={"detail": "Invalid user ID format"})
+
         user = await transaction_db.fetchrow(
             """
             SELECT id, email, name, is_active, is_verified, totp_enabled, created_at
-            FROM users 
+            FROM users
             WHERE id = $1 AND is_active = true
         """,
-            user_id,
+            user_uuid,
         )
 
         if not user:
@@ -1454,18 +1533,43 @@ async def get_current_user(request: Request):
 
 
 @app.get("/api/v1/exchange-accounts")
-async def get_exchange_accounts():
-    """Get exchange accounts from database"""
+async def get_exchange_accounts(request: Request):
+    """Get exchange accounts from database - filtered by authenticated user"""
     try:
-        # Get exchange accounts from database
+        # Extrair user_id do token JWT
+        auth_header = request.headers.get("Authorization")
+        user_id = None
+
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            import jwt
+            secret_key = "trading_platform_secret_key_2024"
+            try:
+                payload = jwt.decode(token, secret_key, algorithms=["HS256"])
+                user_id = payload.get("user_id")
+            except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+                pass
+
+        # Se não há user_id, retorna lista vazia (usuário não autenticado)
+        if not user_id:
+            return []
+
+        # Converter user_id string para UUID
+        import uuid as uuid_module
+        try:
+            user_uuid = uuid_module.UUID(user_id) if isinstance(user_id, str) else user_id
+        except ValueError:
+            return []
+
+        # Get exchange accounts from database - FILTRADO POR USER_ID
         accounts = await transaction_db.fetch("""
             SELECT
                 id, name, exchange,
                 testnet, is_active, created_at, updated_at
             FROM exchange_accounts
-            WHERE is_active = true
+            WHERE is_active = true AND user_id = $1
             ORDER BY created_at DESC
-        """)
+        """, user_uuid)
 
         result = []
         for account in accounts:

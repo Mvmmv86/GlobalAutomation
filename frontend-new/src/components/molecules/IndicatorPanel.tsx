@@ -11,7 +11,7 @@ import {
   INDICATOR_PRESETS,
   IndicatorType,
   AnyIndicatorConfig
-} from '../charts/CanvasProChart/indicators/types'
+} from '@/utils/indicators'
 
 interface IndicatorPanelProps {
   isOpen: boolean

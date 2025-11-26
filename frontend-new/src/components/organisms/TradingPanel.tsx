@@ -279,8 +279,8 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
   }
 
   return (
-    <Card className={cn("w-full max-w-lg", className)}>
-      <CardHeader className="pb-4">
+    <Card className={cn("w-full max-w-lg flex flex-col", className)}>
+      <CardHeader className="pb-4 flex-shrink-0">
         <CardTitle className="flex items-center justify-between">
           <span>Trade</span>
           <Badge variant="outline" className="text-sm font-semibold px-2 py-0.5 mr-4">
@@ -289,7 +289,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
         </CardTitle>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 flex-1 overflow-y-auto">
         {/* Account Selection */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">

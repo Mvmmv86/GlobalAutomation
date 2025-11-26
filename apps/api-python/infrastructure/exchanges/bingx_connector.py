@@ -2038,6 +2038,105 @@ class BingXConnector:
                 "price_sources": {}
             }
 
+    async def get_spot_holdings_as_positions(self, min_value_usd: float = 1.0) -> Dict[str, Any]:
+        """
+        Get SPOT holdings (FUND + SPOT accounts) as "positions" for the dashboard.
+        This treats holding altcoins as a "LONG" position.
+
+        Args:
+            min_value_usd: Minimum value in USD to include (default $1)
+
+        Returns:
+            dict: {
+                "success": bool,
+                "positions": [
+                    {
+                        "symbol": "AAVE",
+                        "side": "LONG",  # Holding = LONG
+                        "size": 1.5,
+                        "entry_price": 150.00,  # Current price as reference
+                        "mark_price": 150.00,
+                        "unrealized_pnl": 0,  # We don't know purchase price
+                        "value_usd": 225.00,
+                        "operation_type": "spot"
+                    }
+                ]
+            }
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "positions": []
+                }
+
+            # Get FUND and SPOT account balances
+            fund_result, spot_result = await asyncio.gather(
+                self._make_request("GET", "/openApi/fund/v1/account/balance", signed=True),
+                self._make_request("GET", "/openApi/spot/v1/account/balance", signed=True)
+            )
+
+            # Combine balances
+            combined_balances = {}
+
+            if fund_result.get("code") == 0:
+                for balance in fund_result.get("data", {}).get("assets", []):
+                    asset = balance.get("asset")
+                    amount = float(balance.get("free", 0))
+                    if amount > 0:
+                        combined_balances[asset] = combined_balances.get(asset, 0) + amount
+
+            if spot_result.get("code") == 0:
+                for balance in spot_result.get("data", {}).get("balances", []):
+                    asset = balance.get("asset")
+                    amount = float(balance.get("free", 0))
+                    if amount > 0:
+                        combined_balances[asset] = combined_balances.get(asset, 0) + amount
+
+            # Convert to positions (excluding stablecoins)
+            positions = []
+            stablecoins = {'USDT', 'USDC', 'BUSD', 'USD', 'TUSD', 'DAI', 'FDUSD'}
+
+            for asset, amount in combined_balances.items():
+                if asset in stablecoins or amount <= 0:
+                    continue
+
+                # Get current price
+                price, _ = await self._get_asset_price_in_usdt(asset)
+                value_usd = amount * price
+
+                if value_usd >= min_value_usd:
+                    positions.append({
+                        "symbol": f"{asset}USDT",
+                        "side": "LONG",
+                        "position_side": "LONG",
+                        "size": round(amount, 8),
+                        "entry_price": round(price, 4),
+                        "mark_price": round(price, 4),
+                        "unrealized_pnl": 0,
+                        "pnl_percentage": 0,
+                        "value_usd": round(value_usd, 2),
+                        "margin": round(value_usd, 2),
+                        "leverage": 1,
+                        "liquidation_price": 0,
+                        "market_type": "SPOT",
+                        "operation_type": "spot"
+                    })
+
+                await asyncio.sleep(0.05)  # Rate limit
+
+            logger.info(f"Found {len(positions)} spot holdings worth > ${min_value_usd}")
+            return {
+                "success": True,
+                "demo": False,
+                "positions": positions
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting spot holdings: {e}")
+            return {"success": False, "error": str(e), "positions": []}
+
     async def close(self):
         """Close aiohttp session"""
         if self.session:

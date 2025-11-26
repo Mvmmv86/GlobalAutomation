@@ -5,10 +5,40 @@ from typing import List, Optional
 import structlog
 from datetime import datetime
 import uuid
+import jwt
+import uuid as uuid_module
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 
 logger = structlog.get_logger(__name__)
+
+# JWT Secret Key (should be in environment variable in production)
+JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+
+
+def get_user_id_from_request(request: Request) -> Optional[str]:
+    """Extract user_id from JWT token in Authorization header"""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+        return payload.get("user_id")
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+
+def get_user_uuid_from_request(request: Request) -> Optional[uuid_module.UUID]:
+    """Extract user_id from JWT and convert to UUID"""
+    user_id = get_user_id_from_request(request)
+    if not user_id:
+        return None
+    try:
+        return uuid_module.UUID(user_id) if isinstance(user_id, str) else user_id
+    except ValueError:
+        return None
 
 def create_webhooks_crud_router() -> APIRouter:
     """Create and configure the webhooks CRUD router"""
@@ -16,22 +46,27 @@ def create_webhooks_crud_router() -> APIRouter:
 
     @router.get("")
     async def get_webhooks(request: Request, status: Optional[str] = None):
-        """Get all webhooks with optional status filtering"""
+        """Get all webhooks with optional status filtering - filtered by authenticated user"""
         try:
-            # Build query with optional filters
-            where_conditions = []
-            params = []
-            param_count = 1
-            
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+
+            # If no user authenticated, return empty list
+            if not user_uuid:
+                return {"success": True, "data": []}
+
+            # Build query with user_id filter
+            where_conditions = ["user_id = $1"]
+            params = [user_uuid]
+            param_count = 2
+
             if status:
                 where_conditions.append(f"status = ${param_count}")
                 params.append(status)
                 param_count += 1
-            
-            where_clause = ""
-            if where_conditions:
-                where_clause = "WHERE " + " AND ".join(where_conditions)
-            
+
+            where_clause = "WHERE " + " AND ".join(where_conditions)
+
             query = f"""
                 SELECT
                     id, name, url_path, status, is_public,
@@ -48,7 +83,7 @@ def create_webhooks_crud_router() -> APIRouter:
                 {where_clause}
                 ORDER BY created_at DESC
             """
-            
+
             webhooks = await transaction_db.fetch(query, *params)
             
             webhooks_list = []
@@ -96,8 +131,16 @@ def create_webhooks_crud_router() -> APIRouter:
 
     @router.get("/{webhook_id}")
     async def get_webhook(webhook_id: str, request: Request):
-        """Get a specific webhook by ID"""
+        """Get a specific webhook by ID - filtered by user"""
         try:
+            # Extract user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+
+            # If no user authenticated, return 401
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Get webhook FILTERED BY USER_ID
             webhook = await transaction_db.fetchrow("""
                 SELECT
                     id, name, url_path, secret, status, is_public,
@@ -112,9 +155,9 @@ def create_webhooks_crud_router() -> APIRouter:
                     default_stop_loss_pct, default_take_profit_pct,
                     user_id, created_at, updated_at
                 FROM webhooks
-                WHERE id = $1
-            """, webhook_id)
-            
+                WHERE id = $1 AND user_id = $2
+            """, webhook_id, user_uuid)
+
             if not webhook:
                 raise HTTPException(status_code=404, detail="Webhook not found")
             
@@ -229,13 +272,12 @@ def create_webhooks_crud_router() -> APIRouter:
             if existing:
                 raise HTTPException(status_code=400, detail="URL path already exists")
             
-            # TODO: Get user_id from JWT token
-            # For now, use a default user (first user in database)
-            user = await transaction_db.fetchrow("SELECT id FROM users LIMIT 1")
-            if not user:
-                raise HTTPException(status_code=400, detail="No users found. Please create a user first.")
-            
-            user_id = user["id"]
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            user_id = user_uuid
             
             # Create the webhook
             # Try to insert with all parameters including trading parameters
@@ -301,13 +343,18 @@ def create_webhooks_crud_router() -> APIRouter:
 
     @router.put("/{webhook_id}")
     async def update_webhook(webhook_id: str, request: Request):
-        """Update an existing webhook"""
+        """Update an existing webhook - validates user ownership"""
         try:
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
             body = await request.json()
-            
-            # Check if webhook exists
+
+            # Check if webhook exists AND belongs to user
             existing = await transaction_db.fetchrow(
-                "SELECT id FROM webhooks WHERE id = $1", webhook_id
+                "SELECT id FROM webhooks WHERE id = $1 AND user_id = $2", webhook_id, user_uuid
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Webhook not found")
@@ -362,18 +409,23 @@ def create_webhooks_crud_router() -> APIRouter:
 
     @router.delete("/{webhook_id}")
     async def delete_webhook(webhook_id: str, request: Request):
-        """Delete a webhook"""
+        """Delete a webhook - validates user ownership"""
         try:
-            # Check if webhook exists
+            # Get user_id from JWT token
+            user_uuid = get_user_uuid_from_request(request)
+            if not user_uuid:
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            # Check if webhook exists AND belongs to user
             existing = await transaction_db.fetchrow(
-                "SELECT id FROM webhooks WHERE id = $1", webhook_id
+                "SELECT id FROM webhooks WHERE id = $1 AND user_id = $2", webhook_id, user_uuid
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Webhook not found")
 
-            # Delete the webhook (cascade will handle deliveries)
+            # Delete the webhook (cascade will handle deliveries) - only if belongs to user
             await transaction_db.execute(
-                "DELETE FROM webhooks WHERE id = $1", webhook_id
+                "DELETE FROM webhooks WHERE id = $1 AND user_id = $2", webhook_id, user_uuid
             )
 
             logger.info("Webhook deleted", webhook_id=webhook_id)

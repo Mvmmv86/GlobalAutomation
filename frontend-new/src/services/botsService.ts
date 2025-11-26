@@ -92,6 +92,33 @@ export interface UpdateSubscriptionData {
   max_concurrent_positions?: number
 }
 
+export interface PnLHistoryPoint {
+  date: string
+  daily_pnl: number
+  cumulative_pnl: number
+  daily_wins: number
+  daily_losses: number
+  cumulative_wins: number
+  cumulative_losses: number
+  win_rate: number
+}
+
+export interface SubscriptionPerformance {
+  subscription_id: string
+  bot_name: string
+  summary: {
+    total_pnl_usd: number
+    win_rate: number
+    total_wins: number
+    total_losses: number
+    total_trades: number
+    total_signals: number
+    total_orders_executed: number
+    subscribed_at: string | null
+  }
+  pnl_history: PnLHistoryPoint[]
+}
+
 // ============================================================================
 // Bots Service Class
 // ============================================================================
@@ -220,6 +247,33 @@ class BotsService {
    */
   async resumeSubscription(subscriptionId: string, userId: string): Promise<void> {
     await this.updateSubscription(subscriptionId, userId, { status: 'active' })
+  }
+
+  /**
+   * Get subscription performance metrics and P&L history
+   */
+  async getSubscriptionPerformance(
+    subscriptionId: string,
+    userId: string,
+    days: number = 30
+  ): Promise<SubscriptionPerformance | null> {
+    try {
+      const response = await apiClient.getAxiosInstance().get(
+        `/bot-subscriptions/${subscriptionId}/performance`,
+        {
+          params: { user_id: userId, days }
+        }
+      )
+
+      if (response.data?.success && response.data?.data) {
+        return response.data.data
+      }
+
+      return null
+    } catch (error) {
+      console.error('Error fetching subscription performance:', error)
+      return null
+    }
   }
 }
 

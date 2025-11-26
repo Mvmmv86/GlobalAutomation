@@ -4,7 +4,7 @@ import { Card } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { TradingPanel, OrderData } from '../organisms/TradingPanel'
 import { ChartContainer } from '../organisms/ChartContainer'
-import { NotificationCenter, useNotifications } from '../organisms/NotificationCenter'
+import { NotificationCenter } from '../organisms/NotificationCenter'
 import { useExchangeAccounts, useActivePositions, useClosedPositions, useSpotBalances } from '@/hooks/useApiData'
 import { PositionsCard } from '../organisms/PositionsCard'
 import { useRealTimePrice } from '@/hooks/useRealTimePrice'
@@ -88,15 +88,10 @@ const TradingPage: React.FC = () => {
 
   const isLoadingPositions = selectedAccount && (isLoadingOpen || isLoadingClosed || isLoadingSpot)
   
-  // Notifications hook
-  const {
-    notifications,
-    addNotification,
-    markAsRead,
-    markAllAsRead,
-    deleteNotification,
-    clearAll
-  } = useNotifications()
+  // Notification helper - logs to console for now (real notifications go to backend)
+  const addNotification = useCallback((notification: { type: string; title: string; message: string; category?: string }) => {
+    console.log('📢 Notification:', notification)
+  }, [])
 
   // WebSocket para preço em tempo real do símbolo selecionado
   const { priceData, isConnected: isPriceConnected } = useRealTimePrice(selectedSymbol)
@@ -368,9 +363,6 @@ const TradingPage: React.FC = () => {
           className="relative h-7 px-2"
         >
           <Bell className="h-3 w-3" />
-          {notifications.filter(n => !n.read).length > 0 && (
-            <div className="absolute -top-1 -right-1 h-2 w-2 bg-destructive rounded-full" />
-          )}
         </Button>
       </div>
 
@@ -417,7 +409,7 @@ const TradingPage: React.FC = () => {
         </div>
 
         {/* Right Section - Trading Panel */}
-        <div className="w-72 border-l">
+        <div className="w-72 border-l overflow-y-auto">
           <TradingPanel
             symbol={selectedSymbol}
             currentPrice={currentPrice}
@@ -460,13 +452,7 @@ const TradingPage: React.FC = () => {
       {showNotifications && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-2xl">
-            <NotificationCenter
-              notifications={notifications}
-              onMarkAsRead={markAsRead}
-              onMarkAllAsRead={markAllAsRead}
-              onDeleteNotification={deleteNotification}
-              onClearAll={clearAll}
-            />
+            <NotificationCenter />
             <div className="flex justify-center mt-4">
               <Button onClick={() => setShowNotifications(false)}>
                 Close Notifications

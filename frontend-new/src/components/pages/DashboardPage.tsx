@@ -1,39 +1,42 @@
 import React, { useState } from 'react'
-import { BarChart3, Building2, FileText, TrendingUp, Webhook, DollarSign, Wifi } from 'lucide-react'
+import { BarChart3, Building2, FileText, TrendingUp, Webhook, DollarSign, Wifi, X, Calendar } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Badge } from '../atoms/Badge'
 import { Button } from '../atoms/Button'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
-import { PriceDisplay } from '../molecules/PriceDisplay'
-import { OrderCard } from '../molecules/OrderCard'
-import { PositionsTable } from '../organisms/PositionsTable'
-import { NotificationCenter, useNotifications } from '../organisms/NotificationCenter'
 import {
   useExchangeAccounts,
   useWebhooks,
-  useRecentOrders,
-  useActivePositions,
-  usePositionMetrics,
-  useOrderStats,
   useCreateTestOrder,
-  useDashboardMetrics,
   useBalancesSummary,
-  // useDashboardCards  // HOOK COM ERRO - DESABILITADO
+  useDashboardStats,
+  useRecentOrdersFromExchange,
+  useActivePositionsFromExchange,
+  useClosePositionFromDashboard,
 } from '@/hooks/useApiData'
 
 const DashboardPage: React.FC = () => {
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [apiResponse, setApiResponse] = useState<string>('')
+  const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
 
   // API Data hooks
   const { data: exchangeAccounts, isLoading: loadingAccounts, error: accountsError } = useExchangeAccounts()
   const { data: webhooks, isLoading: loadingWebhooks, error: webhooksError } = useWebhooks()
-  const { data: recentOrdersApi, isLoading: loadingOrders, error: ordersError } = useRecentOrders()
-  const { data: activePositions, isLoading: loadingPositions, error: positionsError } = useActivePositions()
-  const { data: metrics, isLoading: loadingMetrics, error: metricsError } = usePositionMetrics()
-  const { data: orderStats, isLoading: loadingStats, error: statsError } = useOrderStats()
   const { data: balancesSummary, isLoading: loadingBalances, error: balancesError, refetch: refetchBalances } = useBalancesSummary()
-  // const { data: dashboardCards, isLoading: loadingCards, error: cardsError } = useDashboardCards()  // DESABILITADO - ENDPOINT COM BUG
+
+  // NEW: Dashboard Stats (positions count, orders today, orders 3 months)
+  const { data: dashboardStats, isLoading: loadingStats, error: statsError } = useDashboardStats()
+
+  // NEW: Recent Orders from Exchange (last 7 days)
+  const { data: recentOrdersExchange, isLoading: loadingOrders, error: ordersError } = useRecentOrdersFromExchange(7)
+
+  // NEW: Active Positions from Exchange (real-time)
+  const { data: activePositionsExchange, isLoading: loadingPositions, error: positionsError } = useActivePositionsFromExchange()
+
+  // NEW: Close Position Mutation
+  const closePositionMutation = useClosePositionFromDashboard()
+
   const createTestOrderMutation = useCreateTestOrder()
 
   const testApiConnection = async () => {
@@ -107,9 +110,9 @@ const DashboardPage: React.FC = () => {
     }
   }
 
-  // Use real data when available, fallback to mock data
-  const hasApiErrors = accountsError || webhooksError || ordersError || positionsError || metricsError || statsError || balancesError
-  const isLoadingData = loadingAccounts || loadingWebhooks || loadingOrders || loadingPositions || loadingMetrics || loadingBalances
+  // Use real data when available
+  const hasApiErrors = accountsError || webhooksError || ordersError || positionsError || statsError || balancesError
+  const isLoadingData = loadingAccounts || loadingWebhooks || loadingOrders || loadingPositions || loadingStats || loadingBalances
 
   // Function to create test order
   const handleCreateTestOrder = async () => {
@@ -123,50 +126,50 @@ const DashboardPage: React.FC = () => {
     }
   }
 
-  // DADOS REAIS DO BANCO - SEM FALLBACKS MOCK
-  const positionsData = activePositions?.data || activePositions || []
+  // Function to close position
+  const handleClosePosition = async (position: any) => {
+    if (closingPositionId) return // Prevent double-click
+    setClosingPositionId(position.id)
+    try {
+      await closePositionMutation.mutateAsync({
+        symbol: position.symbol,
+        side: position.side,
+        size: position.size,
+        exchange_account_id: position.exchange_account_id
+      })
+      setApiStatus('success')
+      setApiResponse(`Position ${position.symbol} closed successfully!`)
+    } catch (error) {
+      setApiStatus('error')
+      setApiResponse(error instanceof Error ? error.message : 'Failed to close position')
+    } finally {
+      setClosingPositionId(null)
+    }
+  }
 
-  // Debug: verificar se balancesSummary está chegando
-  console.log('🔍 Balances Summary Data:', balancesSummary)
-  console.log('🔍 Loading Balances:', loadingBalances)
-  console.log('🔍 Balances Error:', balancesError)
-  console.log('🔍 Raw JSON balancesSummary:', JSON.stringify(balancesSummary, null, 2))
-
-  console.log('🔍 DEBUGGING: balancesSummary:', balancesSummary)
-  console.log('🔍 DEBUGGING: balancesSummary?.futures:', balancesSummary?.futures)
-  console.log('🔍 DEBUGGING: balancesSummary?.spot:', balancesSummary?.spot)
-
+  // Stats object with real data from exchange
   const stats = {
-    // Dados dos cards (banco de dados) - USANDO BALANCES QUE FUNCIONA
+    // Balances from exchange
     futuresBalance: balancesSummary?.futures?.total_balance_usd || 0,
     futuresUnrealizedPnL: balancesSummary?.futures?.unrealized_pnl || 0,
-    futuresPnL: balancesSummary?.futures?.unrealized_pnl || 0,
     spotBalance: balancesSummary?.spot?.total_balance_usd || 0,
     spotAssets: balancesSummary?.spot?.assets?.length || 0,
     spotPnL: balancesSummary?.spot?.unrealized_pnl || 0,
     totalPnL: balancesSummary?.total?.pnl || 0,
-    activePositions: activePositions?.length || 0,
-    totalOrders: recentOrdersApi?.length || 0,
-    todayOrders: recentOrdersApi?.length || 0,
 
-    // Dados das outras APIs (banco de dados)
+    // Stats from exchange (NEW endpoints)
+    activePositions: dashboardStats?.active_positions || 0,
+    totalOrders: dashboardStats?.orders_3_months || 0,
+    todayOrders: dashboardStats?.orders_today || 0,
+
+    // Other data
     activeWebhooks: webhooks?.filter(w => w.status === 'active').length || 0,
     exchangeAccounts: exchangeAccounts?.length || 0,
-    successRate: 85, // Mock temporário
-    filledOrders: recentOrdersApi?.length || 0,
-    pendingOrders: 0,
   }
 
-  console.log('🔍 Stats calculados:', stats)
-  console.log('💰 Futures Balance:', stats.futuresBalance)
-  console.log('💰 Spot Balance:', stats.spotBalance)
-  console.log('💰 Total PnL:', stats.totalPnL)
-
-  // Use only real data from API
-  const recentOrdersData = recentOrdersApi || []
-
-  // Use only real data from API
-  const activePositionsData = (activePositions?.data || activePositions || []).filter(Boolean)
+  // Real data from exchange
+  const recentOrdersData = recentOrdersExchange || []
+  const activePositionsData = activePositionsExchange || []
 
   const getOrderStatusBadge = (status: string) => {
     switch (status) {
@@ -186,6 +189,26 @@ const DashboardPage: React.FC = () => {
     return (
       <Badge variant={isPositive ? 'success' : 'danger'}>
         {side === 'buy' ? 'Compra' : side === 'sell' ? 'Venda' : side === 'long' ? 'Long' : 'Short'}
+      </Badge>
+    )
+  }
+
+  // Badge para tipo de mercado (SPOT/FUTURES)
+  const getMarketTypeBadge = (marketType: string) => {
+    const isSpot = marketType?.toUpperCase() === 'SPOT'
+    return (
+      <Badge variant={isSpot ? 'secondary' : 'outline'} className="text-xs">
+        {isSpot ? 'SPOT' : 'FUTURES'}
+      </Badge>
+    )
+  }
+
+  // Badge para direção do trade (ENTRADA/SAÍDA)
+  const getTradeDirectionBadge = (direction: string) => {
+    const isEntrada = direction?.toUpperCase() === 'ENTRADA'
+    return (
+      <Badge variant={isEntrada ? 'success' : 'warning'} className="text-xs">
+        {isEntrada ? 'Entrada' : 'Saída'}
       </Badge>
     )
   }
@@ -302,16 +325,16 @@ const DashboardPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Total de Ordens */}
+        {/* Total de Ordens (3 meses) */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total de Ordens</CardTitle>
-            <Building2 className="h-4 w-4 text-muted-foreground" />
+            <Calendar className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.totalOrders}</div>
             <p className="text-xs text-muted-foreground">
-              Ordens executadas
+              Últimos 3 meses
             </p>
           </CardContent>
         </Card>
@@ -393,12 +416,12 @@ const DashboardPage: React.FC = () => {
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Recent Orders */}
+        {/* Recent Orders - Last 7 Days */}
         <Card>
           <CardHeader>
             <CardTitle>Ordens Recentes</CardTitle>
             <CardDescription>
-              Últimas operações com ativo, data, volume e margem
+              Últimos 7 dias: tipo, ativo, data, volume, margem, P&L
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -410,32 +433,42 @@ const DashboardPage: React.FC = () => {
               <div className="text-center py-8 text-muted-foreground">
                 Erro ao carregar ordens
               </div>
+            ) : recentOrdersData.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                Nenhuma ordem nos últimos 7 dias
+              </div>
             ) : (
-              <div className="max-h-64 overflow-y-auto space-y-3">
-                {recentOrdersData.map((order) => (
+              <div className="max-h-80 overflow-y-auto space-y-3">
+                {recentOrdersData.map((order: any) => (
                 <div
                   key={order.id}
-                  className="flex items-center justify-between p-3 border rounded-lg"
+                  className="p-3 border rounded-lg hover:bg-muted/50 transition-colors"
                 >
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 flex-wrap gap-1">
                       <p className="font-medium">{order.symbol}</p>
-                      {getSideBadge(order.side)}
+                      {getMarketTypeBadge(order.market_type)}
+                      {getSideBadge(order.side?.toLowerCase() as any)}
+                      {getTradeDirectionBadge(order.trade_direction)}
                     </div>
-                    <div className="flex items-center justify-between mt-1">
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(order.createdAt).toLocaleDateString('pt-BR')} {new Date(order.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                      {getOrderStatusBadge(order.status)}
-                    </div>
-                    <div className="flex items-center justify-between mt-2 text-sm">
-                      <span className="text-muted-foreground">
-                        Vol: {order.quantity.toLocaleString()}
-                      </span>
-                      <span className="font-medium">
-                        ${((order.averageFillPrice || order.price) * order.quantity).toLocaleString()} USDT
-                      </span>
-                    </div>
+                    <span className={`text-sm font-medium ${order.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {order.pnl >= 0 ? '+' : ''}${order.pnl?.toFixed(2) || '0.00'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-sm text-muted-foreground">
+                    <span>
+                      {order.created_at ? new Date(order.created_at).toLocaleDateString('pt-BR') : '-'}{' '}
+                      {order.created_at ? new Date(order.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                    </span>
+                    <span>{order.type}</span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1 text-sm">
+                    <span className="text-muted-foreground">
+                      Vol: ${order.volume_usdt?.toFixed(2) || '0.00'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Margem: ${order.margin_usdt?.toFixed(2) || '0.00'}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -444,12 +477,12 @@ const DashboardPage: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Active Positions */}
+        {/* Active Positions - Real-time */}
         <Card>
           <CardHeader>
             <CardTitle>Posições Ativas</CardTitle>
             <CardDescription>
-              Suas posições em aberto
+              Posições em aberto em tempo real
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -461,28 +494,63 @@ const DashboardPage: React.FC = () => {
               <div className="text-center py-8 text-muted-foreground">
                 Erro ao carregar posições
               </div>
+            ) : activePositionsData.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                Nenhuma posição aberta
+              </div>
             ) : (
-              <div className="space-y-4">
-                {activePositionsData.map((position) => (
+              <div className="max-h-80 overflow-y-auto space-y-3">
+                {activePositionsData.map((position: any) => (
                 <div
                   key={position.id}
-                  className="flex items-center justify-between p-3 border rounded-lg"
+                  className="p-3 border rounded-lg hover:bg-muted/50 transition-colors"
                 >
-                  <div className="flex items-center space-x-3">
-                    <div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 flex-wrap gap-1">
                       <p className="font-medium">{position.symbol}</p>
-                      <p className="text-sm text-muted-foreground">
-                        Size: {position.size}
-                      </p>
+                      {getMarketTypeBadge(position.market_type)}
+                      {getSideBadge(position.side?.toLowerCase() as any)}
+                      <Badge variant="outline" className="text-xs">
+                        {position.leverage}x
+                      </Badge>
                     </div>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => handleClosePosition(position)}
+                      disabled={closingPositionId === position.id || position.market_type?.toUpperCase() === 'SPOT'}
+                      className="h-7 px-2"
+                      title={position.market_type?.toUpperCase() === 'SPOT' ? 'Não é possível fechar posições SPOT aqui' : 'Fechar posição'}
+                    >
+                      {closingPositionId === position.id ? (
+                        <LoadingSpinner />
+                      ) : (
+                        <>
+                          <X className="w-3 h-3 mr-1" />
+                          Fechar
+                        </>
+                      )}
+                    </Button>
                   </div>
-                  <div className="text-right space-y-1">
-                    {getSideBadge(position.side)}
-                    <p className={`text-sm font-medium ${
-                      position.unrealizedPnl >= 0 ? 'text-success' : 'text-danger'
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-sm text-muted-foreground">
+                      Size: {position.size}
+                    </span>
+                    <span className={`text-sm font-medium ${
+                      position.unrealized_pnl >= 0 ? 'text-green-600' : 'text-red-600'
                     }`}>
-                      {position.unrealizedPnl >= 0 ? '+' : ''}${position.unrealizedPnl}
-                    </p>
+                      {position.unrealized_pnl >= 0 ? '+' : ''}${position.unrealized_pnl?.toFixed(2) || '0.00'}
+                      <span className="text-xs ml-1">
+                        ({position.pnl_percentage >= 0 ? '+' : ''}{position.pnl_percentage?.toFixed(2) || '0'}%)
+                      </span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1 text-xs text-muted-foreground">
+                    <span>Entry: ${position.entry_price?.toFixed(4) || '0'}</span>
+                    <span>Mark: ${position.mark_price?.toFixed(4) || '0'}</span>
+                    {position.market_type?.toUpperCase() !== 'SPOT' && (
+                      <span>Liq: ${position.liquidation_price?.toFixed(4) || '0'}</span>
+                    )}
                   </div>
                 </div>
               ))}

@@ -1,45 +1,38 @@
-import React, { useState, useEffect } from 'react'
-import { Bell, X, CheckCircle, AlertTriangle, Info, AlertCircle, Filter, MoreVertical } from 'lucide-react'
+import React, { useState } from 'react'
+import { Bell, X, CheckCircle, AlertTriangle, Info, AlertCircle, Filter, MoreVertical, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../atoms/Tabs'
 import { cn, formatDate } from '@/lib/utils'
-
-interface Notification {
-  id: string
-  type: 'success' | 'warning' | 'error' | 'info'
-  title: string
-  message: string
-  timestamp: string
-  read: boolean
-  category: 'order' | 'position' | 'system' | 'market'
-  actionUrl?: string
-  metadata?: Record<string, any>
-}
+import { useNotifications, Notification } from '@/hooks/useNotifications'
 
 interface NotificationCenterProps {
-  notifications: Notification[]
-  onMarkAsRead: (notificationId: string) => void
-  onMarkAllAsRead: () => void
-  onDeleteNotification: (notificationId: string) => void
-  onClearAll: () => void
   className?: string
 }
 
-const NotificationCenter: React.FC<NotificationCenterProps> = ({
-  notifications,
-  onMarkAsRead,
-  onMarkAllAsRead,
-  onDeleteNotification,
-  onClearAll,
-  className
-}) => {
+const NotificationCenter: React.FC<NotificationCenterProps> = ({ className }) => {
   const [activeTab, setActiveTab] = useState<string>('all')
   const [showUnreadOnly, setShowUnreadOnly] = useState(false)
 
+  // Use the backend-connected hook
+  const {
+    notifications,
+    unreadCount,
+    isLoading,
+    markAsRead,
+    markAllAsRead,
+    deleteNotification,
+    clearAll,
+    isMarkingAllAsRead,
+    isClearing
+  } = useNotifications({
+    limit: 100,
+    refetchInterval: 30000 // 30 seconds
+  })
+
   // Filter notifications based on active tab and read status
-  const filteredNotifications = notifications.filter(notification => {
+  const filteredNotifications = notifications.filter((notification: Notification) => {
     const categoryMatch = activeTab === 'all' || notification.category === activeTab
     const readMatch = !showUnreadOnly || !notification.read
     return categoryMatch && readMatch
@@ -48,11 +41,13 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
   // Count notifications by category
   const counts = {
     all: notifications.length,
-    unread: notifications.filter(n => !n.read).length,
-    order: notifications.filter(n => n.category === 'order').length,
-    position: notifications.filter(n => n.category === 'position').length,
-    system: notifications.filter(n => n.category === 'system').length,
-    market: notifications.filter(n => n.category === 'market').length
+    unread: unreadCount,
+    order: notifications.filter((n: Notification) => n.category === 'order').length,
+    position: notifications.filter((n: Notification) => n.category === 'position').length,
+    system: notifications.filter((n: Notification) => n.category === 'system').length,
+    market: notifications.filter((n: Notification) => n.category === 'market').length,
+    bot: notifications.filter((n: Notification) => n.category === 'bot').length,
+    price_alert: notifications.filter((n: Notification) => n.category === 'price_alert').length
   }
 
   const getNotificationIcon = (type: Notification['type']) => {
@@ -86,7 +81,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
   const NotificationItem: React.FC<{ notification: Notification }> = ({ notification }) => {
     const handleClick = () => {
       if (!notification.read) {
-        onMarkAsRead(notification.id)
+        markAsRead(notification.id)
       }
     }
 
@@ -102,7 +97,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
         <div className="flex items-start justify-between space-x-3">
           <div className="flex items-start space-x-3 flex-1 min-w-0">
             {getNotificationIcon(notification.type)}
-            
+
             <div className="flex-1 min-w-0">
               <div className="flex items-center space-x-2">
                 <h4 className={cn(
@@ -115,14 +110,14 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
                   <div className="h-2 w-2 bg-primary rounded-full flex-shrink-0" />
                 )}
               </div>
-              
+
               <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
                 {notification.message}
               </p>
-              
+
               <div className="flex items-center space-x-2 mt-2">
                 <Badge variant="outline" className="text-xs">
-                  {notification.category.toUpperCase()}
+                  {notification.category.toUpperCase().replace('_', ' ')}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
                   {formatDate(notification.timestamp)}
@@ -138,7 +133,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
               className="h-6 w-6"
               onClick={(e) => {
                 e.stopPropagation()
-                onDeleteNotification(notification.id)
+                deleteNotification(notification.id)
               }}
             >
               <X className="h-3 w-3" />
@@ -159,9 +154,9 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
           <CardTitle className="flex items-center space-x-2">
             <Bell className="h-5 w-5" />
             <span>Notifications</span>
-            {counts.unread > 0 && (
+            {unreadCount > 0 && (
               <Badge variant="destructive" className="text-xs">
-                {counts.unread}
+                {unreadCount}
               </Badge>
             )}
           </CardTitle>
@@ -177,11 +172,27 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
               {showUnreadOnly ? 'Show All' : 'Unread Only'}
             </Button>
 
-            <Button variant="outline" size="sm" onClick={onMarkAllAsRead}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => markAllAsRead()}
+              disabled={isMarkingAllAsRead || unreadCount === 0}
+            >
+              {isMarkingAllAsRead ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
               Mark All Read
             </Button>
 
-            <Button variant="outline" size="sm" onClick={onClearAll}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => clearAll()}
+              disabled={isClearing || notifications.length === 0}
+            >
+              {isClearing ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
               Clear All
             </Button>
           </div>
@@ -212,7 +223,12 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
           <TabsContent value={activeTab} className="mt-0">
             <div className="max-h-96 overflow-y-auto">
-              {filteredNotifications.length === 0 ? (
+              {isLoading ? (
+                <div className="p-8 text-center text-muted-foreground">
+                  <Loader2 className="h-12 w-12 mx-auto mb-4 animate-spin opacity-50" />
+                  <h3 className="font-medium mb-2">Loading notifications...</h3>
+                </div>
+              ) : filteredNotifications.length === 0 ? (
                 <div className="p-8 text-center text-muted-foreground">
                   <Bell className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <h3 className="font-medium mb-2">No notifications</h3>
@@ -222,7 +238,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 </div>
               ) : (
                 <div className="divide-y">
-                  {filteredNotifications.map((notification) => (
+                  {filteredNotifications.map((notification: Notification) => (
                     <NotificationItem key={notification.id} notification={notification} />
                   ))}
                 </div>
@@ -238,9 +254,9 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
               <span>
                 Showing {filteredNotifications.length} of {notifications.length} notifications
               </span>
-              {counts.unread > 0 && (
+              {unreadCount > 0 && (
                 <span className="font-medium">
-                  {counts.unread} unread
+                  {unreadCount} unread
                 </span>
               )}
             </div>
@@ -251,47 +267,5 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({
   )
 }
 
-// Hook for managing notifications
-export const useNotifications = () => {
-  const [notifications, setNotifications] = useState<Notification[]>([])
-
-  const addNotification = (notification: Omit<Notification, 'id' | 'timestamp' | 'read'>) => {
-    const newNotification: Notification = {
-      ...notification,
-      id: Date.now().toString(),
-      timestamp: new Date().toISOString(),
-      read: false
-    }
-    setNotifications(prev => [newNotification, ...prev])
-  }
-
-  const markAsRead = (notificationId: string) => {
-    setNotifications(prev => 
-      prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
-    )
-  }
-
-  const markAllAsRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })))
-  }
-
-  const deleteNotification = (notificationId: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== notificationId))
-  }
-
-  const clearAll = () => {
-    setNotifications([])
-  }
-
-  return {
-    notifications,
-    addNotification,
-    markAsRead,
-    markAllAsRead,
-    deleteNotification,
-    clearAll
-  }
-}
-
 export { NotificationCenter }
-export type { NotificationCenterProps, Notification }
+export type { NotificationCenterProps }

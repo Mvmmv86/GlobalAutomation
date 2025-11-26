@@ -58,11 +58,11 @@ class AuthService {
   }
 
   async register(data: RegisterRequest): Promise<LoginResponse> {
-    return apiClient.post<LoginResponse>('/api/v1/auth/register', data)
+    return apiClient.post<LoginResponse>('/auth/register', data)
   }
 
   async logout(): Promise<void> {
-    return apiClient.post('/api/v1/auth/logout')
+    return apiClient.post('/auth/logout')
   }
 
   async getCurrentUser(): Promise<User> {
@@ -96,37 +96,37 @@ class AuthService {
       throw new Error('No refresh token available')
     }
 
-    return apiClient.post('/api/v1/auth/refresh', { refreshToken })
+    return apiClient.post('/auth/refresh', { refreshToken })
   }
 
   async requestPasswordReset(email: string): Promise<void> {
-    return apiClient.post('/api/v1/auth/password-reset', { email })
+    return apiClient.post('/auth/password-reset', { email })
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {
-    return apiClient.post('/api/v1/auth/password-reset/confirm', {
+    return apiClient.post('/auth/password-reset/confirm', {
       token,
       newPassword,
     })
   }
 
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
-    return apiClient.post('/api/v1/auth/change-password', {
+    return apiClient.post('/auth/change-password', {
       currentPassword,
       newPassword,
     })
   }
 
   async enableTwoFactor(): Promise<{ qrCode: string; secret: string }> {
-    return apiClient.post('/api/v1/auth/2fa/enable')
+    return apiClient.post('/auth/2fa/enable')
   }
 
   async confirmTwoFactor(totpCode: string): Promise<void> {
-    return apiClient.post('/api/v1/auth/2fa/confirm', { totpCode })
+    return apiClient.post('/auth/2fa/confirm', { totpCode })
   }
 
   async disableTwoFactor(totpCode: string): Promise<void> {
-    return apiClient.post('/api/v1/auth/2fa/disable', { totpCode })
+    return apiClient.post('/auth/2fa/disable', { totpCode })
   }
 }
 

@@ -33,23 +33,23 @@ interface KPICardProps {
 
 function KPICard({ title, value, icon, trend, color = 'blue' }: KPICardProps) {
   const colorClasses = {
-    blue: 'bg-blue-600 text-white',
-    green: 'bg-green-600 text-white',
+    blue: 'bg-[#3b82f6] text-white',
+    green: 'bg-emerald-600 text-white',
     purple: 'bg-purple-600 text-white',
-    orange: 'bg-orange-600 text-white',
+    orange: 'bg-orange-500 text-white',
     red: 'bg-red-600 text-white',
   }
 
   return (
-    <Card className="p-6 bg-gray-900 border-gray-800">
+    <Card className="p-6 bg-[#1e222d] border-[#2a2e39]">
       <div className="flex items-center justify-between mb-4">
         <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
           {icon}
         </div>
         {trend && (
           <div className="flex items-center text-sm">
-            <TrendingUp className="w-4 h-4 text-green-400 mr-1" />
-            <span className="text-green-400 font-medium">+{trend.value}</span>
+            <TrendingUp className="w-4 h-4 text-emerald-400 mr-1" />
+            <span className="text-emerald-400 font-medium">+{trend.value}</span>
             <span className="text-gray-400 ml-1">{trend.label}</span>
           </div>
         )}
@@ -87,13 +87,13 @@ export function AdminDashboard() {
   if (isLoading) {
     return (
       <div className="p-6 lg:p-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-8">Dashboard</h1>
+        <h1 className="text-3xl font-bold text-white mb-8">Dashboard</h1>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {[...Array(8)].map((_, i) => (
-            <Card key={i} className="p-6 animate-pulse">
-              <div className="h-12 bg-gray-200 rounded mb-4" />
-              <div className="h-8 bg-gray-200 rounded mb-2" />
-              <div className="h-4 bg-gray-200 rounded w-2/3" />
+            <Card key={i} className="p-6 animate-pulse bg-[#1e222d] border-[#2a2e39]">
+              <div className="h-12 bg-[#2a2e39] rounded mb-4" />
+              <div className="h-8 bg-[#2a2e39] rounded mb-2" />
+              <div className="h-4 bg-[#2a2e39] rounded w-2/3" />
             </Card>
           ))}
         </div>
@@ -195,7 +195,7 @@ export function AdminDashboard() {
       {/* Recent Activity & Stats */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         {/* Signals Sent */}
-        <Card className="p-6 bg-gray-900 border-gray-800">
+        <Card className="p-6 bg-[#1e222d] border-[#2a2e39]">
           <h3 className="text-lg font-semibold text-white mb-4">Sinais Enviados</h3>
           <div className="space-y-3">
             <div className="flex justify-between items-center">
@@ -220,7 +220,7 @@ export function AdminDashboard() {
         </Card>
 
         {/* Subscriptions */}
-        <Card className="p-6 bg-gray-900 border-gray-800">
+        <Card className="p-6 bg-[#1e222d] border-[#2a2e39]">
           <h3 className="text-lg font-semibold text-white mb-4">Assinaturas</h3>
           <div className="space-y-3">
             <div className="flex justify-between items-center">
@@ -237,7 +237,7 @@ export function AdminDashboard() {
             </div>
             <div className="flex justify-between items-center">
               <span className="text-gray-400">Novas (7 dias)</span>
-              <span className="text-xl font-semibold text-green-400">
+              <span className="text-xl font-semibold text-emerald-400">
                 +{recent_activity.new_subscriptions_7d.toLocaleString()}
               </span>
             </div>
@@ -246,7 +246,7 @@ export function AdminDashboard() {
       </div>
 
       {/* Top Performing Bots */}
-      <Card className="p-6 bg-gray-900 border-gray-800">
+      <Card className="p-6 bg-[#1e222d] border-[#2a2e39]">
         <h3 className="text-lg font-semibold text-white mb-4">Top Bots com Melhor Performance</h3>
         {top_bots.length === 0 ? (
           <p className="text-gray-400 text-center py-8">Nenhum bot encontrado</p>
@@ -254,7 +254,7 @@ export function AdminDashboard() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-700">
+                <tr className="border-b border-[#2a2e39]">
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-300">Nome</th>
                   <th className="text-center py-3 px-4 text-sm font-semibold text-gray-300">Assinantes</th>
                   <th className="text-center py-3 px-4 text-sm font-semibold text-gray-300">Sinais Enviados</th>
@@ -264,7 +264,7 @@ export function AdminDashboard() {
               </thead>
               <tbody>
                 {top_bots.map((bot) => (
-                  <tr key={bot.id} className="border-b border-gray-800 hover:bg-gray-800">
+                  <tr key={bot.id} className="border-b border-[#2a2e39] hover:bg-[#2a2e39]">
                     <td className="py-3 px-4">
                       <p className="font-medium text-white">{bot.name}</p>
                     </td>
@@ -285,7 +285,7 @@ export function AdminDashboard() {
                     </td>
                     <td className="py-3 px-4 text-center">
                       {bot.avg_pnl_pct !== null ? (
-                        <span className={`font-semibold ${bot.avg_pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className={`font-semibold ${bot.avg_pnl_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                           {bot.avg_pnl_pct >= 0 ? '+' : ''}{bot.avg_pnl_pct.toFixed(2)}%
                         </span>
                       ) : (

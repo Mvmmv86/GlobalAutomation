@@ -56,12 +56,12 @@ export function AdminLayout({ children }: AdminLayoutProps) {
   }
 
   return (
-    <div className="min-h-screen bg-black flex">
+    <div className="min-h-screen bg-[#1a1d24] flex">
       {/* Sidebar - Desktop */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-64 bg-gray-900 border-r border-gray-800 fixed h-full">
+      <aside className="hidden lg:flex lg:flex-col lg:w-64 bg-[#1e222d] border-r border-[#2a2e39] fixed h-full">
         {/* Logo/Title */}
-        <div className="h-16 flex items-center px-6 border-b border-gray-800">
-          <Bot className="w-8 h-8 text-blue-500 mr-3" />
+        <div className="h-16 flex items-center px-6 border-b border-[#2a2e39]">
+          <Bot className="w-8 h-8 text-emerald-500 mr-3" />
           <h1 className="text-xl font-bold text-white">Admin Portal</h1>
         </div>
 
@@ -75,8 +75,8 @@ export function AdminLayout({ children }: AdminLayoutProps) {
                   className={`
                     w-full flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors
                     ${isActiveRoute(item.path)
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-800'
+                      ? 'bg-emerald-600 text-white'
+                      : 'text-gray-300 hover:bg-[#2a2e39]'
                     }
                   `}
                 >
@@ -89,9 +89,9 @@ export function AdminLayout({ children }: AdminLayoutProps) {
         </nav>
 
         {/* User Info & Logout */}
-        <div className="p-4 border-t border-gray-800">
+        <div className="p-4 border-t border-[#2a2e39]">
           <div className="flex items-center mb-3">
-            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center">
               <span className="text-white font-semibold text-sm">
                 {user?.name?.charAt(0).toUpperCase() || 'A'}
               </span>
@@ -109,7 +109,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
             variant="outline"
             size="sm"
             onClick={handleLogout}
-            className="w-full justify-start border-gray-700 text-gray-300 hover:bg-gray-800"
+            className="w-full justify-start border-[#2a2e39] text-gray-300 hover:bg-[#2a2e39]"
           >
             <LogOut className="w-4 h-4 mr-2" />
             Sair
@@ -118,10 +118,10 @@ export function AdminLayout({ children }: AdminLayoutProps) {
       </aside>
 
       {/* Mobile Header */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-gray-900 border-b border-gray-800 flex items-center px-4 z-30">
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-[#1e222d] border-b border-[#2a2e39] flex items-center px-4 z-30">
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="p-2 rounded-lg hover:bg-gray-800"
+          className="p-2 rounded-lg hover:bg-[#2a2e39]"
         >
           {isMobileMenuOpen ? (
             <X className="w-6 h-6 text-gray-300" />
@@ -129,7 +129,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
             <Menu className="w-6 h-6 text-gray-300" />
           )}
         </button>
-        <Bot className="w-6 h-6 text-blue-500 ml-4 mr-2" />
+        <Bot className="w-6 h-6 text-emerald-500 ml-4 mr-2" />
         <h1 className="text-lg font-bold text-white">Admin Portal</h1>
       </div>
 
@@ -144,13 +144,13 @@ export function AdminLayout({ children }: AdminLayoutProps) {
       {/* Mobile Sidebar */}
       <aside
         className={`
-          lg:hidden fixed inset-y-0 left-0 w-64 bg-gray-900 transform transition-transform duration-300 ease-in-out z-50
+          lg:hidden fixed inset-y-0 left-0 w-64 bg-[#1e222d] transform transition-transform duration-300 ease-in-out z-50
           ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
       >
         {/* Logo/Title */}
-        <div className="h-16 flex items-center px-6 border-b border-gray-800">
-          <Bot className="w-8 h-8 text-blue-500 mr-3" />
+        <div className="h-16 flex items-center px-6 border-b border-[#2a2e39]">
+          <Bot className="w-8 h-8 text-emerald-500 mr-3" />
           <h1 className="text-xl font-bold text-white">Admin Portal</h1>
         </div>
 
@@ -167,8 +167,8 @@ export function AdminLayout({ children }: AdminLayoutProps) {
                   className={`
                     w-full flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors
                     ${isActiveRoute(item.path)
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-800'
+                      ? 'bg-emerald-600 text-white'
+                      : 'text-gray-300 hover:bg-[#2a2e39]'
                     }
                   `}
                 >
@@ -181,9 +181,9 @@ export function AdminLayout({ children }: AdminLayoutProps) {
         </nav>
 
         {/* User Info & Logout */}
-        <div className="p-4 border-t border-gray-800">
+        <div className="p-4 border-t border-[#2a2e39]">
           <div className="flex items-center mb-3">
-            <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center">
               <span className="text-white font-semibold text-sm">
                 {user?.name?.charAt(0).toUpperCase() || 'A'}
               </span>
@@ -201,7 +201,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
             variant="outline"
             size="sm"
             onClick={handleLogout}
-            className="w-full justify-start border-gray-700 text-gray-300 hover:bg-gray-800"
+            className="w-full justify-start border-[#2a2e39] text-gray-300 hover:bg-[#2a2e39]"
           >
             <LogOut className="w-4 h-4 mr-2" />
             Sair

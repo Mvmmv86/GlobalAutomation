@@ -64,49 +64,49 @@ export const LoginPage: React.FC = () => {
   return (
     <div>
       <div className="mb-6 text-center">
-        <h2 className="text-3xl font-bold text-blue-600">
+        <h2 className="text-3xl font-bold text-emerald-500">
           Trading Platform
         </h2>
-        <h3 className="mt-2 text-xl font-semibold text-gray-900">
+        <h3 className="mt-2 text-xl font-semibold text-white">
           Portal Admin
         </h3>
-        <p className="mt-2 text-sm text-gray-600">
+        <p className="mt-2 text-sm text-gray-400">
           Acesse o painel administrativo
         </p>
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         {error && (
-          <div className="p-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md dark:text-red-400 dark:bg-red-900/10 dark:border-red-800">
+          <div className="p-3 text-sm text-red-400 bg-red-900/20 border border-red-800 rounded-md">
             {error}
           </div>
         )}
 
         <div>
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email" className="text-gray-300">Email</Label>
           <Input
             id="email"
             type="email"
             placeholder="seu@email.com"
-            className="mt-1"
+            className="mt-1 bg-[#2a2e39] border-[#3a3f4b] text-white placeholder:text-gray-500"
             autoComplete="email"
             {...register('email')}
           />
           {errors.email && (
-            <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+            <p className="mt-1 text-sm text-red-400">
               {errors.email.message}
             </p>
           )}
         </div>
 
         <div>
-          <Label htmlFor="password">Senha</Label>
+          <Label htmlFor="password" className="text-gray-300">Senha</Label>
           <div className="relative mt-1">
             <Input
               id="password"
               type={showPassword ? 'text' : 'password'}
               placeholder="Sua senha"
-              className="pr-10"
+              className="pr-10 bg-[#2a2e39] border-[#3a3f4b] text-white placeholder:text-gray-500"
               autoComplete="current-password"
               {...register('password')}
             />
@@ -123,7 +123,7 @@ export const LoginPage: React.FC = () => {
             </button>
           </div>
           {errors.password && (
-            <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+            <p className="mt-1 text-sm text-red-400">
               {errors.password.message}
             </p>
           )}
@@ -131,18 +131,18 @@ export const LoginPage: React.FC = () => {
 
         {showTotpInput && (
           <div>
-            <Label htmlFor="totpCode">Código de Autenticação (2FA)</Label>
+            <Label htmlFor="totpCode" className="text-gray-300">Código de Autenticação (2FA)</Label>
             <Input
               id="totpCode"
               type="text"
               placeholder="123456"
-              className="mt-1"
+              className="mt-1 bg-[#2a2e39] border-[#3a3f4b] text-white placeholder:text-gray-500"
               maxLength={6}
               autoComplete="one-time-code"
               {...register('totpCode')}
             />
             {errors.totpCode && (
-              <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+              <p className="mt-1 text-sm text-red-400">
                 {errors.totpCode.message}
               </p>
             )}
@@ -151,7 +151,7 @@ export const LoginPage: React.FC = () => {
 
         <Button
           type="submit"
-          className="w-full"
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
           disabled={isLoading}
         >
           {isLoading ? (

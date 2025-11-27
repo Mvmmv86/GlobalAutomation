@@ -1,8 +1,9 @@
 """Application settings using Pydantic Settings"""
 
 import os
-from typing import List, Optional
-from pydantic import Field
+import json
+from typing import List, Optional, Any
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,11 +72,26 @@ class Settings(BaseSettings):
         validation_alias="CORS_ORIGINS"
     )
 
-    # Security
+    # Security - Hosts permitidos para TrustedHostMiddleware
+    # Em produção, inclui "*" para evitar problemas com proxy do DigitalOcean
     allowed_hosts: List[str] = Field(
         default=["localhost", "127.0.0.1"],
         validation_alias="ALLOWED_HOSTS"
     )
+
+    @field_validator('cors_origins', 'allowed_hosts', mode='before')
+    @classmethod
+    def parse_json_list(cls, v: Any) -> List[str]:
+        """Parse JSON string to list if needed (for environment variables)"""
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                # Se não é JSON válido, trata como valor único
+                return [v]
+        return v
 
     # Rate limiting
     rate_limit_per_minute: int = Field(default=100, validation_alias="RATE_LIMIT_PER_MINUTE")

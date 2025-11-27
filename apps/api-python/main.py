@@ -1,13 +1,16 @@
 """FastAPI main application - Entry point"""
 
+import os
 import structlog
 import json
 from datetime import datetime, date, timedelta
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# IMPORTANTE: Carregar .env apenas em desenvolvimento
+# Em produção (DigitalOcean), as variáveis vêm do App Platform Environment Variables
+if os.getenv("ENV", "development") != "production":
+    from dotenv import load_dotenv
+    load_dotenv()
 from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware

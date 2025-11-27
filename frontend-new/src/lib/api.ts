@@ -10,8 +10,6 @@ class ApiClient {
       ? `${import.meta.env.VITE_API_URL}/api/v1`
       : '/api/v1'
 
-    console.log('🔧 ApiClient: Using baseURL:', baseURL)
-
     this.instance = axios.create({
       baseURL,
       timeout: 180000, // 60 seconds timeout (increased from 30s for exchange account creation)
@@ -156,26 +154,18 @@ export const updatePositionSLTP = async (
   type: 'stopLoss' | 'takeProfit',
   price: number
 ): Promise<UpdateSLTPResponse> => {
-  console.log(`📝 Atualizando ${type} da posição ${positionId} para $${price.toFixed(2)}`)
-
-  // ✅ Gerar idempotency key
+  // Gerar idempotency key
   const idempotencyKey = generateIdempotencyKey(positionId, type, price)
 
-  try {
-    const response = await apiClient.getAxiosInstance().patch<UpdateSLTPResponse>(
-      `/orders/positions/${positionId}/sltp`,
-      { position_id: positionId, type, price },
-      {
-        headers: {
-          'X-Idempotency-Key': idempotencyKey
-        }
+  const response = await apiClient.getAxiosInstance().patch<UpdateSLTPResponse>(
+    `/orders/positions/${positionId}/sltp`,
+    { position_id: positionId, type, price },
+    {
+      headers: {
+        'X-Idempotency-Key': idempotencyKey
       }
-    )
+    }
+  )
 
-    console.log(`✅ ${type} atualizado com sucesso:`, response.data)
-    return response.data
-  } catch (error: any) {
-    console.error(`❌ Erro ao atualizar ${type}:`, error)
-    throw error
-  }
+  return response.data
 }

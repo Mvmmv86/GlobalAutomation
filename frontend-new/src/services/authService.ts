@@ -7,15 +7,10 @@ class AuthService {
     const baseURL = import.meta.env.VITE_API_URL || ''
     const fullUrl = baseURL ? `${baseURL}/api/v1/auth/login` : '/api/v1/auth/login'
 
-    console.log('🌐 AuthService: Making request to:', fullUrl)
-    console.log('📋 AuthService: Base URL:', baseURL)
-    console.log('📋 AuthService: Credentials:', { email: credentials.email, password: '***' })
-    
     try {
       // Criar AbortController para timeout
       const controller = new AbortController()
       const timeoutId = setTimeout(() => {
-        console.log('⏰ AuthService: Request timeout, aborting...')
         controller.abort()
       }, 30000) // 30 segundos timeout
       
@@ -29,30 +24,22 @@ class AuthService {
       })
       
       clearTimeout(timeoutId)
-      
-      console.log('📊 AuthService: Response status:', response.status)
-      console.log('📊 AuthService: Response ok:', response.ok)
-      
+
       if (!response.ok) {
         const errorText = await response.text()
-        console.error('❌ AuthService: Error response:', errorText)
         throw new Error(`Login failed: ${response.status} ${errorText}`)
       }
-      
-      const data = await response.json()
-      console.log('✅ AuthService: Success response:', data)
-      return data
-    } catch (error) {
-      console.error('❌ AuthService: Exception:', error)
-      
+
+      return await response.json()
+    } catch (error: any) {
       if (error.name === 'AbortError') {
         throw new Error('Login request timed out')
       }
-      
+
       if (error instanceof TypeError && error.message.includes('fetch')) {
         throw new Error('Network error - unable to connect to server')
       }
-      
+
       throw error
     }
   }

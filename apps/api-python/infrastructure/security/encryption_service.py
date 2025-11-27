@@ -50,24 +50,28 @@ class EncryptionService:
         return key
 
     def _create_fernet_cipher(self) -> Fernet:
-        """Create Fernet cipher from master key"""
+        """Create Fernet cipher from master key
+
+        SECURITY FIX: Only accepts valid 44-character Fernet keys.
+        Using PBKDF2 with fixed salt was a security vulnerability.
+        """
         try:
-            # If master key is already base64 encoded Fernet key, use directly
-            if len(self._master_key) == 44:  # Fernet key length
+            # Validate key length - must be 44 chars (valid Fernet base64 key)
+            if len(self._master_key) == 44:
+                # Valid Fernet key format (32 bytes base64 encoded = 44 chars)
                 key = self._master_key.encode()
+                return Fernet(key)
             else:
-                # Derive key from master key using PBKDF2
-                salt = b"stable_salt_for_api_keys"  # In production, use random salt per encryption
-                kdf = PBKDF2HMAC(
-                    algorithm=hashes.SHA256(),
-                    length=32,
-                    salt=salt,
-                    iterations=100000,
+                # SECURITY: Reject keys that are not valid Fernet format
+                # Previously used PBKDF2 with fixed salt which was insecure
+                raise EncryptionError(
+                    f"Invalid ENCRYPTION_MASTER_KEY format. "
+                    f"Expected 44 characters (Fernet key), got {len(self._master_key)}. "
+                    f"Generate a new key with: python -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\""
                 )
-                key = base64.urlsafe_b64encode(kdf.derive(self._master_key.encode()))
 
-            return Fernet(key)
-
+        except EncryptionError:
+            raise
         except Exception as e:
             raise EncryptionError(f"Failed to create cipher: {str(e)}")
 

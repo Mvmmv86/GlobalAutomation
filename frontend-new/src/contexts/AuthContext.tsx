@@ -65,57 +65,34 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }
 
   const login = async (credentials: LoginRequest) => {
-    console.log('🔐 Starting login process...', credentials.email)
     setIsLoading(true)
     try {
-      console.log('📡 Calling authService.login...')
       const response = await authService.login(credentials)
-      console.log('✅ Login API response received:', response)
-      console.log('🔍 Response keys:', Object.keys(response))
-      
+
       // Verificar se temos os tokens na resposta
       const accessToken = (response as any).access_token || response.accessToken
       const refreshToken = (response as any).refresh_token || response.refreshToken
-      
-      console.log('🔑 Access token found:', !!accessToken)
-      console.log('🔄 Refresh token found:', !!refreshToken)
-      
+
       if (!accessToken) {
         throw new Error('No access token in response')
       }
-      
-      // Usar dados reais do getCurrentUser
-      console.log('👤 Getting user profile...')
+
+      // Salvar tokens
       localStorage.setItem('accessToken', accessToken)
-      localStorage.setItem('refreshToken', refreshToken)
-      
-      try {
-        const currentUser = await authService.getCurrentUser()
-        console.log('👤 User profile received:', currentUser)
-        setUser(currentUser)
-      } catch (userError) {
-        console.error('❌ Failed to get user profile:', userError)
-        // Fallback para user mock se getCurrentUser falhar
-        const mockUser: User = {
-          id: 'user_1',
-          email: credentials.email,
-          name: credentials.email.split('@')[0],
-          isActive: true,
-          isVerified: true,
-          totpEnabled: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-        setUser(mockUser)
+      if (refreshToken) {
+        localStorage.setItem('refreshToken', refreshToken)
       }
-      
-      console.log('💾 Login completed successfully')
+
+      // Buscar dados do usuário - OBRIGATÓRIO (sem fallback mock)
+      const currentUser = await authService.getCurrentUser()
+      setUser(currentUser)
     } catch (error: any) {
-      console.error('❌ Login failed:', error)
+      // Limpar tokens em caso de erro
+      localStorage.removeItem('accessToken')
+      localStorage.removeItem('refreshToken')
       throw new Error(error.message || 'Login failed')
     } finally {
       setIsLoading(false)
-      console.log('🏁 Login process completed')
     }
   }
 

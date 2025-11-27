@@ -1,4 +1,5 @@
 import api from '@/lib/api'
+import { logger } from '@/utils/logger'
 
 export interface BalanceAsset {
   asset: string
@@ -139,12 +140,10 @@ export const dashboardService = {
   // NEW: Get dashboard stats (positions count, orders today, orders 3 months)
   async getDashboardStats(): Promise<DashboardStats> {
     try {
-      console.log('📊 getDashboardStats: Fetching stats from main exchange...')
       const data = await api.get<DashboardStats>('/dashboard/stats')
-      console.log('✅ getDashboardStats: Data received:', data)
       return data
     } catch (error) {
-      console.error('❌ getDashboardStats: Error:', error)
+      logger.error('getDashboardStats error:', error)
       throw error
     }
   },
@@ -152,13 +151,10 @@ export const dashboardService = {
   // NEW: Get recent orders from exchange (last 7 days by default)
   async getRecentOrders(days: number = 7): Promise<RecentOrder[]> {
     try {
-      console.log(`📋 getRecentOrders: Fetching orders from last ${days} days...`)
-      // api.get() already extracts 'data' from {success: true, data: [...]} response
       const orders = await api.get<RecentOrder[]>(`/dashboard/recent-orders?days=${days}`)
-      console.log('✅ getRecentOrders: Data received:', orders)
       return Array.isArray(orders) ? orders : []
     } catch (error) {
-      console.error('❌ getRecentOrders: Error:', error)
+      logger.error('getRecentOrders error:', error)
       throw error
     }
   },
@@ -166,13 +162,10 @@ export const dashboardService = {
   // NEW: Get active positions from exchange in real-time
   async getActivePositions(): Promise<ActivePosition[]> {
     try {
-      console.log('🎯 getActivePositions: Fetching active positions from exchange...')
-      // api.get() already extracts 'data' from {success: true, data: [...]} response
       const positions = await api.get<ActivePosition[]>('/dashboard/active-positions')
-      console.log('✅ getActivePositions: Data received:', positions)
       return Array.isArray(positions) ? positions : []
     } catch (error) {
-      console.error('❌ getActivePositions: Error:', error)
+      logger.error('getActivePositions error:', error)
       throw error
     }
   },
@@ -185,33 +178,26 @@ export const dashboardService = {
     exchange_account_id?: string
   }): Promise<{ success: boolean; message: string; data?: any }> {
     try {
-      console.log('🔴 closePosition: Closing position...', params)
       const response = await api.post<{ success: boolean; message: string; data?: any }>(
         '/dashboard/close-position',
         params
       )
-      console.log('✅ closePosition: Position closed:', response)
       return response
     } catch (error) {
-      console.error('❌ closePosition: Error:', error)
+      logger.error('closePosition error:', error)
       throw error
     }
   },
 
   async getBalancesSummary(): Promise<BalanceData> {
     try {
-      console.log('🚀 getBalancesSummary: Making API call...')
       const data = await api.get<BalanceData>('/dashboard/balances')
-      console.log('📡 getBalancesSummary: Data received:', data)
-
       if (!data) {
         throw new Error('No data received from API')
       }
-
-      console.log('📊 getBalancesSummary: Returning:', data)
       return data
     } catch (error) {
-      console.error('❌ getBalancesSummary: Error:', error)
+      logger.error('getBalancesSummary error:', error)
       throw error
     }
   },
@@ -222,12 +208,10 @@ export const dashboardService = {
 
   async getSpotBalances(exchangeAccountId: string): Promise<SpotBalancesData> {
     try {
-      console.log(`💰 getSpotBalances: Fetching for account ${exchangeAccountId}`)
       const data = await api.get<SpotBalancesData>(`/dashboard/spot-balances/${exchangeAccountId}`)
-      console.log('✅ getSpotBalances: Data received:', data)
       return data
     } catch (error) {
-      console.error('❌ getSpotBalances: Error:', error)
+      logger.error('getSpotBalances error:', error)
       throw error
     }
   }

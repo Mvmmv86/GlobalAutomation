@@ -3,6 +3,8 @@
  * Ensures only one connection exists at a time and handles reconnection logic
  */
 
+import { logger } from '@/utils/logger'
+
 export interface WSMessage {
   type: 'connected' | 'ping' | 'order_update' | 'position_update' | 'balance_update' | 'subscribed'
   timestamp: string
@@ -33,7 +35,7 @@ class WebSocketManager {
   private lastConnectionTime: number = 0
 
   private constructor() {
-    console.log('🔌 WebSocketManager initialized')
+    logger.log('WebSocketManager initialized')
   }
 
   public static getInstance(): WebSocketManager {
@@ -62,25 +64,25 @@ class WebSocketManager {
     // Check if recently connected (within 2 seconds)
     const now = Date.now()
     if (now - this.lastConnectionTime < 2000) {
-      console.log('⚠️ Too soon since last connection attempt, skipping...')
+      logger.log('Too soon since last connection attempt, skipping...')
       return
     }
 
     // Prevent multiple simultaneous connection attempts
     if (this.isConnecting) {
-      console.log('⚠️ Connection already in progress, skipping...')
+      logger.log('Connection already in progress, skipping...')
       return
     }
 
     // If already connected with same userId, skip
     if (this.ws?.readyState === WebSocket.OPEN && this.userId === userId) {
-      console.log('✅ Already connected with same userId')
+      logger.log('Already connected with same userId')
       return
     }
 
     // If connected with different userId, disconnect first
     if (this.ws?.readyState === WebSocket.OPEN && this.userId !== userId) {
-      console.log('🔄 Different userId, disconnecting and reconnecting...')
+      logger.log('Different userId, disconnecting and reconnecting...')
       this.disconnect()
     }
 
@@ -96,7 +98,7 @@ class WebSocketManager {
     const clientId = `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     this.currentUrl = `${protocol}//${host}${port}/api/v1/ws/notifications?user_id=${userId}&client_id=${clientId}`
 
-    console.log('🔌 Connecting to WebSocket:', this.currentUrl)
+    logger.log('Connecting to WebSocket:', this.currentUrl)
 
     try {
       this.ws = new WebSocket(this.currentUrl)
@@ -106,7 +108,7 @@ class WebSocketManager {
       this.ws.onerror = this.handleError.bind(this)
       this.ws.onclose = this.handleClose.bind(this)
     } catch (error) {
-      console.error('❌ Failed to create WebSocket:', error)
+      logger.error('Failed to create WebSocket:', error)
       this.isConnecting = false
       this.notifyConnectionHandlers(false)
     }
@@ -116,7 +118,7 @@ class WebSocketManager {
    * Disconnect from WebSocket server
    */
   public disconnect(): void {
-    console.log('🔌 Disconnecting WebSocket...')
+    logger.log('Disconnecting WebSocket...')
     this.isIntentionalClose = true
 
     // Clear all timers
@@ -152,7 +154,7 @@ class WebSocketManager {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     } else {
-      console.warn('⚠️ Cannot send message, WebSocket not connected')
+      logger.warn('Cannot send message, WebSocket not connected')
     }
   }
 
@@ -197,7 +199,7 @@ class WebSocketManager {
    * Handle WebSocket open event
    */
   private handleOpen(): void {
-    console.log('✅ WebSocket connection opened')
+    logger.log('WebSocket connection opened')
     this.isConnecting = false
     this.reconnectAttempts = 0
 
@@ -218,7 +220,7 @@ class WebSocketManager {
   private handleMessage(event: MessageEvent): void {
     try {
       const message: WSMessage = JSON.parse(event.data)
-      console.log('📡 WebSocket message received:', message.type)
+      logger.log('WebSocket message received:', message.type)
 
       // Handle ping-pong
       if (message.type === 'ping') {
@@ -230,11 +232,11 @@ class WebSocketManager {
         try {
           handler(message)
         } catch (error) {
-          console.error('Error in message handler:', error)
+          logger.error('Error in message handler:', error)
         }
       })
     } catch (error) {
-      console.error('❌ Error parsing WebSocket message:', error)
+      logger.error('Error parsing WebSocket message:', error)
     }
   }
 
@@ -242,7 +244,7 @@ class WebSocketManager {
    * Handle WebSocket error
    */
   private handleError(event: Event): void {
-    console.error('❌ WebSocket error:', event)
+    logger.error('WebSocket error:', event)
     this.isConnecting = false
   }
 
@@ -250,7 +252,7 @@ class WebSocketManager {
    * Handle WebSocket close event
    */
   private handleClose(event: CloseEvent): void {
-    console.log('🔌 WebSocket closed:', event.code, event.reason)
+    logger.log('WebSocket closed:', event.code, event.reason)
     this.isConnecting = false
 
     // Clear ping interval
@@ -265,7 +267,7 @@ class WebSocketManager {
     if (!this.isIntentionalClose && this.userId && this.reconnectAttempts < this.maxReconnectAttempts) {
       // More gradual exponential backoff: 5s, 10s, 20s
       const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) // Max 30s
-      console.log(`🔄 Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`)
+      logger.log(`Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`)
 
       this.reconnectTimer = setTimeout(() => {
         this.reconnectAttempts++
@@ -275,7 +277,7 @@ class WebSocketManager {
         }
       }, delay)
     } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error(`❌ Max reconnection attempts reached (${this.maxReconnectAttempts})`)
+      logger.error(`Max reconnection attempts reached (${this.maxReconnectAttempts})`)
     }
   }
 
@@ -297,7 +299,7 @@ class WebSocketManager {
       try {
         handler(isConnected)
       } catch (error) {
-        console.error('Error in connection handler:', error)
+        logger.error('Error in connection handler:', error)
       }
     })
   }

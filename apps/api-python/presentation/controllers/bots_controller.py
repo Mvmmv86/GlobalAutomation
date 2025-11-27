@@ -516,3 +516,49 @@ async def master_webhook(webhook_path: str, request: Request):
             exc_info=True
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# DEBUG ENDPOINT - Signal Execution Errors
+# ============================================================================
+
+@router.get("/debug/recent-errors")
+async def get_recent_signal_errors():
+    """
+    DEBUG: Get recent signal execution errors
+    Useful for troubleshooting failed bot executions
+    """
+    try:
+        executions = await transaction_db.fetch("""
+            SELECT
+                bse.id,
+                bse.signal_id,
+                bse.subscription_id,
+                bse.status,
+                bse.error_message,
+                bse.execution_time_ms,
+                bse.created_at,
+                bs.ticker,
+                bs.action,
+                b.name as bot_name,
+                ea.exchange,
+                ea.name as account_name,
+                u.email
+            FROM bot_signal_executions bse
+            LEFT JOIN bot_signals bs ON bse.signal_id = bs.id
+            LEFT JOIN bots b ON bs.bot_id = b.id
+            LEFT JOIN bot_subscriptions sub ON bse.subscription_id = sub.id
+            LEFT JOIN users u ON sub.user_id = u.id
+            LEFT JOIN exchange_accounts ea ON sub.exchange_account_id = ea.id
+            ORDER BY bse.created_at DESC
+            LIMIT 20
+        """)
+
+        return {
+            "success": True,
+            "data": [dict(e) for e in executions]
+        }
+
+    except Exception as e:
+        logger.error("Error getting recent signal errors", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

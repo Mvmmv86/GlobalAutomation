@@ -298,6 +298,7 @@ class BotBroadcastService:
                 )
                 await self._record_execution(
                     signal_id, subscription_id, user_id,
+                    subscription["exchange_account_id"],
                     "skipped", None, None, None,
                     risk_check["reason"], None
                 )
@@ -376,6 +377,10 @@ class BotBroadcastService:
                 entry_price = float(order_result.get("avgPrice", current_price))
                 executed_qty = float(order_result.get("executedQty", quantity))
 
+                # Wait for position to be registered on exchange before creating SL/TP
+                # BingX requires position to exist before placing stop orders
+                await asyncio.sleep(2)
+
                 # Calculate SL/TP prices
                 sl_tp_prices = self._calculate_sl_tp_prices(
                     action=action.lower(),
@@ -422,6 +427,7 @@ class BotBroadcastService:
 
             await self._record_execution(
                 signal_id, subscription_id, user_id,
+                subscription["exchange_account_id"],
                 "success", exchange_order_id, executed_price, executed_qty,
                 None, None, execution_time_ms,
                 sl_order_id, tp_order_id, sl_price, tp_price
@@ -462,6 +468,7 @@ class BotBroadcastService:
 
             await self._record_execution(
                 signal_id, subscription_id, user_id,
+                subscription["exchange_account_id"],
                 "failed", None, None, None,
                 str(e), None, execution_time_ms,
                 None, None, None, None  # No SL/TP for failed orders
@@ -528,6 +535,11 @@ class BotBroadcastService:
         Returns:
             Dict with "stop_loss" and "take_profit" prices
         """
+        # Convert to float to avoid Decimal/float type errors
+        entry_price = float(entry_price)
+        stop_loss_pct = float(stop_loss_pct)
+        take_profit_pct = float(take_profit_pct)
+
         if action == "buy":
             # Long position
             sl_price = entry_price * (1 - stop_loss_pct / 100)
@@ -567,8 +579,9 @@ class BotBroadcastService:
         Returns:
             Dict with "sl_order_id" and "tp_order_id"
         """
-        # Determine exit side (opposite of entry)
+        # Determine exit side (opposite of entry) and position side for Hedge Mode
         exit_side = "SELL" if action == "buy" else "BUY"
+        position_side = "LONG" if action == "buy" else "SHORT"
 
         sl_order_id = None
         tp_order_id = None
@@ -579,14 +592,16 @@ class BotBroadcastService:
                 logger.info(
                     f"Creating Stop Loss order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
-                    sl_price=sl_price
+                    sl_price=sl_price,
+                    position_side=position_side
                 )
 
                 sl_result = await connector.create_stop_loss_order(
                     symbol=ticker,
                     side=exit_side,
                     quantity=quantity,
-                    stop_price=sl_price
+                    stop_price=sl_price,
+                    position_side=position_side  # Required for BingX Hedge Mode
                 )
 
                 if sl_result.get("success"):
@@ -617,14 +632,16 @@ class BotBroadcastService:
                 logger.info(
                     f"Creating Take Profit order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
-                    tp_price=tp_price
+                    tp_price=tp_price,
+                    position_side=position_side
                 )
 
                 tp_result = await connector.create_take_profit_order(
                     symbol=ticker,
                     side=exit_side,
                     quantity=quantity,
-                    stop_price=tp_price
+                    stop_price=tp_price,
+                    position_side=position_side  # Required for BingX Hedge Mode
                 )
 
                 if tp_result.get("success"):
@@ -659,6 +676,7 @@ class BotBroadcastService:
         signal_id: UUID,
         subscription_id: UUID,
         user_id: UUID,
+        exchange_account_id: UUID,
         status: str,
         exchange_order_id: Optional[str],
         executed_price: Optional[float],
@@ -674,15 +692,15 @@ class BotBroadcastService:
         """Record execution result in database including SL/TP orders"""
         await self.db.execute("""
             INSERT INTO bot_signal_executions (
-                signal_id, subscription_id, user_id, status,
+                signal_id, subscription_id, user_id, exchange_account_id, status,
                 exchange_order_id, executed_price, executed_quantity,
                 error_message, error_code, execution_time_ms,
                 stop_loss_order_id, take_profit_order_id,
                 stop_loss_price, take_profit_price,
                 created_at, completed_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
         """,
-            signal_id, subscription_id, user_id, status,
+            signal_id, subscription_id, user_id, exchange_account_id, status,
             exchange_order_id, executed_price, executed_quantity,
             error_message, error_code, execution_time_ms,
             sl_order_id, tp_order_id, sl_price, tp_price

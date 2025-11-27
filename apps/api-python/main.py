@@ -153,9 +153,12 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-    # Security middleware
-    if settings.environment == "production":
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    # Security middleware - TrustedHostMiddleware
+    # NOTA: Desabilitado em produção porque o DigitalOcean App Platform
+    # já faz validação de host e usa hosts internos que não conseguimos prever.
+    # O proxy reverso do DO já garante a segurança de host.
+    # if settings.environment == "production":
+    #     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
     # CORS middleware
     app.add_middleware(

@@ -426,6 +426,318 @@ async def invalidate_cache(symbol: Optional[str] = Query(None, description="Symb
     }
 
 
+# ============================================================================
+# SYMBOL DISCOVERY - Busca TODOS os símbolos disponíveis das exchanges
+# ============================================================================
+
+# Cache em memória para símbolos (evita chamadas repetidas às APIs)
+_symbols_cache = {
+    "binance_futures": {"data": [], "timestamp": 0},
+    "binance_spot": {"data": [], "timestamp": 0},
+    "bingx_futures": {"data": [], "timestamp": 0},
+    "bingx_spot": {"data": [], "timestamp": 0},
+}
+SYMBOLS_CACHE_TTL = 300  # 5 minutos
+
+
+async def fetch_binance_symbols(market_type: str = "futures") -> list:
+    """
+    Busca TODOS os símbolos da API PÚBLICA da Binance
+
+    Args:
+        market_type: "futures" ou "spot"
+
+    Returns:
+        Lista de símbolos (ex: ["BTCUSDT", "ETHUSDT", ...])
+    """
+    import time
+
+    cache_key = f"binance_{market_type}"
+
+    # Verificar cache
+    if _symbols_cache[cache_key]["data"]:
+        age = time.time() - _symbols_cache[cache_key]["timestamp"]
+        if age < SYMBOLS_CACHE_TTL:
+            logger.info(f"📦 Binance {market_type} symbols from cache ({len(_symbols_cache[cache_key]['data'])} symbols, age: {int(age)}s)")
+            return _symbols_cache[cache_key]["data"]
+
+    # URLs da Binance API pública
+    if market_type == "futures":
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    else:
+        url = "https://api.binance.com/api/v3/exchangeInfo"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status != 200:
+                    logger.error(f"Binance exchangeInfo error: {response.status}")
+                    return []
+
+                data = await response.json()
+                symbols_data = data.get("symbols", [])
+
+                # Filtrar apenas símbolos TRADING e terminados em USDT
+                symbols = []
+                for s in symbols_data:
+                    symbol = s.get("symbol", "")
+                    status = s.get("status", "")
+                    quote_asset = s.get("quoteAsset", "")
+
+                    # Apenas símbolos ativos com quote USDT
+                    if status == "TRADING" and quote_asset == "USDT":
+                        symbols.append({
+                            "symbol": symbol,
+                            "baseAsset": s.get("baseAsset", ""),
+                            "quoteAsset": quote_asset,
+                            "exchange": "binance",
+                            "marketType": market_type
+                        })
+
+                # Atualizar cache
+                _symbols_cache[cache_key] = {
+                    "data": symbols,
+                    "timestamp": time.time()
+                }
+
+                logger.info(f"✅ Binance {market_type}: {len(symbols)} símbolos USDT ativos")
+                return symbols
+
+    except Exception as e:
+        logger.error(f"❌ Erro buscando símbolos Binance {market_type}: {e}")
+        return []
+
+
+async def fetch_bingx_symbols(market_type: str = "futures") -> list:
+    """
+    Busca TODOS os símbolos da API PÚBLICA da BingX
+
+    Args:
+        market_type: "futures" ou "spot"
+
+    Returns:
+        Lista de símbolos
+    """
+    import time
+
+    cache_key = f"bingx_{market_type}"
+
+    # Verificar cache
+    if _symbols_cache[cache_key]["data"]:
+        age = time.time() - _symbols_cache[cache_key]["timestamp"]
+        if age < SYMBOLS_CACHE_TTL:
+            logger.info(f"📦 BingX {market_type} symbols from cache ({len(_symbols_cache[cache_key]['data'])} symbols, age: {int(age)}s)")
+            return _symbols_cache[cache_key]["data"]
+
+    # URLs da BingX API pública
+    base_url = "https://open-api.bingx.com"
+    if market_type == "futures":
+        url = f"{base_url}/openApi/swap/v2/quote/contracts"
+    else:
+        url = f"{base_url}/openApi/spot/v1/common/symbols"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status != 200:
+                    logger.error(f"BingX API error: {response.status}")
+                    return []
+
+                data = await response.json()
+
+                if data.get("code") != 0:
+                    logger.error(f"BingX API error: {data.get('msg')}")
+                    return []
+
+                symbols = []
+
+                if market_type == "futures":
+                    # Futures: data é uma lista direta
+                    contracts = data.get("data", [])
+                    for c in contracts:
+                        symbol_bingx = c.get("symbol", "")  # Ex: "BTC-USDT"
+                        # Converter para formato padrão (BTCUSDT)
+                        symbol_standard = symbol_bingx.replace("-", "")
+
+                        if symbol_standard.endswith("USDT"):
+                            symbols.append({
+                                "symbol": symbol_standard,
+                                "symbolBingX": symbol_bingx,
+                                "baseAsset": symbol_standard.replace("USDT", ""),
+                                "quoteAsset": "USDT",
+                                "exchange": "bingx",
+                                "marketType": market_type
+                            })
+                else:
+                    # Spot: data.symbols é a lista
+                    spot_symbols = data.get("data", {}).get("symbols", [])
+                    for s in spot_symbols:
+                        symbol_bingx = s.get("symbol", "")  # Ex: "BTC-USDT"
+                        symbol_standard = symbol_bingx.replace("-", "")
+
+                        if symbol_standard.endswith("USDT"):
+                            symbols.append({
+                                "symbol": symbol_standard,
+                                "symbolBingX": symbol_bingx,
+                                "baseAsset": s.get("baseAsset", symbol_standard.replace("USDT", "")),
+                                "quoteAsset": "USDT",
+                                "exchange": "bingx",
+                                "marketType": market_type
+                            })
+
+                # Atualizar cache
+                _symbols_cache[cache_key] = {
+                    "data": symbols,
+                    "timestamp": time.time()
+                }
+
+                logger.info(f"✅ BingX {market_type}: {len(symbols)} símbolos USDT")
+                return symbols
+
+    except Exception as e:
+        logger.error(f"❌ Erro buscando símbolos BingX {market_type}: {e}")
+        return []
+
+
+@router.get("/symbols")
+async def get_all_symbols(
+    exchange: Optional[str] = Query(None, description="Exchange filter: binance, bingx, or all (default)"),
+    market_type: Optional[str] = Query("futures", description="Market type: futures, spot, or all"),
+    search: Optional[str] = Query(None, description="Search filter (ex: BTC, ETH)")
+):
+    """
+    Busca TODOS os símbolos disponíveis das exchanges (API PÚBLICA - sem autenticação)
+
+    **Exchanges suportadas:**
+    - Binance: ~400 contratos futures, ~2000 pares spot
+    - BingX: ~200 contratos futures, ~500 pares spot
+
+    **Parâmetros:**
+    - exchange: Filtrar por exchange (binance, bingx, ou all)
+    - market_type: Tipo de mercado (futures, spot, ou all)
+    - search: Filtro de busca por nome do ativo
+
+    **Retorna:**
+    ```json
+    {
+      "success": true,
+      "count": 600,
+      "symbols": [
+        {"symbol": "BTCUSDT", "baseAsset": "BTC", "exchange": "binance", "marketType": "futures"},
+        ...
+      ]
+    }
+    ```
+    """
+    try:
+        all_symbols = []
+        tasks = []
+
+        # Determinar quais exchanges buscar
+        exchanges_to_fetch = []
+        if exchange is None or exchange == "all":
+            exchanges_to_fetch = ["binance", "bingx"]
+        else:
+            exchanges_to_fetch = [exchange.lower()]
+
+        # Determinar quais market types buscar
+        market_types_to_fetch = []
+        if market_type is None or market_type == "all":
+            market_types_to_fetch = ["futures", "spot"]
+        else:
+            market_types_to_fetch = [market_type.lower()]
+
+        # Criar tasks para buscar em paralelo
+        for ex in exchanges_to_fetch:
+            for mt in market_types_to_fetch:
+                if ex == "binance":
+                    tasks.append(fetch_binance_symbols(mt))
+                elif ex == "bingx":
+                    tasks.append(fetch_bingx_symbols(mt))
+
+        # Executar em paralelo
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Combinar resultados
+        seen_symbols = set()  # Para evitar duplicatas
+        for result in results:
+            if isinstance(result, list):
+                for s in result:
+                    symbol = s.get("symbol", "")
+                    # Criar chave única: symbol + exchange + marketType
+                    unique_key = f"{symbol}_{s.get('exchange')}_{s.get('marketType')}"
+                    if unique_key not in seen_symbols:
+                        seen_symbols.add(unique_key)
+                        all_symbols.append(s)
+
+        # Aplicar filtro de busca
+        if search:
+            search_upper = search.upper()
+            all_symbols = [
+                s for s in all_symbols
+                if search_upper in s.get("symbol", "") or search_upper in s.get("baseAsset", "")
+            ]
+
+        # Ordenar por symbol
+        all_symbols.sort(key=lambda x: x.get("symbol", ""))
+
+        logger.info(f"📊 Retornando {len(all_symbols)} símbolos (exchange={exchange}, market_type={market_type}, search={search})")
+
+        return {
+            "success": True,
+            "count": len(all_symbols),
+            "filters": {
+                "exchange": exchange or "all",
+                "market_type": market_type or "futures",
+                "search": search
+            },
+            "symbols": all_symbols
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro buscando símbolos: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching symbols: {str(e)}"
+        )
+
+
+@router.get("/symbols/popular")
+async def get_popular_symbols():
+    """
+    Retorna lista curada de símbolos populares para quick access
+    Útil para mostrar sugestões rápidas no frontend
+    """
+    popular = [
+        {"symbol": "BTCUSDT", "name": "Bitcoin", "rank": 1},
+        {"symbol": "ETHUSDT", "name": "Ethereum", "rank": 2},
+        {"symbol": "BNBUSDT", "name": "BNB", "rank": 3},
+        {"symbol": "SOLUSDT", "name": "Solana", "rank": 4},
+        {"symbol": "XRPUSDT", "name": "XRP", "rank": 5},
+        {"symbol": "ADAUSDT", "name": "Cardano", "rank": 6},
+        {"symbol": "DOGEUSDT", "name": "Dogecoin", "rank": 7},
+        {"symbol": "AVAXUSDT", "name": "Avalanche", "rank": 8},
+        {"symbol": "DOTUSDT", "name": "Polkadot", "rank": 9},
+        {"symbol": "MATICUSDT", "name": "Polygon", "rank": 10},
+        {"symbol": "LINKUSDT", "name": "Chainlink", "rank": 11},
+        {"symbol": "ATOMUSDT", "name": "Cosmos", "rank": 12},
+        {"symbol": "LTCUSDT", "name": "Litecoin", "rank": 13},
+        {"symbol": "NEARUSDT", "name": "NEAR Protocol", "rank": 14},
+        {"symbol": "UNIUSDT", "name": "Uniswap", "rank": 15},
+        {"symbol": "APTUSDT", "name": "Aptos", "rank": 16},
+        {"symbol": "ARBUSDT", "name": "Arbitrum", "rank": 17},
+        {"symbol": "OPUSDT", "name": "Optimism", "rank": 18},
+        {"symbol": "INJUSDT", "name": "Injective", "rank": 19},
+        {"symbol": "SUIUSDT", "name": "Sui", "rank": 20},
+    ]
+
+    return {
+        "success": True,
+        "count": len(popular),
+        "symbols": popular
+    }
+
+
 @router.get("/validate-symbol")
 async def validate_symbol(
     symbol: str = Query(..., description="Symbol to validate (ex: BTCUSDT)"),

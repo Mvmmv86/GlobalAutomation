@@ -189,8 +189,7 @@ def create_positions_router() -> APIRouter:
 
                         if closed_result['success']:
                             for pos in closed_result['closed_positions']:
-                                # Converter timestamp de ms para datetime
-                                from datetime import datetime
+                                # Converter timestamp de ms para datetime (usando datetime já importado no topo)
                                 closed_from_api.append({
                                     "id": f"api_{pos['symbol']}_{pos['entry_time']}",  # ID temporário
                                     "external_id": None,

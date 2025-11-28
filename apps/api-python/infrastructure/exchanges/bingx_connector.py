@@ -818,19 +818,28 @@ class BingXConnector:
             await self._sync_time()
 
             # Determine position side
-            # Se position_side foi fornecido explicitamente, usar ele (necessário para SL/TP)
-            # Senão, calcular baseado no side (para ordens de abertura)
-            if position_side is None:
-                position_side = "LONG" if side == "BUY" else "SHORT"
-            else:
+            # IMPORTANTE: Para One-Way Mode, position_side deve ficar como None
+            # Para Hedge Mode, position_side é obrigatório
+            use_position_side = False
+            if position_side is not None:
                 position_side = position_side.upper()  # Garantir uppercase
+                use_position_side = True
+
+            # Se position_side não foi fornecido, calcular baseado no side
+            # MAS só adicionar ao request se estivermos em Hedge Mode
+            calculated_position_side = position_side if position_side else ("LONG" if side == "BUY" else "SHORT")
 
             # BingX API v2: Construir parâmetros na ordem exata
             # Baseado em exemplos funcionais da documentação
             params = {}
             params["symbol"] = symbol_bingx
             params["side"] = side
-            params["positionSide"] = position_side
+
+            # Em One-Way Mode: NÃO adicionar positionSide
+            # Em Hedge Mode: positionSide é OBRIGATÓRIO
+            if use_position_side:
+                params["positionSide"] = position_side
+
             params["type"] = order_type.upper()
 
             # BingX API v2 expects STRING values for numeric parameters!
@@ -853,9 +862,10 @@ class BingXConnector:
             # IMPORTANTE: Em Hedge Mode (quando positionSide é especificado),
             # NÃO podemos usar reduceOnly - a BingX retorna erro 109400
             # "In the Hedge mode, the 'ReduceOnly' field can not be filled."
-            # reduceOnly só funciona em One-Way Mode
-            if reduce_only and not position_side:
+            # reduceOnly só funciona em One-Way Mode (quando use_position_side é False)
+            if reduce_only and not use_position_side:
                 params["reduceOnly"] = "true"
+                logger.info(f"📤 BingX One-Way Mode: Adicionando reduceOnly=true para garantir fechamento")
 
             # Add stop loss and take profit if provided
             if stop_loss:
@@ -870,8 +880,9 @@ class BingXConnector:
             logger.info(f"   Symbol (BingX format): {params['symbol']}")
             logger.info(f"   Side: {params['side']}")
             logger.info(f"   Type: {params['type']}")
-            logger.info(f"   Position Side: {params['positionSide']}")
+            logger.info(f"   Position Side: {params.get('positionSide', 'N/A (One-Way Mode)')}")
             logger.info(f"   Quantity: {params['quantity']} (type: {type(params['quantity']).__name__})")
+            logger.info(f"   reduceOnly: {params.get('reduceOnly', 'N/A')}")
             if 'price' in params:
                 logger.info(f"   Price: {params['price']} (type: {type(params['price']).__name__})")
 
@@ -914,6 +925,199 @@ class BingXConnector:
 
         except Exception as e:
             logger.error(f"Error creating BingX futures order: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def close_position(
+        self,
+        symbol: str,
+        position_side: str = None,  # "LONG" or "SHORT" - se None, fecha todas do símbolo
+    ) -> Dict[str, Any]:
+        """
+        Close position(s) using BingX's One-Click Close All Positions endpoint.
+
+        Este endpoint é mais confiável que criar ordem manual pois:
+        1. Não precisa de quantidade (fecha tudo automaticamente)
+        2. Funciona em Hedge Mode sem problemas de reduceOnly
+        3. Fecha a posição exata que existe na exchange
+
+        Args:
+            symbol: Trading pair (e.g., "BTCUSDT" or "BTC-USDT")
+            position_side: "LONG" or "SHORT" (opcional, se não fornecido fecha todas)
+
+        Returns:
+            Dict com success, order_id, etc.
+        """
+        try:
+            symbol_bingx = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
+
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "order_id": f"demo_close_{symbol}_{int(time.time())}",
+                    "symbol": symbol_bingx,
+                    "message": "Position closed (demo mode)"
+                }
+
+            # Sincronizar tempo
+            await self._sync_time()
+
+            # Parâmetros do endpoint closeAllPositions
+            params = {
+                "symbol": symbol_bingx,
+            }
+
+            # Se position_side fornecido, adicionar (necessário para Hedge Mode)
+            if position_side:
+                params["positionSide"] = position_side.upper()
+
+            logger.info(f"📤 BingX Close Position - Symbol: {symbol_bingx}, PositionSide: {position_side}")
+
+            result = await self._make_request(
+                "POST",
+                "/openApi/swap/v2/trade/closeAllPositions",
+                params,
+                signed=True,
+                use_body=True
+            )
+
+            logger.info(f"📥 BingX Close Position Result: {result}")
+
+            if result.get("code") == 0:
+                data = result.get("data", {})
+                return {
+                    "success": True,
+                    "demo": False,
+                    "order_id": str(data.get("orderId", f"close_{int(time.time())}")),
+                    "symbol": symbol,
+                    "message": "Position closed successfully",
+                    "raw_response": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("msg", "Unknown error"),
+                    "code": result.get("code")
+                }
+
+        except Exception as e:
+            logger.error(f"Error closing BingX position: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_position_mode(self) -> Dict[str, Any]:
+        """
+        Get current position mode (Hedge Mode or One-Way Mode).
+
+        Returns:
+            Dict with:
+            - success: bool
+            - dualSidePosition: bool (True = Hedge Mode, False = One-Way Mode)
+            - mode: str ("HEDGE" or "ONE_WAY")
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "dualSidePosition": True,
+                    "mode": "HEDGE"
+                }
+
+            await self._sync_time()
+
+            result = await self._make_request(
+                "GET",
+                "/openApi/swap/v2/trade/positionMode",
+                {},
+                signed=True
+            )
+
+            logger.info(f"📊 BingX Position Mode Result: {result}")
+
+            if result.get("code") == 0:
+                data = result.get("data", {})
+                dual_side = data.get("dualSidePosition", False)
+                return {
+                    "success": True,
+                    "dualSidePosition": dual_side,
+                    "mode": "HEDGE" if dual_side else "ONE_WAY",
+                    "raw_response": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("msg", "Unknown error"),
+                    "code": result.get("code")
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting BingX position mode: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def close_position_partial(
+        self,
+        symbol: str,
+        quantity: float,
+        position_side: str,  # "LONG" or "SHORT"
+    ) -> Dict[str, Any]:
+        """
+        Close partial position by creating a counter order.
+
+        Para fechamento PARCIAL, precisamos criar uma ordem de mercado oposta:
+        - Para fechar LONG parcial: SELL com positionSide=LONG
+        - Para fechar SHORT parcial: BUY com positionSide=SHORT
+
+        IMPORTANTE: Consulta o modo da conta (Hedge/One-Way) ANTES de executar
+        e usa os parâmetros corretos para cada modo.
+
+        Args:
+            symbol: Trading pair (e.g., "BTCUSDT")
+            quantity: Amount to close
+            position_side: "LONG" or "SHORT"
+
+        Returns:
+            Dict com success, order_id, etc.
+        """
+        try:
+            # Determinar o side oposto para fechar
+            close_side = "SELL" if position_side.upper() == "LONG" else "BUY"
+
+            # 1. CONSULTAR O MODO DA CONTA PRIMEIRO
+            position_mode = await self.get_position_mode()
+            is_hedge_mode = position_mode.get("dualSidePosition", True)  # Default Hedge Mode se falhar
+            mode_name = "HEDGE" if is_hedge_mode else "ONE-WAY"
+
+            logger.info(f"📤 BingX Close Partial - Symbol: {symbol}, Qty: {quantity}, Side: {close_side}, PositionSide: {position_side}")
+            logger.info(f"📊 BingX Account Mode: {mode_name} (dualSidePosition={is_hedge_mode})")
+
+            # 2. USAR PARÂMETROS CORRETOS BASEADO NO MODO
+            if is_hedge_mode:
+                # HEDGE MODE: usar positionSide, SEM reduceOnly
+                logger.info(f"🔄 BingX Hedge Mode: Usando positionSide={position_side}, reduceOnly=False")
+                result = await self.create_futures_order(
+                    symbol=symbol,
+                    side=close_side,
+                    order_type="MARKET",
+                    quantity=quantity,
+                    reduce_only=False,  # BingX não aceita reduceOnly em Hedge Mode
+                    position_side=position_side.upper()  # OBRIGATÓRIO em Hedge Mode
+                )
+            else:
+                # ONE-WAY MODE: usar reduceOnly=True, SEM positionSide
+                logger.info(f"🔄 BingX One-Way Mode: Usando reduceOnly=True, sem positionSide")
+                result = await self.create_futures_order(
+                    symbol=symbol,
+                    side=close_side,
+                    order_type="MARKET",
+                    quantity=quantity,
+                    reduce_only=True,  # OBRIGATÓRIO em One-Way Mode
+                    position_side=None  # NÃO usar em One-Way Mode
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error closing partial BingX position: {e}")
             return {"success": False, "error": str(e)}
 
     async def set_leverage(

@@ -13,7 +13,8 @@ interface Position {
   id: string
   symbol: string
   side: 'LONG' | 'SHORT'
-  quantity: number
+  quantity?: number
+  size?: number  // API retorna 'size', alguns componentes usam 'quantity'
   entryPrice: number
   markPrice?: number
   unrealizedPnl?: number
@@ -71,11 +72,22 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
   const { pricesData, isConnected } = useRealTimePrices(openSymbols, openSymbols.length > 0)
 
   const formatPrice = (price: number) => {
+    // Calcular casas decimais ideais baseado no valor
+    const getDecimals = (val: number) => {
+      const abs = Math.abs(val)
+      if (abs === 0) return 2
+      if (abs >= 1000) return 2      // BTC, ETH
+      if (abs >= 1) return 4         // SOL, AVAX
+      if (abs >= 0.01) return 6      // Low cap
+      if (abs >= 0.0001) return 8    // Meme coins
+      return 10                      // Ultra low
+    }
+    const decimals = getDecimals(price)
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
       minimumFractionDigits: 2,
-      maximumFractionDigits: 2
+      maximumFractionDigits: decimals
     }).format(price)
   }
 
@@ -86,7 +98,8 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
 
   const calculatePnlPercentage = (position: Position, pnl: number): number => {
     // P&L % = (P&L / (Entry Price * Quantity)) * 100
-    const investmentValue = position.entryPrice * position.size
+    const qty = position.size || position.quantity || 0
+    const investmentValue = position.entryPrice * qty
     if (investmentValue === 0) return 0
     return (pnl / investmentValue) * 100
   }
@@ -128,7 +141,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
       } else if (position.exitPrice) {
         const direction = position.side.toUpperCase() === 'LONG' ? 1 : -1
         const priceDiff = position.exitPrice - position.entryPrice
-        return priceDiff * position.size * direction
+        return priceDiff * (position.size || position.quantity || 0) * direction
       }
       return 0
     }
@@ -140,7 +153,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
     // Cálculo P&L: (Preço Atual - Preço Entrada) × Quantidade × Direção
     const direction = position.side.toUpperCase() === 'LONG' ? 1 : -1
     const priceDiff = currentPrice - position.entryPrice
-    const unrealizedPnl = priceDiff * position.size * direction
+    const unrealizedPnl = priceDiff * (position.size || position.quantity || 0) * direction
 
     return unrealizedPnl
   }
@@ -381,7 +394,7 @@ export const PositionsCard: React.FC<PositionsCardProps> = ({
                           {position.side.toUpperCase()}
                         </Badge>
                       </td>
-                      <td className="px-2 py-1 text-right">{position.size}</td>
+                      <td className="px-2 py-1 text-right">{position.size || position.quantity || 0}</td>
                       <td className="px-2 py-1 text-right">{formatPrice(position.entryPrice)}</td>
 
                       {/* Preço atual ou de saída */}

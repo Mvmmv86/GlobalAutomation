@@ -7,7 +7,8 @@ interface Position {
   id: string
   symbol: string
   side: 'LONG' | 'SHORT'
-  quantity: number
+  quantity?: number
+  size?: number  // API retorna 'size', alguns componentes usam 'quantity'
   entryPrice: number
   markPrice?: number
   unrealizedPnl?: number
@@ -86,7 +87,7 @@ export const EditPositionModal: React.FC<EditPositionModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
       <Card className="w-full max-w-md bg-background border shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
@@ -129,7 +130,7 @@ export const EditPositionModal: React.FC<EditPositionModalProps> = ({
               </div>
               <div>
                 <span className="text-muted-foreground">Quantidade:</span>
-                <div className="font-medium">{position.quantity}</div>
+                <div className="font-medium">{position.size || position.quantity || 0}</div>
               </div>
               <div>
                 <span className="text-muted-foreground">P&L:</span>

@@ -306,7 +306,7 @@ const DashboardPage: React.FC = () => {
               {stats.totalPnL >= 0 ? '+' : ''}${Math.abs(stats.totalPnL).toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Futures + Spot realizado hoje
+              Futures + Spot
             </p>
           </CardContent>
         </Card>

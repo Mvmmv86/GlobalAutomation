@@ -14,6 +14,10 @@ from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.pricing.binance_price_service import BinancePriceService
+from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
+
+# Initialize trade tracker for detecting closed bot trades
+trade_tracker = BotTradeTrackerService(transaction_db)
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +44,87 @@ def create_sync_router() -> APIRouter:
             return round(unrealized_pnl, 4)
         except (ValueError, TypeError):
             return 0.0
+
+    async def _process_bot_trade_close(
+        account_id: str,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        size: float,
+        realized_pnl: float
+    ):
+        """
+        Process a closed position to check if it's from a bot subscription.
+        If so, record the trade and update subscription metrics.
+        """
+        try:
+            # Find if there's a bot subscription for this exchange account with a matching execution
+            subscription_info = await transaction_db.fetchrow("""
+                SELECT
+                    bs.id as subscription_id,
+                    bse.id as execution_id,
+                    bse.executed_price,
+                    bse.executed_quantity,
+                    bot_sig.action as side
+                FROM bot_subscriptions bs
+                INNER JOIN bot_signal_executions bse ON bse.subscription_id = bs.id
+                INNER JOIN bot_signals bot_sig ON bot_sig.id = bse.signal_id
+                WHERE bs.exchange_account_id = $1
+                  AND bot_sig.ticker = $2
+                  AND bse.status = 'success'
+                  AND bse.id NOT IN (
+                      SELECT signal_execution_id FROM bot_trades
+                      WHERE signal_execution_id IS NOT NULL
+                  )
+                ORDER BY bse.created_at DESC
+                LIMIT 1
+            """, account_id, symbol)
+
+            if not subscription_info:
+                logger.info(f"📊 Position {symbol} closed but not linked to any bot subscription")
+                return
+
+            subscription_id = subscription_info['subscription_id']
+            execution_id = subscription_info['execution_id']
+            trade_side = subscription_info['side'] or side
+            exec_entry_price = float(subscription_info['executed_price'] or entry_price)
+            exec_quantity = float(subscription_info['executed_quantity'] or size)
+
+            logger.info(f"🔔 Bot trade detected! Subscription: {subscription_id}, Symbol: {symbol}, P&L: {realized_pnl}")
+
+            # Determine if win or loss
+            is_win = realized_pnl >= 0
+            close_reason = "take_profit" if is_win else "stop_loss"
+
+            # Calculate exit price from P&L
+            if exec_quantity > 0 and exec_entry_price > 0:
+                if trade_side.lower() == "buy":
+                    exit_price = exec_entry_price + (realized_pnl / exec_quantity)
+                else:
+                    exit_price = exec_entry_price - (realized_pnl / exec_quantity)
+            else:
+                exit_price = exec_entry_price
+
+            # Record the trade using trade_tracker service
+            result = await trade_tracker.record_trade_close(
+                subscription_id=subscription_id,
+                signal_execution_id=execution_id,
+                ticker=symbol,
+                side=trade_side,
+                entry_price=exec_entry_price,
+                exit_price=exit_price,
+                quantity=exec_quantity,
+                pnl_usd=realized_pnl,
+                close_reason=close_reason
+            )
+
+            if result.get("success"):
+                logger.info(f"✅ Bot trade recorded: {symbol} P&L=${realized_pnl:.2f} {'WIN' if is_win else 'LOSS'}")
+            else:
+                logger.error(f"❌ Failed to record bot trade: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"Error processing bot trade close: {e}", exc_info=True)
 
     async def get_exchange_connector(account_id: str):
         """Get exchange connector for account"""
@@ -526,20 +611,38 @@ def create_sync_router() -> APIRouter:
             for position in positions:
                 try:
                     # Insert/update position in database
-                    # This is a simplified version - you may need to adjust based on your positions table schema
-                    # Check if position already exists
+                    # Determine side FIRST (needed for unique position lookup)
+                    #
+                    # BingX API pode retornar:
+                    # - One-Way Mode: positionSide = "BOTH", lado definido pelo sinal de positionAmt
+                    # - Hedge Mode: positionSide = "LONG" ou "SHORT"
+                    # Binance usa positionAmt com sinal (positivo = LONG, negativo = SHORT)
+                    size_amt = float(position.get('positionAmt', position.get('size', 0)))
+                    position_side = position.get('positionSide', '').upper()
+
+                    if position_side == 'BOTH':
+                        # ONE-WAY MODE: lado baseado no sinal de positionAmt
+                        # positionAmt > 0 = LONG, positionAmt < 0 = SHORT
+                        side = 'long' if size_amt > 0 else 'short'
+                        logger.info(f"📊 One-Way Mode: positionAmt={size_amt} → side={side}")
+                    elif position_side in ('LONG', 'SHORT'):
+                        # HEDGE MODE: usar positionSide diretamente
+                        side = position_side.lower()
+                    else:
+                        # Fallback para Binance (sem positionSide) - usar sinal do positionAmt
+                        side = 'long' if size_amt > 0 else 'short'
+
+                    # Check if position already exists (by symbol + side for Hedge Mode support)
                     existing = await transaction_db.fetchrow("""
-                        SELECT id FROM positions 
-                        WHERE symbol = $1 AND exchange_account_id = $2
-                    """, position.get('symbol', '').replace('-', ''), account_id)
-                    
+                        SELECT id FROM positions
+                        WHERE symbol = $1 AND exchange_account_id = $2 AND side = $3
+                    """, position.get('symbol', '').replace('-', ''), account_id, side)
+
                     if existing:
                         # Update existing position (set status='open' since API returned it)
-                        # BingX FUTURES uses: avgPrice, positionAmt, unrealizedProfit
-                        # Binance FUTURES uses: entryPrice, positionAmt, unrealizedProfit
+                        # BingX FUTURES uses: avgPrice, positionAmt, unrealizedProfit, positionSide
+                        # Binance FUTURES uses: entryPrice, positionAmt (signed), unrealizedProfit
                         entry_price = float(position.get('avgPrice', position.get('entryPrice', position.get('averageOpenPrice', 0))))
-                        size_amt = float(position.get('positionAmt', position.get('size', 0)))
-                        side = 'long' if size_amt > 0 else 'short'
                         mark_price = float(position.get('markPrice', 0)) if position.get('markPrice') else None
                         unrealized_pnl = float(position.get('unrealizedProfit', position.get('unRealizedProfit', 0)))
 
@@ -562,22 +665,22 @@ def create_sync_router() -> APIRouter:
                         existing['id']
                         )
                     else:
-                        # Insert new position
+                        # Insert new position (side already calculated at top of loop)
                         await transaction_db.execute("""
                             INSERT INTO positions (
                                 symbol, side, size, entry_price, mark_price,
                                 unrealized_pnl, realized_pnl, initial_margin, maintenance_margin,
-                                leverage, liquidation_price, bankruptcy_price, opened_at, 
+                                leverage, liquidation_price, bankruptcy_price, opened_at,
                                 last_update_at, total_fees, funding_fees, exchange_account_id,
                                 status, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                         """,
                     position.get('symbol', '').replace('-', ''),
-                    'long' if float(position.get('positionAmt', position.get('size', 0))) > 0 else 'short',
+                    side,
                     abs(float(position.get('size', position.get('positionAmt', 0)))),
-                    float(position.get('entryPrice', position.get('averageOpenPrice', 0))) if position.get('entryPrice', position.get('averageOpenPrice')) else 0,
+                    float(position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice', 0)))) if position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice'))) else 0,
                     float(position.get('markPrice', 0)) if position.get('markPrice') else None,
-                    _calculate_unrealized_pnl(position, 'long' if float(position.get('positionAmt', position.get('size', 0))) > 0 else 'short'),
+                    _calculate_unrealized_pnl(position, side),
                     0.0,  # realized_pnl
                     0.0,  # initial_margin  
                     0.0,  # maintenance_margin
@@ -621,6 +724,13 @@ def create_sync_router() -> APIRouter:
                 if db_position['symbol'] not in binance_symbols:
                     # Check if position is old enough to be considered stale
                     if db_position['updated_at'] < cutoff_time:
+                        # Get full position details before closing
+                        full_position = await transaction_db.fetchrow("""
+                            SELECT id, symbol, side, size, entry_price, unrealized_pnl
+                            FROM positions
+                            WHERE exchange_account_id = $1 AND symbol = $2 AND status = 'open'
+                        """, account_id, db_position['symbol'])
+
                         # This position hasn't been seen for a while - close it
                         await transaction_db.execute("""
                             UPDATE positions SET
@@ -631,6 +741,17 @@ def create_sync_router() -> APIRouter:
 
                         closed_count += 1
                         logger.info(f"🗑️ Closed stale position: {db_position['symbol']} (not updated for >5min)")
+
+                        # 🔔 DETECT BOT TRADE CLOSE: Check if this position was from a bot subscription
+                        if full_position:
+                            await _process_bot_trade_close(
+                                account_id=account_id,
+                                symbol=full_position['symbol'],
+                                side=full_position['side'],
+                                entry_price=float(full_position['entry_price'] or 0),
+                                size=float(full_position['size'] or 0),
+                                realized_pnl=float(full_position['unrealized_pnl'] or 0)
+                            )
                     else:
                         logger.info(f"⏳ Position {db_position['symbol']} not in Binance response but recently updated - keeping open")
 

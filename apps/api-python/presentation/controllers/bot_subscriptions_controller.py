@@ -467,6 +467,7 @@ async def get_subscription_performance(
     """
     Get performance metrics and P&L history for a subscription.
     Used for charts in the BotDetailsModal.
+    ALL statistics are filtered by the date range (days parameter).
     """
     try:
         # Verify subscription exists and belongs to user
@@ -479,6 +480,8 @@ async def get_subscription_performance(
                 bs.loss_count,
                 bs.total_signals_received,
                 bs.total_orders_executed,
+                bs.current_positions,
+                bs.max_concurrent_positions,
                 bs.created_at,
                 b.name as bot_name
             FROM bot_subscriptions bs
@@ -492,6 +495,80 @@ async def get_subscription_performance(
         # Calculate date range
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
+
+        # =====================================================
+        # FILTERED STATISTICS - Based on date range (days)
+        # =====================================================
+
+        # Get filtered signals count from bot_signal_executions
+        # Signals = unique signals received for this subscription
+        # Trades = total executions (orders placed)
+        filtered_signals = await transaction_db.fetchrow("""
+            SELECT
+                COUNT(DISTINCT bse.signal_id) as signals_count,
+                COUNT(*) as total_executions,
+                COUNT(*) FILTER (WHERE bse.status = 'success') as executed_count,
+                COUNT(*) FILTER (WHERE bse.status = 'failed') as failed_count
+            FROM bot_signal_executions bse
+            WHERE bse.subscription_id = $1
+                AND bse.created_at >= $2
+        """, subscription_id, start_date)
+
+        # Try to get from bot_trades first (if populated)
+        filtered_trades = await transaction_db.fetchrow("""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE is_winner = true) as wins,
+                COUNT(*) FILTER (WHERE is_winner = false) as losses,
+                COALESCE(SUM(pnl_usd), 0) as total_pnl
+            FROM bot_trades
+            WHERE subscription_id = $1
+                AND status = 'closed'
+                AND exit_time >= $2
+        """, subscription_id, start_date)
+
+        # Get ALL trades count from bot_trades (open + closed)
+        all_trades_count = await transaction_db.fetchrow("""
+            SELECT
+                COUNT(*) as total_all_trades,
+                COUNT(*) FILTER (WHERE status = 'open') as open_trades,
+                COUNT(*) FILTER (WHERE status = 'closed') as closed_trades
+            FROM bot_trades
+            WHERE subscription_id = $1
+                AND entry_time >= $2
+        """, subscription_id, start_date)
+
+        # FALLBACK: If bot_trades is empty, use bot_signal_executions as "trades"
+        # Each successful execution = 1 trade
+        bot_trades_count = all_trades_count["total_all_trades"] or 0 if all_trades_count else 0
+        use_executions_as_trades = bot_trades_count == 0
+
+        # Calculate filtered statistics
+        filtered_signals_count = filtered_signals["signals_count"] or 0 if filtered_signals else 0
+        filtered_executed_count = filtered_signals["executed_count"] or 0 if filtered_signals else 0
+        total_executions = filtered_signals["total_executions"] or 0 if filtered_signals else 0
+
+        if use_executions_as_trades:
+            # FALLBACK MODE: bot_trades is empty, use executions as trades
+            # In this case, each successful execution = 1 trade (position opened)
+            # We don't have win/loss data yet because trades aren't being tracked to bot_trades
+            filtered_total_trades = filtered_executed_count  # Successful executions = trades
+            filtered_wins = subscription["win_count"] or 0  # Use subscription's stored values
+            filtered_losses = subscription["loss_count"] or 0
+            filtered_closed_trades = filtered_wins + filtered_losses
+            filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
+            filtered_pnl = float(subscription["total_pnl_usd"] or 0)  # Use subscription's stored P&L
+            open_trades_count = 0  # Can't determine from executions alone
+            logger.info(f"Using bot_signal_executions as trades source (bot_trades empty). Total trades: {filtered_total_trades}")
+        else:
+            # NORMAL MODE: bot_trades has data
+            filtered_wins = filtered_trades["wins"] or 0 if filtered_trades else 0
+            filtered_losses = filtered_trades["losses"] or 0 if filtered_trades else 0
+            filtered_closed_trades = filtered_wins + filtered_losses
+            filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
+            filtered_pnl = float(filtered_trades["total_pnl"] or 0) if filtered_trades else 0
+            filtered_total_trades = all_trades_count["total_all_trades"] or 0 if all_trades_count else 0
+            open_trades_count = all_trades_count["open_trades"] or 0 if all_trades_count else 0
 
         # Try to get P&L history from bot_pnl_history table
         pnl_history = []
@@ -529,34 +606,38 @@ async def get_subscription_performance(
             # Table may not exist yet, generate mock data for demo
             logger.warning(f"Could not fetch P&L history: {e}")
 
-        # If no history data, generate sample data from executions or empty
+        # If no history data, build from actual bot_trades table
         if not pnl_history:
-            # Try to build history from executions
             try:
-                executions = await transaction_db.fetch("""
+                # Get closed trades grouped by date with REAL P&L values
+                trades_by_date = await transaction_db.fetch("""
                     SELECT
-                        DATE(bse.created_at) as exec_date,
-                        COUNT(*) as trades,
-                        SUM(CASE WHEN bse.status = 'success' THEN 1 ELSE 0 END) as wins
-                    FROM bot_signal_executions bse
-                    WHERE bse.subscription_id = $1
-                        AND bse.created_at >= $2
-                    GROUP BY DATE(bse.created_at)
-                    ORDER BY exec_date ASC
+                        DATE(exit_time) as trade_date,
+                        SUM(pnl_usd) as daily_pnl,
+                        COUNT(*) as daily_trades,
+                        SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
+                        SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
+                    FROM bot_trades
+                    WHERE subscription_id = $1
+                        AND status = 'closed'
+                        AND exit_time >= $2
+                    GROUP BY DATE(exit_time)
+                    ORDER BY trade_date ASC
                 """, subscription_id, start_date)
 
                 cumulative_pnl = 0
+                cumulative_trades = 0
                 cumulative_wins = 0
                 cumulative_losses = 0
 
-                for exec_record in executions:
-                    # Simulate P&L based on wins (this is placeholder)
-                    # In production, this would come from actual closed trades
-                    daily_wins = exec_record["wins"] or 0
-                    daily_losses = (exec_record["trades"] or 0) - daily_wins
-                    daily_pnl = (daily_wins * 5) - (daily_losses * 3)  # Placeholder calculation
+                for trade_record in trades_by_date:
+                    daily_pnl = float(trade_record["daily_pnl"] or 0)
+                    daily_trades = trade_record["daily_trades"] or 0
+                    daily_wins = trade_record["daily_wins"] or 0
+                    daily_losses = trade_record["daily_losses"] or 0
 
                     cumulative_pnl += daily_pnl
+                    cumulative_trades += daily_trades
                     cumulative_wins += daily_wins
                     cumulative_losses += daily_losses
 
@@ -564,17 +645,22 @@ async def get_subscription_performance(
                     win_rate = (cumulative_wins / total_trades * 100) if total_trades > 0 else 0
 
                     pnl_history.append({
-                        "date": str(exec_record["exec_date"]),
-                        "daily_pnl": daily_pnl,
-                        "cumulative_pnl": cumulative_pnl,
+                        "date": str(trade_record["trade_date"]),
+                        "daily_pnl": round(daily_pnl, 2),
+                        "cumulative_pnl": round(cumulative_pnl, 2),
+                        "daily_trades": daily_trades,
+                        "cumulative_trades": cumulative_trades,
                         "daily_wins": daily_wins,
                         "daily_losses": daily_losses,
                         "cumulative_wins": cumulative_wins,
                         "cumulative_losses": cumulative_losses,
                         "win_rate": round(win_rate, 2)
                     })
+
+                logger.info(f"Built P&L history from {len(pnl_history)} days of bot_trades for subscription {subscription_id}")
+
             except Exception as e:
-                logger.warning(f"Could not build history from executions: {e}")
+                logger.warning(f"Could not build history from bot_trades: {e}")
 
         # If still no data, generate empty chart data with 0 values
         if not pnl_history:
@@ -585,6 +671,8 @@ async def get_subscription_performance(
                     "date": str(date),
                     "daily_pnl": 0,
                     "cumulative_pnl": 0,
+                    "daily_trades": 0,
+                    "cumulative_trades": 0,
                     "daily_wins": 0,
                     "daily_losses": 0,
                     "cumulative_wins": 0,
@@ -592,27 +680,141 @@ async def get_subscription_performance(
                     "win_rate": 0
                 })
 
-        # Calculate summary metrics
+        # Calculate summary metrics (ALL-TIME)
         total_wins = subscription["win_count"] or 0
         total_losses = subscription["loss_count"] or 0
-        total_trades = total_wins + total_losses
-        win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
+        total_trades_alltime = total_wins + total_losses
+        win_rate = (total_wins / total_trades_alltime * 100) if total_trades_alltime > 0 else 0
         total_pnl = float(subscription["total_pnl_usd"] or 0)
+
+        # Get REAL-TIME positions from exchange API for this bot's subscription
+        realtime_positions = 0
+        realtime_positions_data = []
+        try:
+            # Get exchange account linked to this subscription
+            # NOTE: Column is 'secret_key' in DB (not 'api_secret')
+            exchange_account = await transaction_db.fetchrow("""
+                SELECT ea.id, ea.exchange, ea.api_key, ea.secret_key, ea.testnet
+                FROM bot_subscriptions bs
+                INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
+                WHERE bs.id = $1
+            """, subscription_id)
+
+            if exchange_account:
+                # Fetch positions DIRECTLY from exchange API (not from empty bot_trades table)
+                exchange_type = exchange_account["exchange"].lower()
+                api_key = exchange_account["api_key"]
+                api_secret = exchange_account["secret_key"]  # Column is 'secret_key' in DB
+                is_testnet = exchange_account["testnet"] or False
+
+                if exchange_type == "bingx":
+                    from infrastructure.exchanges.bingx_connector import BingXConnector
+                    connector = BingXConnector(api_key=api_key, api_secret=api_secret, testnet=is_testnet)
+                    try:
+                        positions_result = await connector.get_futures_positions()
+                        if positions_result.get("success"):
+                            exchange_positions = positions_result.get("positions", [])
+                            realtime_positions = len(exchange_positions)
+                            realtime_positions_data = [
+                                {
+                                    "symbol": pos.get("symbol", "").replace("-", ""),
+                                    "side": "LONG" if float(pos.get("positionAmt", 0)) > 0 else "SHORT",
+                                    "entry_price": float(pos.get("avgPrice", pos.get("entryPrice", 0))),
+                                    "size": abs(float(pos.get("positionAmt", 0))),
+                                    "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
+                                    "mark_price": float(pos.get("markPrice", 0)),
+                                    "leverage": int(pos.get("leverage", 1)),
+                                    "liquidation_price": float(pos.get("liquidationPrice", 0))
+                                }
+                                for pos in exchange_positions
+                            ]
+                            logger.info(f"Fetched {realtime_positions} real-time positions from BingX for subscription {subscription_id}")
+                    finally:
+                        await connector.close()
+
+                elif exchange_type == "binance":
+                    from infrastructure.exchanges.binance_connector import BinanceConnector
+                    connector = BinanceConnector(api_key=api_key, api_secret=api_secret, testnet=is_testnet)
+                    try:
+                        positions_result = await connector.get_futures_positions()
+                        if positions_result.get("success"):
+                            exchange_positions = positions_result.get("positions", [])
+                            realtime_positions = len(exchange_positions)
+                            realtime_positions_data = [
+                                {
+                                    "symbol": pos.get("symbol", ""),
+                                    "side": pos.get("positionSide", "LONG"),
+                                    "entry_price": float(pos.get("entryPrice", 0)),
+                                    "size": abs(float(pos.get("positionAmt", 0))),
+                                    "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
+                                    "mark_price": float(pos.get("markPrice", 0)),
+                                    "leverage": int(pos.get("leverage", 1)),
+                                    "liquidation_price": float(pos.get("liquidationPrice", 0))
+                                }
+                                for pos in exchange_positions
+                            ]
+                            logger.info(f"Fetched {realtime_positions} real-time positions from Binance for subscription {subscription_id}")
+                    finally:
+                        await connector.close()
+                else:
+                    # Fallback to bot_trades table for other exchanges
+                    open_positions = await transaction_db.fetch("""
+                        SELECT symbol, side, entry_price, size, unrealized_pnl, entry_time
+                        FROM bot_trades
+                        WHERE subscription_id = $1 AND status = 'open'
+                        ORDER BY entry_time DESC
+                    """, subscription_id)
+                    realtime_positions = len(open_positions)
+                    realtime_positions_data = [
+                        {
+                            "symbol": pos["symbol"],
+                            "side": pos["side"],
+                            "entry_price": float(pos["entry_price"]) if pos["entry_price"] else 0,
+                            "size": float(pos["size"]) if pos["size"] else 0,
+                            "unrealized_pnl": float(pos["unrealized_pnl"]) if pos["unrealized_pnl"] else 0,
+                            "entry_time": pos["entry_time"].isoformat() if pos["entry_time"] else None
+                        }
+                        for pos in open_positions
+                    ]
+        except Exception as e:
+            logger.warning(f"Could not fetch real-time positions from exchange: {e}")
+            realtime_positions = subscription["current_positions"] or 0
 
         return {
             "success": True,
             "data": {
                 "subscription_id": subscription_id,
                 "bot_name": subscription["bot_name"],
-                "summary": {
-                    "total_pnl_usd": total_pnl,
+                "days_filter": days,
+                # FILTERED statistics based on date range (days parameter)
+                "filtered_summary": {
+                    "total_pnl_usd": round(filtered_pnl, 2),
+                    "win_rate": round(filtered_win_rate, 2),
+                    "total_wins": filtered_wins,
+                    "total_losses": filtered_losses,
+                    "total_trades": filtered_total_trades,  # ALL trades (open + closed)
+                    "closed_trades": filtered_closed_trades,  # Only closed trades
+                    "open_trades": open_trades_count,  # Currently open trades
+                    "total_signals": filtered_signals_count,
+                    "total_orders_executed": filtered_executed_count,
+                    "period_label": f"Ultimos {days} dias"
+                },
+                # ALL-TIME statistics (for reference)
+                "all_time_summary": {
+                    "total_pnl_usd": round(total_pnl, 2),
                     "win_rate": round(win_rate, 2),
                     "total_wins": total_wins,
                     "total_losses": total_losses,
-                    "total_trades": total_trades,
+                    "total_trades": total_trades_alltime,
                     "total_signals": subscription["total_signals_received"] or 0,
                     "total_orders_executed": subscription["total_orders_executed"] or 0,
                     "subscribed_at": subscription["created_at"].isoformat() if subscription["created_at"] else None
+                },
+                # Current state (REAL-TIME from exchange)
+                "current_state": {
+                    "current_positions": realtime_positions,
+                    "max_concurrent_positions": subscription["max_concurrent_positions"] or 3,
+                    "positions_data": realtime_positions_data  # Detailed position info
                 },
                 "pnl_history": pnl_history
             }

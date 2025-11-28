@@ -366,6 +366,85 @@ def create_dashboard_router() -> APIRouter:
                                 "exchange": exchange_name
                             })
                             logger.info(f"✅ FUTURES: ${futures_balance:.2f}")
+
+                            # Calculate SPOT P&L for BingX using order history
+                            logger.info("📊 Calculating BingX SPOT P&L from order history...")
+                            try:
+                                # Get all spot balances (individual assets like LINK, AERO, etc.)
+                                spot_balances_result = await connector.get_account_balances()
+                                if spot_balances_result.get('success'):
+                                    raw_balances = spot_balances_result.get('balances', [])
+
+                                    # Get all BUY orders for this account to calculate average cost
+                                    buy_orders_query = await transaction_db.fetch("""
+                                        SELECT symbol, quantity, price, created_at
+                                        FROM orders
+                                        WHERE exchange_account_id = $1
+                                          AND LOWER(side::text) = 'buy'
+                                          AND status = 'filled'
+                                        ORDER BY created_at ASC
+                                    """, str(main_account['id']))
+
+                                    # Calculate average buy price for each asset
+                                    avg_buy_prices = {}
+                                    last_buy_prices = {}
+
+                                    for order in buy_orders_query:
+                                        symbol = order['symbol']
+                                        asset = symbol.replace('USDT', '').replace('-', '')
+
+                                        if asset not in avg_buy_prices:
+                                            avg_buy_prices[asset] = {'total_qty': 0, 'total_cost': 0}
+
+                                        qty = float(order['quantity'])
+                                        price = float(order['price'])
+                                        avg_buy_prices[asset]['total_qty'] += qty
+                                        avg_buy_prices[asset]['total_cost'] += (qty * price)
+                                        last_buy_prices[asset] = price
+
+                                    for asset in avg_buy_prices:
+                                        if avg_buy_prices[asset]['total_qty'] > 0:
+                                            avg_buy_prices[asset]['avg_price'] = avg_buy_prices[asset]['total_cost'] / avg_buy_prices[asset]['total_qty']
+
+                                    # Get current prices from BingX
+                                    price_cache = {'USDT': 1.0, 'USDC': 1.0}
+                                    all_prices_result = await connector.get_all_ticker_prices()
+                                    if all_prices_result.get('success'):
+                                        for ticker in all_prices_result.get('data', []):
+                                            symbol = ticker.get('symbol', '')
+                                            if 'USDT' in symbol:
+                                                asset = symbol.replace('-USDT', '').replace('USDT', '')
+                                                price = float(ticker.get('lastPrice', 0))
+                                                if price > 0:
+                                                    price_cache[asset] = price
+
+                                    # Calculate P&L for each spot asset
+                                    for bal in raw_balances:
+                                        asset = bal['asset']
+                                        if asset in ['USDT', 'USDC']:
+                                            continue
+
+                                        total = float(bal['total'])
+                                        if total <= 0:
+                                            continue
+
+                                        current_price = price_cache.get(asset, 0)
+
+                                        # Get average buy price
+                                        avg_buy_price = 0
+                                        if asset in avg_buy_prices and 'avg_price' in avg_buy_prices[asset]:
+                                            avg_buy_price = avg_buy_prices[asset]['avg_price']
+                                        elif asset in last_buy_prices:
+                                            avg_buy_price = last_buy_prices[asset]
+
+                                        # Calculate P&L
+                                        if avg_buy_price > 0 and current_price > 0:
+                                            asset_pnl = (current_price - avg_buy_price) * total
+                                            spot_pnl += asset_pnl
+
+                                    logger.info(f"✅ BingX SPOT P&L calculated: ${spot_pnl:.2f}")
+                            except Exception as spot_calc_err:
+                                logger.warning(f"⚠️ Error calculating BingX spot P&L: {spot_calc_err}")
                         else:
                             logger.error(f"❌ Failed to get BingX balances: {balances_result.get('error')}")
 
@@ -452,6 +531,18 @@ def create_dashboard_router() -> APIRouter:
                                 continue
 
                     logger.info(f"✅ Real-time futures P&L: ${futures_pnl:.2f}")
+
+                    # 4. GET SPOT P&L - Use SpotPnlService (already implemented)
+                    logger.info("📊 Calculating SPOT P&L using SpotPnlService...")
+                    try:
+                        from infrastructure.pricing.spot_pnl_service import SpotPnlService
+                        spot_pnl_service = SpotPnlService()
+                        spot_pnl_result = await spot_pnl_service.calculate_spot_pnl(str(main_account['id']))
+                        if spot_pnl_result.get('success'):
+                            spot_pnl = spot_pnl_result.get('total_pnl_usdt', 0.0)
+                            logger.info(f"✅ Real-time spot P&L: ${spot_pnl:.2f} ({spot_pnl_result.get('active_assets_count', 0)} assets)")
+                    except Exception as spot_err:
+                        logger.warning(f"⚠️ Error calculating spot P&L: {spot_err}")
 
             except Exception as e:
                 logger.error(f"Error getting real-time P&L: {e}")

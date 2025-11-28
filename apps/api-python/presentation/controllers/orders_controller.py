@@ -571,7 +571,7 @@ def create_orders_router() -> APIRouter:
         """
         try:
             logger.info(f"🔵 STEP 1: Buscando posição {close_request.position_id}")
-            # 1. Buscar posição
+            # 1. Buscar posição do banco de dados
             position = await transaction_db.fetchrow("""
                 SELECT
                     p.id, p.symbol, p.side, p.size, p.entry_price,
@@ -588,80 +588,30 @@ def create_orders_router() -> APIRouter:
                     detail="Posição não encontrada ou já fechada"
                 )
 
-            logger.info(f"🔵 STEP 2: Posição encontrada: {position['symbol']} {position['side']} {position['size']}")
+            logger.info(f"🔵 STEP 2: Posição no banco: {position['symbol']} {position['side']} size={position['size']}")
 
-            # 2. Obter regras de filtro do símbolo para normalizar quantidade
+            # 2. Importar connectors
             from infrastructure.exchanges.binance_connector import BinanceConnector
-            temp_connector = BinanceConnector(
-                api_key=position['api_key'],
-                api_secret=position['secret_key'],
-                testnet=position['testnet']
-            )
-
-            # Buscar exchange info para obter LOT_SIZE
-            import asyncio
-            exchange_info = await asyncio.to_thread(
-                temp_connector.client.futures_exchange_info
-            )
-
-            symbol_info = next(
-                (s for s in exchange_info['symbols'] if s['symbol'] == position['symbol']),
-                None
-            )
-
-            if not symbol_info:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Símbolo {position['symbol']} não encontrado na Binance"
-                )
-
-            # Encontrar filtro LOT_SIZE
-            lot_size_filter = next(
-                (f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'),
-                None
-            )
-
-            if not lot_size_filter:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Filtro LOT_SIZE não encontrado para {position['symbol']}"
-                )
-
-            step_size = float(lot_size_filter['stepSize'])
-            min_qty = float(lot_size_filter['minQty'])
-
-            logger.info(f"🔵 STEP 3: Regras LOT_SIZE: stepSize={step_size}, minQty={min_qty}")
-
-            # 3. Calcular quantidade a fechar e normalizar
-            raw_quantity = float(position['size']) * (close_request.percentage / 100)
-
-            # Normalizar para step_size (arredondar para baixo)
-            import math
-            quantity_to_close = math.floor(raw_quantity / step_size) * step_size
-
-            # Verificar quantidade mínima
-            if quantity_to_close < min_qty:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Quantidade calculada ({quantity_to_close}) menor que mínimo permitido ({min_qty})"
-                )
-
-            logger.info(f"🔵 STEP 4: Quantidade normalizada: {raw_quantity} → {quantity_to_close}")
-
-            # 4. Determinar lado reverso (fechar LONG = sell, fechar SHORT = buy)
-            # NOTA: BinanceConnector aceita maiúscula, mas banco precisa minúscula
-            close_side_upper = 'SELL' if position['side'].upper() == 'LONG' else 'BUY'
-            close_side_lower = close_side_upper.lower()
-
-            # 5. Selecionar connector baseado na exchange (reusar temp_connector para Binance)
             from infrastructure.exchanges.bybit_connector import BybitConnector
             from infrastructure.exchanges.bingx_connector import BingXConnector
             from infrastructure.exchanges.bitget_connector import BitgetConnector
+            import asyncio
+            import math
 
             exchange = position['exchange'].lower()
-            logger.info(f"🔵 STEP 5: Usando connector para exchange: {exchange}")
+            position_side = position['side'].upper()  # LONG ou SHORT
+            close_side_upper = 'SELL' if position_side == 'LONG' else 'BUY'
+            close_side_lower = close_side_upper.lower()
+
+            # 3. Criar connector baseado na exchange
+            logger.info(f"🔵 STEP 3: Criando connector para exchange: {exchange}")
+
             if exchange == 'binance':
-                connector = temp_connector  # Reusar connector criado anteriormente
+                connector = BinanceConnector(
+                    api_key=position['api_key'],
+                    api_secret=position['secret_key'],
+                    testnet=position['testnet']
+                )
             elif exchange == 'bybit':
                 connector = BybitConnector(
                     api_key=position['api_key'],
@@ -683,19 +633,142 @@ def create_orders_router() -> APIRouter:
             else:
                 raise HTTPException(status_code=400, detail=f"Exchange {exchange} não suportada")
 
-            # Executar ordem MARKET de fechamento na exchange
-            logger.info(f"🔵 STEP 6: Executando ordem MARKET REDUCE_ONLY na Binance: {position['symbol']} {close_side_upper} {quantity_to_close}")
-            order_result = await connector.create_market_order(
-                symbol=position['symbol'],
-                side=close_side_upper,  # API aceita maiúscula
-                quantity=Decimal(str(quantity_to_close)),
-                reduce_only=True  # Apenas fechar posição existente, não abrir nova
-            )
+            # 4. Para BingX: buscar posição REAL da exchange (não confiar no banco)
+            actual_size = float(position['size']) if position['size'] else 0
+
+            if exchange == 'bingx':
+                logger.info(f"🔵 STEP 4: BingX - Buscando posição REAL da exchange...")
+                positions_result = await connector.get_futures_positions()
+
+                if positions_result.get('success'):
+                    # Encontrar a posição específica
+                    symbol_bingx = position['symbol'].replace("USDT", "-USDT") if "-" not in position['symbol'] else position['symbol']
+                    logger.info(f"🔵 STEP 4: Buscando símbolo: {symbol_bingx}, lado: {position_side}")
+                    logger.info(f"🔵 STEP 4: Posições retornadas da BingX: {len(positions_result.get('positions', []))}")
+
+                    for pos in positions_result.get('positions', []):
+                        pos_symbol = pos.get('symbol', '')
+                        # BingX pode retornar:
+                        # - One-Way Mode: positionSide = "BOTH", lado definido pelo sinal de positionAmt
+                        # - Hedge Mode: positionSide = "LONG" ou "SHORT"
+                        pos_side_raw = pos.get('positionSide', pos.get('side', '')).upper()
+                        pos_amt_signed = float(pos.get('positionAmt', pos.get('size', 0)))
+                        pos_amt = abs(pos_amt_signed)
+
+                        # Determinar o lado REAL da posição
+                        if pos_side_raw == 'BOTH':
+                            # ONE-WAY MODE: lado baseado no sinal de positionAmt
+                            # positionAmt > 0 = LONG, positionAmt < 0 = SHORT
+                            pos_side = 'LONG' if pos_amt_signed > 0 else 'SHORT'
+                            logger.info(f"🔵 STEP 4: One-Way Mode detectado - positionAmt={pos_amt_signed} → side={pos_side}")
+                        else:
+                            # HEDGE MODE: usar positionSide diretamente
+                            pos_side = pos_side_raw
+
+                        logger.info(f"🔵 STEP 4: Comparando pos: {pos_symbol} {pos_side} size={pos_amt} vs {symbol_bingx} {position_side}")
+
+                        if pos_symbol == symbol_bingx and pos_side == position_side and pos_amt > 0:
+                            actual_size = pos_amt
+                            logger.info(f"🔵 STEP 4: ✅ Posição REAL encontrada na BingX: {pos_symbol} {pos_side} size={actual_size}")
+                            break
+
+                if actual_size == 0:
+                    logger.error(f"🔵 STEP 4: ❌ Posição não encontrada! symbol={position['symbol']}, side={position_side}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Posição {position['symbol']} {position_side} não encontrada na BingX ou já fechada"
+                    )
+
+            # 5. Calcular quantidade a fechar
+            raw_quantity = actual_size * (close_request.percentage / 100)
+            logger.info(f"🔵 STEP 5: Quantidade a fechar: {actual_size} * {close_request.percentage}% = {raw_quantity}")
+
+            # 6. Obter LOT_SIZE da exchange CORRETA
+            if exchange == 'binance':
+                # Binance: usar futures_exchange_info
+                exchange_info = await asyncio.to_thread(connector.client.futures_exchange_info)
+                symbol_info = next(
+                    (s for s in exchange_info['symbols'] if s['symbol'] == position['symbol']),
+                    None
+                )
+                if symbol_info:
+                    lot_size_filter = next(
+                        (f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'),
+                        None
+                    )
+                    if lot_size_filter:
+                        step_size = float(lot_size_filter['stepSize'])
+                        min_qty = float(lot_size_filter['minQty'])
+                    else:
+                        step_size = 0.001
+                        min_qty = 0.001
+                else:
+                    step_size = 0.001
+                    min_qty = 0.001
+            elif exchange == 'bingx':
+                # BingX: usar endpoint de contratos - valores padrão mais permissivos
+                # A BingX geralmente aceita quantidades muito pequenas
+                step_size = 0.0001  # BingX aceita até 4 casas decimais
+                min_qty = 0.0001   # Mínimo muito baixo para BingX
+                logger.info(f"🔵 STEP 6: BingX LOT_SIZE: stepSize={step_size}, minQty={min_qty}")
+            else:
+                # Outras exchanges: valores padrão
+                step_size = 0.001
+                min_qty = 0.001
+
+            # 7. Normalizar quantidade
+            quantity_to_close = math.floor(raw_quantity / step_size) * step_size
+
+            # Para quantidades muito pequenas, usar a quantidade real se estiver abaixo do step
+            if quantity_to_close == 0 and raw_quantity > 0:
+                quantity_to_close = raw_quantity  # Tentar com a quantidade real
+
+            logger.info(f"🔵 STEP 6: LOT_SIZE: stepSize={step_size}, minQty={min_qty}")
+            logger.info(f"🔵 STEP 7: Quantidade normalizada: {raw_quantity} → {quantity_to_close}")
+
+            # 8. Executar fechamento
+            logger.info(f"🔵 STEP 8: Executando fechamento: {position['symbol']} {close_side_upper} qty={quantity_to_close}")
+
+            if exchange == 'binance':
+                # Binance: create_market_order aceita reduce_only
+                order_result = await connector.create_market_order(
+                    symbol=position['symbol'],
+                    side=close_side_upper,
+                    quantity=Decimal(str(quantity_to_close)),
+                    reduce_only=True
+                )
+            elif exchange == 'bingx':
+                # BingX: usar métodos específicos
+                if close_request.percentage >= 100:
+                    # Fechamento total: usar endpoint close_position (mais confiável)
+                    logger.info(f"🔵 BingX: Usando close_position para fechamento total")
+                    order_result = await connector.close_position(
+                        symbol=position['symbol'],
+                        position_side=position_side
+                    )
+                else:
+                    # Fechamento parcial: usar close_position_partial
+                    logger.info(f"🔵 BingX: Usando close_position_partial para {close_request.percentage}%")
+                    order_result = await connector.close_position_partial(
+                        symbol=position['symbol'],
+                        quantity=quantity_to_close,
+                        position_side=position_side
+                    )
+            else:
+                # Outras exchanges (Bybit, Bitget): usar create_futures_order
+                order_result = await connector.create_futures_order(
+                    symbol=position['symbol'],
+                    side=close_side_upper,
+                    order_type='MARKET',
+                    quantity=float(quantity_to_close),
+                    reduce_only=False,
+                    position_side=position_side
+                )
 
             # Verificar se ordem foi executada com sucesso
             if not order_result.get('success', False):
                 error_msg = order_result.get('error', 'Erro desconhecido')
-                logger.error(f"❌ STEP 7: Falha ao executar ordem: {error_msg}")
+                logger.error(f"❌ STEP 9: Falha ao executar ordem: {error_msg}")
                 raise HTTPException(
                     status_code=400,
                     detail=f"Falha ao executar ordem na exchange: {error_msg}"

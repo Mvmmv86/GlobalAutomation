@@ -210,11 +210,11 @@ const TradingPage: React.FC = () => {
     }
   }
 
-  // Handle chart click to create order - Memoized to prevent re-renders
-  const handleChartClick = useCallback((price: number) => {
-    setClickedPrice(price)
-    setIsOrderCreationModalOpen(true)
-  }, [])
+  // Handle chart click to create order - DESABILITADO (usuário não quer modal ao clicar)
+  // const handleChartClick = useCallback((price: number) => {
+  //   setClickedPrice(price)
+  //   setIsOrderCreationModalOpen(true)
+  // }, [])
 
   // Handle order creation confirmation
   const handleOrderCreation = (orderData: OrderFormData) => {
@@ -388,7 +388,7 @@ const TradingPage: React.FC = () => {
                   handleModifyPosition(positionId, data)
                 }
               }}
-              onChartClick={handleChartClick}
+              // onChartClick desabilitado - usuário não quer modal ao clicar no gráfico
               onPositionClose={handleChartPositionClose}
               onPositionEdit={handleChartPositionEdit}
             />

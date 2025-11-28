@@ -54,6 +54,7 @@ interface CandleData {
   high: number
   low: number
   close: number
+  volume?: number  // Necessário para indicadores como VWAP, MFI, OBV
 }
 
 const CustomChartComponent: React.FC<CustomChartProps> = ({
@@ -226,6 +227,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         high: candle.high,
         low: candle.low,
         close: candle.close,
+        volume: candle.volume || 0,  // Incluir volume para manter consistência
       }))
 
       if (newCandles.length === 0) {
@@ -253,11 +255,11 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
           console.log(`✅ [LazyLoad] ${newCandles.length} candles adicionados. Total: ${combined.length}`)
         }
 
-        // Atualizar volume também
+        // Atualizar volume também - preservar volume existente
         if (volumeSeriesRef.current) {
           const volumeData = combined.map((candle: CandleData) => ({
             time: candle.time,
-            value: 0, // Volume não está disponível no endpoint history ainda
+            value: candle.volume || 0, // Usar volume real se disponível
             color: candle.close >= candle.open ? '#10B98180' : '#EF444480',
           }))
           volumeSeriesRef.current.setData(volumeData)
@@ -340,6 +342,8 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       borderVisible: false,
       wickUpColor: '#10B981',
       wickDownColor: '#EF4444',
+      lastValueVisible: false,  // Remove a linha horizontal do último valor
+      priceLineVisible: false,  // Remove a linha de preço tracejada
     })
 
     candlestickSeriesRef.current = candlestickSeries
@@ -353,6 +357,10 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       priceScaleId: '', // Escala própria
       lastValueVisible: false, // Não mostrar último valor
       priceLineVisible: false, // Não mostrar linha de preço
+      baseLineVisible: false, // Remove a linha de base horizontal
+      baseLineColor: 'transparent', // Cor transparente caso apareça
+      baseLineWidth: 1, // Largura mínima
+      baseLineStyle: 0, // Estilo sólido (não pontilhado)
     })
 
     // Configurar height do volume para 20% do gráfico (80% candles, 20% volume)
@@ -479,6 +487,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
           high: candle.high,
           low: candle.low,
           close: candle.close,
+          volume: candle.volume || 0,  // Incluir volume para indicadores VWAP, MFI, etc.
         }))
 
         const volumeData = data.candles.map((candle: any) => ({
@@ -642,15 +651,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
   // Desenhar posições no gráfico
   useEffect(() => {
-    if (!candlestickSeriesRef.current || !positions || positions.length === 0) {
-      console.log('⚠️ Sem posições para desenhar ou série não disponível')
-      return
-    }
-
-    console.log('🎨 Desenhando', positions.length, 'posições no gráfico')
-    console.log('📊 DEBUG SL/TP - Posições recebidas:', JSON.stringify(positions, null, 2))
-
-    // Limpar linhas antigas
+    // Sempre limpar linhas antigas primeiro
     priceLineIdsRef.current.forEach(priceLine => {
       try {
         candlestickSeriesRef.current?.removePriceLine(priceLine)
@@ -659,6 +660,15 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       }
     })
     priceLineIdsRef.current = []
+    setDraggableLines([])  // Limpar linhas draggable também
+
+    if (!candlestickSeriesRef.current || !positions || positions.length === 0) {
+      console.log('⚠️ Sem posições para desenhar ou série não disponível')
+      return
+    }
+
+    console.log('🎨 Desenhando', positions.length, 'posições no gráfico')
+    console.log('📊 DEBUG SL/TP - Posições recebidas:', JSON.stringify(positions, null, 2))
 
     // Array para linhas draggable
     const newDraggableLines: DraggableLine[] = []

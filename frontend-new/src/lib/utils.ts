@@ -5,11 +5,27 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatCurrency(value: number, currency = 'USDT', decimals = 2): string {
+/**
+ * Calcula o número ideal de casas decimais baseado no valor do preço
+ * Para meme coins e ativos de baixo valor, precisamos de mais casas decimais
+ */
+export function getOptimalDecimals(value: number): number {
+  const absValue = Math.abs(value)
+  if (absValue === 0) return 2
+  if (absValue >= 1000) return 2      // BTC, ETH - $1000+ = 2 decimais
+  if (absValue >= 1) return 4         // SOL, AVAX - $1-$999 = 4 decimais
+  if (absValue >= 0.01) return 6      // Low cap coins - $0.01-$0.99 = 6 decimais
+  if (absValue >= 0.0001) return 8    // Meme coins - $0.0001-$0.0099 = 8 decimais
+  return 10                           // Ultra low - menos de $0.0001 = 10 decimais
+}
+
+export function formatCurrency(value: number, currency = 'USDT', decimals?: number): string {
+  // Se decimais não foi especificado, calcular automaticamente
+  const optimalDecimals = decimals ?? getOptimalDecimals(value)
   return new Intl.NumberFormat('pt-BR', {
     style: 'decimal',
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: optimalDecimals,
   }).format(value) + ` ${currency}`
 }
 

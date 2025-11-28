@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2 } from 'lucide-react'
+import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2 } from 'lucide-react'
 import { BotSubscription, botsService, SubscriptionPerformance } from '@/services/botsService'
 import { BotPnLChart } from './BotPnLChart'
 import { BotWinRateChart } from './BotWinRateChart'
+import { SharePnLModal } from './SharePnLModal'
 import { useAuth } from '@/contexts/AuthContext'
 
 interface BotDetailsModalProps {
@@ -10,6 +11,15 @@ interface BotDetailsModalProps {
   onClose: () => void
   subscription: BotSubscription | null
 }
+
+// Period options for filtering
+const PERIOD_OPTIONS = [
+  { value: 7, label: '7 dias' },
+  { value: 30, label: '30 dias' },
+  { value: 90, label: '90 dias' },
+  { value: 180, label: '6 meses' },
+  { value: 365, label: '1 ano' },
+]
 
 export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   isOpen,
@@ -20,6 +30,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   const [performance, setPerformance] = useState<SubscriptionPerformance | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [selectedDays, setSelectedDays] = useState(30)
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false)
 
   // Fetch performance data when modal opens
   useEffect(() => {
@@ -40,10 +51,85 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
 
   if (!isOpen || !subscription) return null
 
+  // Get filtered stats from performance API (or fallback to subscription data)
+  const filteredStats = performance?.filtered_summary
+  const currentState = performance?.current_state
+
   const getWinRate = () => {
+    if (filteredStats) {
+      return filteredStats.win_rate.toFixed(1)
+    }
     const total = subscription.win_count + subscription.loss_count
-    if (total === 0) return 0
+    if (total === 0) return '0'
     return ((subscription.win_count / total) * 100).toFixed(1)
+  }
+
+  const getTotalPnl = () => {
+    return filteredStats?.total_pnl_usd ?? subscription.total_pnl_usd
+  }
+
+  const getSignals = () => {
+    return filteredStats?.total_signals ?? subscription.total_signals_received
+  }
+
+  const getExecuted = () => {
+    return filteredStats?.total_orders_executed ?? subscription.total_orders_executed
+  }
+
+  const getWinCount = () => {
+    return filteredStats?.total_wins ?? subscription.win_count
+  }
+
+  const getLossCount = () => {
+    return filteredStats?.total_losses ?? subscription.loss_count
+  }
+
+  // Total trades (open + closed)
+  const getTotalTrades = () => {
+    return filteredStats?.total_trades ?? (subscription.win_count + subscription.loss_count)
+  }
+
+  // Only closed trades
+  const getClosedTrades = () => {
+    return filteredStats?.closed_trades ?? (getWinCount() + getLossCount())
+  }
+
+  // Open trades (positions abertas)
+  const getOpenTrades = () => {
+    return filteredStats?.open_trades ?? 0
+  }
+
+  const getCurrentPositions = () => {
+    return currentState?.current_positions ?? subscription.current_positions
+  }
+
+  const getMaxPositions = () => {
+    return currentState?.max_concurrent_positions ?? subscription.max_concurrent_positions
+  }
+
+  const getPositionsData = () => {
+    return currentState?.positions_data ?? []
+  }
+
+  const getPeriodLabel = () => {
+    const option = PERIOD_OPTIONS.find(o => o.value === selectedDays)
+    return option ? option.label : `${selectedDays} dias`
+  }
+
+  // Calculate P&L percentage based on total volume traded
+  const getPnlPercent = () => {
+    const pnl = getTotalPnl()
+    const tradesCount = getWinCount() + getLossCount()
+    const marginPerTrade = subscription.custom_margin_usd || subscription.default_margin_usd || 100
+
+    // If no trades, return undefined (no percentage to show)
+    if (tradesCount === 0) return undefined
+
+    // Calculate percentage: P&L / (trades * margin) * 100
+    const totalInvested = tradesCount * marginPerTrade
+    if (totalInvested === 0) return undefined
+
+    return (pnl / totalInvested) * 100
   }
 
   return (
@@ -59,38 +145,71 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               Detalhes e Performance do Bot
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-lg hover:bg-muted"
-          >
-            <X className="w-6 h-6" />
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Period Filter - applies to ALL stats */}
+            <div className="flex items-center gap-2 bg-secondary/50 rounded-lg px-3 py-2 border border-border">
+              <Filter className="w-4 h-4 text-muted-foreground" />
+              <select
+                value={selectedDays}
+                onChange={(e) => setSelectedDays(Number(e.target.value))}
+                className="bg-transparent border-none text-sm text-foreground focus:outline-none cursor-pointer"
+              >
+                {PERIOD_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {/* Share Button */}
+            <button
+              onClick={() => setIsShareModalOpen(true)}
+              className="flex items-center gap-2 bg-primary/10 text-primary border border-primary/30 rounded-lg px-3 py-2 hover:bg-primary/20 transition-colors"
+            >
+              <Share2 className="w-4 h-4" />
+              <span className="text-sm font-medium">Compartilhar</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-lg hover:bg-muted"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
         <div className="p-6 space-y-6">
-          {/* Main Stats */}
+          {/* Period indicator */}
+          {isLoading && (
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Carregando dados...
+            </div>
+          )}
+
+          {/* Main Stats - Using filtered data */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <div className="bg-secondary/50 p-4 rounded-lg border border-border">
+            <div className="bg-secondary/50 p-4 rounded-lg border border-border relative">
               <div className="flex items-center gap-2 mb-2">
                 <TrendingUp className="w-5 h-5 text-primary" />
                 <p className="text-sm text-muted-foreground">Win Rate</p>
               </div>
-              <p className="text-2xl font-bold text-foreground">
+              <p className={`text-2xl font-bold ${Number(getWinRate()) >= 50 ? 'text-success' : 'text-danger'}`}>
                 {getWinRate()}%
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {subscription.win_count}W / {subscription.loss_count}L
+                {getWinCount()}W / {getLossCount()}L
               </p>
             </div>
 
             <div className="bg-secondary/50 p-4 rounded-lg border border-border">
               <div className="flex items-center gap-2 mb-2">
                 <DollarSign className="w-5 h-5 text-success" />
-                <p className="text-sm text-muted-foreground">P&L Total</p>
+                <p className="text-sm text-muted-foreground">P&L</p>
               </div>
-              <p className={`text-2xl font-bold ${subscription.total_pnl_usd >= 0 ? 'text-success' : 'text-danger'}`}>
-                {subscription.total_pnl_usd >= 0 ? '+' : ''}${subscription.total_pnl_usd.toFixed(2)}
+              <p className={`text-2xl font-bold ${getTotalPnl() >= 0 ? 'text-success' : 'text-danger'}`}>
+                {getTotalPnl() >= 0 ? '+' : ''}${getTotalPnl().toFixed(2)}
               </p>
             </div>
 
@@ -100,65 +219,54 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
                 <p className="text-sm text-muted-foreground">Sinais</p>
               </div>
               <p className="text-2xl font-bold text-foreground">
-                {subscription.total_signals_received}
+                {getSignals()}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {subscription.total_orders_executed} executadas
+                {getExecuted()} executadas
               </p>
             </div>
 
             <div className="bg-secondary/50 p-4 rounded-lg border border-border">
               <div className="flex items-center gap-2 mb-2">
                 <Target className="w-5 h-5 text-warning" />
-                <p className="text-sm text-muted-foreground">Posições</p>
+                <p className="text-sm text-muted-foreground">Posições Atuais</p>
               </div>
               <p className="text-2xl font-bold text-foreground">
-                {subscription.current_positions}
+                {getCurrentPositions()}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                de {subscription.max_concurrent_positions} máx
+                de {getMaxPositions()} max
               </p>
             </div>
 
             <div className="bg-secondary/50 p-4 rounded-lg border border-border">
               <div className="flex items-center gap-2 mb-2">
-                <TrendingUp className="w-5 h-5 text-success" />
-                <p className="text-sm text-muted-foreground">Taxa Vitória</p>
+                <Activity className="w-5 h-5 text-blue-400" />
+                <p className="text-sm text-muted-foreground">Trades</p>
               </div>
-              <p className={`text-2xl font-bold ${Number(getWinRate()) >= 50 ? 'text-success' : 'text-danger'}`}>
-                {getWinRate()}%
+              <p className="text-2xl font-bold text-foreground">
+                {getTotalTrades()}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {subscription.win_count + subscription.loss_count} trades
+                {getClosedTrades()} fechados, {getOpenTrades()} abertos
               </p>
             </div>
           </div>
 
           {/* Performance Chart - Full Width */}
           <div className="bg-secondary/30 rounded-lg border border-border p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-foreground">
-                P&L ao Longo do Tempo
-              </h3>
-              <select
-                value={selectedDays}
-                onChange={(e) => setSelectedDays(Number(e.target.value))}
-                className="bg-secondary border border-border rounded-md px-2 py-1 text-sm text-foreground"
-              >
-                <option value={7}>7 dias</option>
-                <option value={30}>30 dias</option>
-                <option value={90}>90 dias</option>
-              </select>
-            </div>
+            <h3 className="text-lg font-semibold text-foreground mb-4">
+              P&L ao Longo do Tempo
+            </h3>
             {isLoading ? (
               <div className="h-[250px] flex items-center justify-center">
                 <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
-            ) : performance?.pnl_history ? (
+            ) : performance?.pnl_history && performance.pnl_history.length > 0 ? (
               <BotPnLChart data={performance.pnl_history} height={250} />
             ) : (
               <div className="h-[250px] flex items-center justify-center text-muted-foreground">
-                Sem dados de performance ainda
+                Sem dados de performance neste periodo
               </div>
             )}
           </div>
@@ -319,6 +427,18 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Share P&L Modal */}
+      <SharePnLModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        botName={subscription.bot_name}
+        pnlUsd={getTotalPnl()}
+        pnlPercent={getPnlPercent()}
+        winRate={Number(getWinRate())}
+        totalTrades={getWinCount() + getLossCount()}
+        period={getPeriodLabel()}
+      />
     </div>
   )
 }

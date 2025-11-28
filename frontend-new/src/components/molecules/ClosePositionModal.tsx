@@ -8,7 +8,8 @@ interface Position {
   id: string
   symbol: string
   side: 'LONG' | 'SHORT'
-  quantity: number
+  quantity?: number
+  size?: number  // API retorna 'size', alguns componentes usam 'quantity'
   entryPrice: number
   markPrice?: number
   unrealizedPnl?: number
@@ -34,7 +35,8 @@ export const ClosePositionModal: React.FC<ClosePositionModalProps> = ({
   if (!isOpen) return null
 
   const currentPrice = position.markPrice || position.entryPrice
-  const quantityToClose = (position.quantity * closePercentage) / 100
+  const positionQty = position.size || position.quantity || 0
+  const quantityToClose = (positionQty * closePercentage) / 100
 
   const formatPrice = (price: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -78,7 +80,7 @@ export const ClosePositionModal: React.FC<ClosePositionModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
       <Card className="w-full max-w-md bg-background border shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
@@ -120,7 +122,7 @@ export const ClosePositionModal: React.FC<ClosePositionModalProps> = ({
               </div>
               <div>
                 <span className="text-muted-foreground">Quantidade:</span>
-                <div className="font-medium">{position.quantity}</div>
+                <div className="font-medium">{positionQty}</div>
               </div>
               <div>
                 <span className="text-muted-foreground">P&L Total:</span>
@@ -226,7 +228,7 @@ export const ClosePositionModal: React.FC<ClosePositionModalProps> = ({
               {closePercentage < 100 && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Quantidade restante:</span>
-                  <span className="font-medium">{(position.quantity - quantityToClose).toFixed(4)}</span>
+                  <span className="font-medium">{(positionQty - quantityToClose).toFixed(4)}</span>
                 </div>
               )}
             </div>

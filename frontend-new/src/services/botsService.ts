@@ -103,18 +103,42 @@ export interface PnLHistoryPoint {
   win_rate: number
 }
 
+export interface PerformanceSummary {
+  total_pnl_usd: number
+  win_rate: number
+  total_wins: number
+  total_losses: number
+  total_trades: number  // All trades (open + closed)
+  closed_trades?: number  // Only closed trades
+  open_trades?: number  // Currently open trades
+  total_signals: number
+  total_orders_executed: number
+  period_label?: string
+  subscribed_at?: string | null
+}
+
+export interface PositionData {
+  symbol: string
+  side: string
+  entry_price: number
+  size: number
+  unrealized_pnl: number
+  entry_time: string | null
+}
+
 export interface SubscriptionPerformance {
   subscription_id: string
   bot_name: string
-  summary: {
-    total_pnl_usd: number
-    win_rate: number
-    total_wins: number
-    total_losses: number
-    total_trades: number
-    total_signals: number
-    total_orders_executed: number
-    subscribed_at: string | null
+  days_filter: number
+  // Filtered statistics based on date range
+  filtered_summary: PerformanceSummary
+  // All-time statistics
+  all_time_summary: PerformanceSummary
+  // Current state (REAL-TIME from exchange)
+  current_state: {
+    current_positions: number
+    max_concurrent_positions: number
+    positions_data?: PositionData[]  // Detailed position info
   }
   pnl_history: PnLHistoryPoint[]
 }

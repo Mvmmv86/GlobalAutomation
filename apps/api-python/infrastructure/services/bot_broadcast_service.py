@@ -345,16 +345,14 @@ class BotBroadcastService:
                     symbol=ticker,
                     side="BUY",
                     order_type="MARKET",
-                    quantity=quantity,
-                    position_side="LONG"  # Required for BingX Hedge Mode
+                    quantity=quantity
                 )
             elif action.lower() == "sell":
                 order_result = await connector.create_futures_order(
                     symbol=ticker,
                     side="SELL",
                     order_type="MARKET",
-                    quantity=quantity,
-                    position_side="SHORT"  # Required for BingX Hedge Mode
+                    quantity=quantity
                 )
             elif action.lower() == "close":
                 # Close existing position and record the trade

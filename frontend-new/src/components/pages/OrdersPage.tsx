@@ -14,9 +14,18 @@ const OrdersPage: React.FC = () => {
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const queryClient = useQueryClient()
 
-  // Filtros
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  // Filtros - Valores padrão: último 2 meses até hoje
+  const getDefaultDateFrom = () => {
+    const date = new Date()
+    date.setMonth(date.getMonth() - 2)
+    return date.toISOString().split('T')[0]
+  }
+  const getDefaultDateTo = () => {
+    return new Date().toISOString().split('T')[0]
+  }
+
+  const [dateFrom, setDateFrom] = useState<string>(getDefaultDateFrom())
+  const [dateTo, setDateTo] = useState<string>(getDefaultDateTo())
   const [selectedExchange, setSelectedExchange] = useState<string>('all')
   const [selectedOperationType, setSelectedOperationType] = useState<string>('all') // all, spot, futures
 
@@ -73,8 +82,8 @@ const OrdersPage: React.FC = () => {
   }
 
   const clearFilters = () => {
-    setDateFrom('')
-    setDateTo('')
+    setDateFrom(getDefaultDateFrom())
+    setDateTo(getDefaultDateTo())
     setSelectedExchange('all')
     setSelectedOperationType('all')
     setCurrentPage(1) // Reset pagination

@@ -333,96 +333,27 @@ class BotBroadcastService:
             if subscription["market_type"] == "futures":
                 await connector.set_leverage(ticker, leverage)
 
-            # 6.5. Detect position mode (One-Way vs Hedge) for BingX
-            # Default to HEDGE mode because:
-            # 1. Most BingX accounts use Hedge Mode by default
-            # 2. Hedge Mode works with explicit position_side (LONG/SHORT)
-            # 3. One-Way Mode would need position_side=BOTH for stop orders
-            position_mode = None
-            if subscription["exchange"].lower() == "bingx":
-                try:
-                    mode_result = await connector.get_position_mode()
-                    logger.info(f"🔍 BingX Position Mode API Result: {mode_result}")
-                    if mode_result.get("success"):
-                        position_mode = mode_result.get("mode")  # "HEDGE" or "ONE_WAY"
-                        logger.info(f"✅ BingX Position Mode detected: {position_mode}")
-                    else:
-                        logger.warning(f"⚠️ Could not detect position mode: {mode_result.get('error')}, defaulting to HEDGE")
-                        position_mode = "HEDGE"  # Default to HEDGE - safer assumption
-                except Exception as e:
-                    logger.warning(f"⚠️ Error detecting position mode: {e}, defaulting to HEDGE")
-                    position_mode = "HEDGE"  # Default to HEDGE - safer assumption
-
-            # 6.6. Calculate SL/TP prices BEFORE creating the order
-            # BingX supports stopLoss and takeProfit as parameters of the main order
-            sl_price = None
-            tp_price = None
-            if action.lower() in ["buy", "sell"]:
-                sl_tp_prices = self._calculate_sl_tp_prices(
-                    action=action.lower(),
-                    entry_price=current_price,  # Use current price as estimate
-                    stop_loss_pct=config["stop_loss_pct"],
-                    take_profit_pct=config["take_profit_pct"]
-                )
-                sl_price = sl_tp_prices["stop_loss"]
-                tp_price = sl_tp_prices["take_profit"]
-                logger.info(f"📊 SL/TP calculated: SL={sl_price}, TP={tp_price} (based on current price {current_price})")
-
             # 7. Execute order based on action
             order_result = None
             sl_order_id = None
             tp_order_id = None
+            sl_price = None
+            tp_price = None
 
             if action.lower() == "buy":
-                # Only pass position_side for Hedge Mode
-                if position_mode == "HEDGE":
-                    logger.info(f"📤 Creating BUY order for {ticker} (HEDGE MODE) with position_side=LONG, qty={quantity}, SL={sl_price}, TP={tp_price}")
-                    order_result = await connector.create_futures_order(
-                        symbol=ticker,
-                        side="BUY",
-                        order_type="MARKET",
-                        quantity=quantity,
-                        position_side="LONG",
-                        stop_loss=sl_price,
-                        take_profit=tp_price
-                    )
-                else:
-                    logger.info(f"📤 Creating BUY order for {ticker} (ONE-WAY MODE), qty={quantity}, SL={sl_price}, TP={tp_price}")
-                    order_result = await connector.create_futures_order(
-                        symbol=ticker,
-                        side="BUY",
-                        order_type="MARKET",
-                        quantity=quantity,
-                        stop_loss=sl_price,
-                        take_profit=tp_price
-                        # NO position_side for One-Way Mode
-                    )
-                logger.info(f"📥 BUY order result: {order_result}")
+                order_result = await connector.create_futures_order(
+                    symbol=ticker,
+                    side="BUY",
+                    order_type="MARKET",
+                    quantity=quantity
+                )
             elif action.lower() == "sell":
-                # Only pass position_side for Hedge Mode
-                if position_mode == "HEDGE":
-                    logger.info(f"📤 Creating SELL order for {ticker} (HEDGE MODE) with position_side=SHORT, qty={quantity}, SL={sl_price}, TP={tp_price}")
-                    order_result = await connector.create_futures_order(
-                        symbol=ticker,
-                        side="SELL",
-                        order_type="MARKET",
-                        quantity=quantity,
-                        position_side="SHORT",
-                        stop_loss=sl_price,
-                        take_profit=tp_price
-                    )
-                else:
-                    logger.info(f"📤 Creating SELL order for {ticker} (ONE-WAY MODE), qty={quantity}, SL={sl_price}, TP={tp_price}")
-                    order_result = await connector.create_futures_order(
-                        symbol=ticker,
-                        side="SELL",
-                        order_type="MARKET",
-                        quantity=quantity,
-                        stop_loss=sl_price,
-                        take_profit=tp_price
-                        # NO position_side for One-Way Mode
-                    )
-                logger.info(f"📥 SELL order result: {order_result}")
+                order_result = await connector.create_futures_order(
+                    symbol=ticker,
+                    side="SELL",
+                    order_type="MARKET",
+                    quantity=quantity
+                )
             elif action.lower() == "close":
                 # Close existing position and record the trade
                 # First, get position info before closing to calculate P&L
@@ -441,12 +372,44 @@ class BotBroadcastService:
                             realized_pnl=realized_pnl
                         )
 
-            # 8. SL/TP are now passed as parameters in the main order (BingX supports stopLoss/takeProfit)
-            # No need to create separate orders - they're included in the order result
+            # 8. Create Stop Loss and Take Profit for BUY/SELL orders
             if order_result and action.lower() in ["buy", "sell"]:
+                entry_price = float(order_result.get("avgPrice", current_price))
+                executed_qty = float(order_result.get("executedQty", quantity))
+
+                # Wait for position to be registered on exchange before creating SL/TP
+                # BingX requires position to exist before placing stop orders
+                await asyncio.sleep(2)
+
+                # Calculate SL/TP prices
+                sl_tp_prices = self._calculate_sl_tp_prices(
+                    action=action.lower(),
+                    entry_price=entry_price,
+                    stop_loss_pct=config["stop_loss_pct"],
+                    take_profit_pct=config["take_profit_pct"]
+                )
+
+                sl_price = sl_tp_prices["stop_loss"]
+                tp_price = sl_tp_prices["take_profit"]
+
+                # Create SL/TP orders with retry
+                sl_tp_result = await self._create_sl_tp_orders(
+                    connector=connector,
+                    ticker=ticker,
+                    action=action.lower(),
+                    quantity=executed_qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price
+                )
+
+                sl_order_id = sl_tp_result.get("sl_order_id")
+                tp_order_id = sl_tp_result.get("tp_order_id")
+
                 logger.info(
-                    f"✅ Order created with SL/TP as parameters",
+                    "SL/TP orders created",
                     user_id=str(user_id),
+                    sl_order_id=sl_order_id,
+                    tp_order_id=tp_order_id,
                     sl_price=sl_price,
                     tp_price=tp_price
                 )
@@ -599,8 +562,7 @@ class BotBroadcastService:
         quantity: float,
         sl_price: float,
         tp_price: float,
-        max_retries: int = 3,
-        position_mode: str = None  # "HEDGE" or "ONE_WAY"
+        max_retries: int = 3
     ) -> Dict[str, Optional[str]]:
         """
         Create Stop Loss and Take Profit orders with retry logic
@@ -613,22 +575,13 @@ class BotBroadcastService:
             sl_price: Stop loss trigger price
             tp_price: Take profit trigger price
             max_retries: Maximum number of retry attempts
-            position_mode: "HEDGE" or "ONE_WAY" - determines if position_side is needed
 
         Returns:
             Dict with "sl_order_id" and "tp_order_id"
         """
-        # Determine exit side (opposite of entry)
+        # Determine exit side (opposite of entry) and position side for Hedge Mode
         exit_side = "SELL" if action == "buy" else "BUY"
-
-        # Determine position_side based on mode
-        # HEDGE MODE: positionSide = "LONG" or "SHORT"
-        # ONE-WAY MODE: positionSide = "BOTH" (required by BingX API for STOP_MARKET/TAKE_PROFIT_MARKET)
-        if position_mode == "HEDGE":
-            position_side = "LONG" if action == "buy" else "SHORT"
-        else:
-            # One-Way Mode: BingX requires positionSide="BOTH" for stop orders
-            position_side = "BOTH"
+        position_side = "LONG" if action == "buy" else "SHORT"
 
         sl_order_id = None
         tp_order_id = None
@@ -636,20 +589,19 @@ class BotBroadcastService:
         # Try to create Stop Loss with retry
         for attempt in range(max_retries):
             try:
-                mode_label = "HEDGE" if position_mode == "HEDGE" else "ONE-WAY"
                 logger.info(
-                    f"Creating Stop Loss order ({mode_label} MODE, attempt {attempt + 1}/{max_retries})",
+                    f"Creating Stop Loss order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
                     sl_price=sl_price,
                     position_side=position_side
                 )
-                # Always pass position_side: LONG/SHORT for Hedge, BOTH for One-Way
+
                 sl_result = await connector.create_stop_loss_order(
                     symbol=ticker,
                     side=exit_side,
                     quantity=quantity,
                     stop_price=sl_price,
-                    position_side=position_side
+                    position_side=position_side  # Required for BingX Hedge Mode
                 )
 
                 if sl_result.get("success"):
@@ -678,18 +630,18 @@ class BotBroadcastService:
         for attempt in range(max_retries):
             try:
                 logger.info(
-                    f"Creating Take Profit order ({mode_label} MODE, attempt {attempt + 1}/{max_retries})",
+                    f"Creating Take Profit order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
                     tp_price=tp_price,
                     position_side=position_side
                 )
-                # Always pass position_side: LONG/SHORT for Hedge, BOTH for One-Way
+
                 tp_result = await connector.create_take_profit_order(
                     symbol=ticker,
                     side=exit_side,
                     quantity=quantity,
                     stop_price=tp_price,
-                    position_side=position_side
+                    position_side=position_side  # Required for BingX Hedge Mode
                 )
 
                 if tp_result.get("success"):

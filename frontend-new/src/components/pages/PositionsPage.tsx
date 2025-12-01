@@ -13,9 +13,18 @@ import { useQueryClient } from '@tanstack/react-query'
 const PositionsPage: React.FC = () => {
   const queryClient = useQueryClient()
 
-  // Filtros
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  // Filtros - Valores padrão: último 2 meses até hoje
+  const getDefaultDateFrom = () => {
+    const date = new Date()
+    date.setMonth(date.getMonth() - 2)
+    return date.toISOString().split('T')[0]
+  }
+  const getDefaultDateTo = () => {
+    return new Date().toISOString().split('T')[0]
+  }
+
+  const [dateFrom, setDateFrom] = useState<string>(getDefaultDateFrom())
+  const [dateTo, setDateTo] = useState<string>(getDefaultDateTo())
   const [selectedExchange, setSelectedExchange] = useState<string>('all')
   const [selectedOperationType, setSelectedOperationType] = useState<string>('all')
   const [selectedStatus, setSelectedStatus] = useState<string>('open')
@@ -27,6 +36,7 @@ const PositionsPage: React.FC = () => {
 
   // Estados para dropdown customizado
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isFiltering, setIsFiltering] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   // API Data hooks - ABORDAGEM HÍBRIDA: useOrders + usePositions + useAccountBalance
@@ -78,7 +88,7 @@ const PositionsPage: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['orders'] })
   }
 
-  const applyFilters = () => {
+  const applyFilters = async () => {
     console.log('🔍 Aplicando filtros:', {
       dateFrom,
       dateTo,
@@ -87,13 +97,20 @@ const PositionsPage: React.FC = () => {
       selectedStatus,
       symbolFilter
     })
+    setIsFiltering(true)
     setCurrentPage(1)
-    // Filtros são aplicados automaticamente via usePositions hook
+
+    // Invalidar cache para forçar refetch com novos filtros
+    await queryClient.invalidateQueries({ queryKey: ['orders'] })
+    await queryClient.invalidateQueries({ queryKey: ['positions'] })
+
+    // Pequeno delay para feedback visual
+    setTimeout(() => setIsFiltering(false), 500)
   }
 
   const clearFilters = () => {
-    setDateFrom('')
-    setDateTo('')
+    setDateFrom(getDefaultDateFrom())
+    setDateTo(getDefaultDateTo())
     setSelectedExchange('all')
     setSelectedOperationType('all')
     setSelectedStatus('open')
@@ -309,8 +326,37 @@ const PositionsPage: React.FC = () => {
     return passesDateFilter && passesOperationFilter && passesSymbolFilter
   })
 
-  // Criar posições híbridas (reais + virtuais)
-  const allPositionsGrouped = createHybridPositions(allOrdersFiltered, realPositions, accountBalanceData)
+  // Filtrar posições reais também pelos critérios de data/operação/símbolo
+  const realPositionsFiltered = realPositions.filter(position => {
+    // Filtro de data
+    let passesDateFilter = true
+    if (dateFrom || dateTo) {
+      const posDate = position.openedAt ? new Date(position.openedAt) : null
+      if (!posDate) return true // Manter posições sem data
+
+      const posDateStr = posDate.toISOString().split('T')[0]
+      if (dateFrom && posDateStr < dateFrom) passesDateFilter = false
+      if (dateTo && posDateStr > dateTo) passesDateFilter = false
+    }
+
+    // Filtro de tipo de operação
+    let passesOperationFilter = true
+    if (selectedOperationType !== 'all') {
+      const posOperationType = (position.operationType || position.operation_type || 'spot').toLowerCase()
+      passesOperationFilter = posOperationType === selectedOperationType
+    }
+
+    // Filtro de símbolo
+    let passesSymbolFilter = true
+    if (symbolFilter.trim() !== '') {
+      passesSymbolFilter = position.symbol?.toLowerCase().includes(symbolFilter.toLowerCase())
+    }
+
+    return passesDateFilter && passesOperationFilter && passesSymbolFilter
+  })
+
+  // Criar posições híbridas (reais filtradas + virtuais das ordens filtradas)
+  const allPositionsGrouped = createHybridPositions(allOrdersFiltered, realPositionsFiltered, accountBalanceData)
 
   // Filtro de status das posições
   const allPositionsFiltered = allPositionsGrouped.filter(position => {
@@ -327,7 +373,9 @@ const PositionsPage: React.FC = () => {
 
   console.log('🔍 FINAL: Raw orders:', allOrdersRaw?.length)
   console.log('🔍 FINAL: Real positions:', realPositions?.length)
+  console.log('🔍 FINAL: Real positions filtered:', realPositionsFiltered?.length)
   console.log('🔍 FINAL: Filtered orders:', allOrdersFiltered?.length)
+  console.log('🔍 FILTERS: dateFrom=', dateFrom, 'dateTo=', dateTo, 'status=', selectedStatus, 'operation=', selectedOperationType, 'symbol=', symbolFilter)
   console.log('🔍 FINAL: Hybrid positions:', allPositionsGrouped?.length)
   console.log('🔍 FINAL: Real vs Virtual breakdown:', {
     real: allPositionsGrouped?.filter(p => p.isReal)?.length || 0,
@@ -569,14 +617,25 @@ const PositionsPage: React.FC = () => {
                 <Button
                   onClick={applyFilters}
                   variant="default"
+                  disabled={isFiltering || loadingPositions}
                   className="flex-1 bg-primary hover:bg-primary/90 focus:ring-2 focus:ring-primary/20 transition-all duration-200"
                 >
-                  <Filter className="w-4 h-4 mr-2" />
-                  Filtrar
+                  {isFiltering || loadingPositions ? (
+                    <>
+                      <LoadingSpinner className="w-4 h-4 mr-2" />
+                      Filtrando...
+                    </>
+                  ) : (
+                    <>
+                      <Filter className="w-4 h-4 mr-2" />
+                      Filtrar
+                    </>
+                  )}
                 </Button>
                 <Button
                   onClick={clearFilters}
                   variant="outline"
+                  disabled={isFiltering}
                   className="flex-1 border-border hover:bg-muted transition-all duration-200"
                 >
                   Limpar

@@ -12,10 +12,11 @@ const LAZY_LOAD_PAGE_SIZE = 1000
 interface DraggableLine {
   id: string
   positionId: string
-  type: 'stopLoss' | 'takeProfit'
+  type: 'stopLoss' | 'takeProfit' | 'entry'
   price: number
   color: string
   y: number
+  side?: 'LONG' | 'SHORT'  // Para linhas de entrada, indica o lado da posição
 }
 
 interface CustomChartProps {
@@ -46,6 +47,9 @@ interface CustomChartProps {
   onPositionClose?: (positionId: string) => void
   onPositionEdit?: (positionId: string) => void
   onSLTPDrag?: (positionId: string, type: 'stopLoss' | 'takeProfit', newPrice: number) => void
+  onCreateSLTP?: (positionId: string, type: 'stopLoss' | 'takeProfit', price: number, side: 'LONG' | 'SHORT') => void
+  onCancelOrder?: (positionId: string, type: 'stopLoss' | 'takeProfit') => void
+  onIndicatorClick?: (indicatorId: string) => void
 }
 
 interface CandleData {
@@ -70,7 +74,9 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   onChartClick,
   onPositionClose,
   onPositionEdit,
-  onSLTPDrag
+  onSLTPDrag,
+  onCreateSLTP,
+  onCancelOrder
 }) => {
   // 🚨 DEBUG: Log no início do componente para verificar renderização
   console.log('🔵 CustomChart RENDERIZADO com:', {
@@ -692,18 +698,31 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
       try {
         const color = position.side === 'LONG' ? '#10B981' : '#EF4444'
-        const title = `${position.side} ${position.quantity} @ $${position.entryPrice.toFixed(2)}`
 
-        // Linha de entrada
+        // Linha de entrada - SUTIL (cinza) - a cor aparece no overlay quando arrasta
         const priceLine = candlestickSeriesRef.current!.createPriceLine({
           price: position.entryPrice,
-          color: color,
-          lineWidth: 2,
-          lineStyle: 0,
+          color: '#6B7280',  // Cinza neutro
+          lineWidth: 1,  // Fina
+          lineStyle: 2,  // Tracejada
           axisLabelVisible: true,
-          title: title,
+          title: `${position.side} @ $${position.entryPrice.toFixed(2)}`,
         })
         priceLineIdsRef.current.push(priceLine)
+
+        // Adicionar linha de entrada como draggable
+        const entryY = candlestickSeriesRef.current!.priceToCoordinate(position.entryPrice)
+        if (entryY !== null) {
+          newDraggableLines.push({
+            id: `entry-${position.id}`,
+            positionId: position.id,
+            type: 'entry',
+            price: position.entryPrice,
+            color: color,  // Cor original para usar quando arrastar
+            y: entryY,
+            side: position.side as 'LONG' | 'SHORT'
+          })
+        }
 
         // Linha de Stop Loss (vermelha tracejada) - DRAGGABLE
         if (position.stopLoss && position.stopLoss > 0 && candlestickSeriesRef.current) {
@@ -878,7 +897,8 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       console.log('🖱️ MouseUp disparado', {
         draggedLine,
         hasCandlestickSeries: !!candlestickSeriesRef.current,
-        hasOnSLTPDrag: !!onSLTPDrag
+        hasOnSLTPDrag: !!onSLTPDrag,
+        hasOnCreateSLTP: !!onCreateSLTP
       })
 
       if (!draggedLine) {
@@ -888,12 +908,6 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
       if (!candlestickSeriesRef.current) {
         console.log('❌ candlestickSeriesRef não disponível')
-        setDraggedLine(null)
-        return
-      }
-
-      if (!onSLTPDrag) {
-        console.log('❌ onSLTPDrag callback não fornecido')
         setDraggedLine(null)
         return
       }
@@ -908,8 +922,36 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         console.log('💰 Novo preço calculado:', newPrice)
 
         if (newPrice) {
-          console.log(`🎯 Linha ${line.type} arrastada para $${newPrice.toFixed(2)} - Chamando API...`)
-          onSLTPDrag(line.positionId, line.type, newPrice)
+          // CASO ESPECIAL: Linha de ENTRADA - criar SL ou TP
+          if (line.type === 'entry' && onCreateSLTP && line.side) {
+            const priceDiff = newPrice - line.price
+
+            // Para LONG: arrastar para cima = TP, arrastar para baixo = SL
+            // Para SHORT: arrastar para cima = SL, arrastar para baixo = TP
+            let orderType: 'stopLoss' | 'takeProfit'
+
+            if (line.side === 'LONG') {
+              orderType = priceDiff > 0 ? 'takeProfit' : 'stopLoss'
+            } else {
+              orderType = priceDiff > 0 ? 'stopLoss' : 'takeProfit'
+            }
+
+            // Verificar se houve movimento significativo (pelo menos 0.1% do preço)
+            const minMovement = line.price * 0.001
+            if (Math.abs(priceDiff) > minMovement) {
+              console.log(`🎯 Criando ${orderType} para ${line.side} @ $${newPrice.toFixed(2)}`)
+              onCreateSLTP(line.positionId, orderType, newPrice, line.side)
+            } else {
+              console.log('⚠️ Movimento muito pequeno, ignorando')
+            }
+          }
+          // CASO NORMAL: Mover SL/TP existente
+          else if (line.type !== 'entry' && onSLTPDrag) {
+            console.log(`🎯 Linha ${line.type} arrastada para $${newPrice.toFixed(2)} - Chamando API...`)
+            onSLTPDrag(line.positionId, line.type, newPrice)
+          } else {
+            console.log('❌ Callback não disponível para este tipo de linha')
+          }
         } else {
           console.log('❌ Não foi possível converter Y para preço')
         }
@@ -927,7 +969,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       document.removeEventListener('mousemove', handleGlobalMouseMove)
       document.removeEventListener('mouseup', handleGlobalMouseUp)
     }
-  }, [draggedLine, draggableLines, onSLTPDrag])
+  }, [draggedLine, draggableLines, onSLTPDrag, onCreateSLTP])
 
   // 🔥 FIX CRÍTICO: useEffect para reagir às mudanças de indicadores em tempo real
   // IMPORTANTE: Removido symbol e interval das dependências para evitar race condition
@@ -1397,17 +1439,53 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       )}
 
       {/* Draggable SL/TP Lines Overlay */}
-      {/* 🚀 PERFORMANCE: Logs commented out to reduce overhead */}
-      {/* {draggableLines.length > 0 && console.log(`🎨 Renderizando ${draggableLines.length} linhas draggable`)} */}
       {draggableLines.map((line) => {
-        // console.log(`  ✏️ Renderizando linha ${line.id} em y=${line.y.toFixed(1)}px`)
+        const isEntryLine = line.type === 'entry'
+        const isDragging = draggedLine === line.id
+
+        // Para linhas de entrada sendo arrastadas, calcular direção e cor
+        let dragColor = line.color
+        let dragLabel = ''
+        let showDragPreview = false
+
+        if (isEntryLine && isDragging && candlestickSeriesRef.current) {
+          // Calcular preço atual baseado na posição Y
+          const currentPrice = candlestickSeriesRef.current.coordinateToPrice(line.y)
+          if (currentPrice) {
+            const priceDiff = currentPrice - line.price
+            const isGoingUp = priceDiff > 0
+
+            // Determinar cor e label baseado na direção e lado da posição
+            if (line.side === 'LONG') {
+              dragColor = isGoingUp ? '#10B981' : '#EF4444' // Verde para TP, Vermelho para SL
+              dragLabel = isGoingUp ? 'TP' : 'SL'
+            } else {
+              dragColor = isGoingUp ? '#EF4444' : '#10B981' // Vermelho para SL, Verde para TP
+              dragLabel = isGoingUp ? 'SL' : 'TP'
+            }
+            showDragPreview = Math.abs(priceDiff) > line.price * 0.001
+          }
+        }
+
+        const typeLabel = isEntryLine
+          ? `Arraste para criar SL/TP (${line.side})`
+          : line.type === 'stopLoss'
+            ? 'Stop Loss'
+            : 'Take Profit'
+
+        // Cor da linha: cinza neutro para entrada (não arrastando), cor normal para SL/TP
+        const lineDisplayColor = isEntryLine && !isDragging
+          ? '#6B7280' // Cinza neutro quando não está arrastando
+          : isDragging && showDragPreview
+            ? dragColor // Cor baseada na direção quando arrastando
+            : line.color
+
         return (
           <div
             key={line.id}
             onMouseDown={(e) => {
               e.preventDefault()
               e.stopPropagation()
-              // console.log(`🖱️ MouseDown na linha ${line.type} (${line.id})`)
               setDraggedLine(line.id)
             }}
             style={{
@@ -1415,35 +1493,91 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
               left: 0,
               right: 60,
               top: `${line.y}px`,
-              height: '24px',
-              marginTop: '-12px',
-              cursor: draggedLine === line.id ? 'grabbing' : 'grab',
-              zIndex: 100,
+              height: isEntryLine ? '32px' : '24px',
+              marginTop: isEntryLine ? '-16px' : '-12px',
+              cursor: isDragging ? 'grabbing' : 'grab',
+              zIndex: isDragging ? 120 : (isEntryLine ? 110 : 100),
               pointerEvents: 'auto'
             }}
             className="group"
-            title={`${line.type} @ $${line.price.toFixed(2)} - Arraste para mover`}
+            title={`${typeLabel} @ $${line.price.toFixed(2)}`}
           >
             {/* Área de hit maior para facilitar o drag */}
-            <div className="absolute inset-0 bg-transparent hover:bg-white/5" />
-            {/* Indicador visual quando hover */}
+            <div className={`absolute inset-0 bg-transparent ${isEntryLine ? 'hover:bg-white/10' : 'hover:bg-white/5'}`} />
+
+            {/* Linha visual */}
             <div
-              className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 opacity-0 group-hover:opacity-80 transition-opacity"
+              className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 transition-all duration-100 ${
+                isDragging ? 'h-1 opacity-90' : (isEntryLine ? 'h-0.5 opacity-40 group-hover:opacity-70 group-hover:h-1' : 'h-1 opacity-0 group-hover:opacity-80')
+              }`}
               style={{
-                backgroundColor: line.color,
-                boxShadow: `0 0 6px ${line.color}`,
+                backgroundColor: lineDisplayColor,
+                boxShadow: isDragging ? `0 0 12px ${lineDisplayColor}` : `0 0 6px ${lineDisplayColor}`,
               }}
             />
-            {/* Label de preço */}
+
+            {/* Label de preço - mostra quando arrastando ou hover */}
             <div
-              className="absolute -left-16 top-1/2 -translate-y-1/2 text-xs font-mono px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+              className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono px-2 py-0.5 rounded transition-opacity flex items-center gap-1 ${
+                isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+              } ${isEntryLine ? 'font-bold' : ''}`}
               style={{
-                backgroundColor: line.color,
+                backgroundColor: lineDisplayColor,
                 color: 'white'
               }}
             >
-              ${line.price.toFixed(2)}
+              {isDragging && showDragPreview && isEntryLine ? (
+                <>
+                  {dragLabel} ${candlestickSeriesRef.current?.coordinateToPrice(line.y)?.toFixed(2) || line.price.toFixed(2)}
+                </>
+              ) : (
+                <>${line.price.toFixed(2)}</>
+              )}
+
+              {/* Botão X para cancelar ordem SL/TP (não aparece na linha de entrada) */}
+              {!isEntryLine && !isDragging && onCancelOrder && (
+                <button
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    onCancelOrder(line.positionId, line.type as 'stopLoss' | 'takeProfit')
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="ml-1 w-4 h-4 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/40 transition-colors"
+                  title={`Cancelar ${line.type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}`}
+                >
+                  <span className="text-[10px] font-bold">×</span>
+                </button>
+              )}
             </div>
+
+            {/* Tooltip de instrução para linha de entrada (só quando não está arrastando) */}
+            {isEntryLine && !isDragging && (
+              <div
+                className="absolute left-1/2 -translate-x-1/2 -top-8 text-[10px] font-medium px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
+                style={{
+                  backgroundColor: 'rgba(0,0,0,0.9)',
+                  color: '#9CA3AF',
+                  border: '1px solid #4B5563'
+                }}
+              >
+                ↑ {line.side === 'LONG' ? 'TP' : 'SL'} | ↓ {line.side === 'LONG' ? 'SL' : 'TP'}
+              </div>
+            )}
+
+            {/* Preview grande quando arrastando */}
+            {isDragging && showDragPreview && isEntryLine && (
+              <div
+                className="absolute left-1/2 -translate-x-1/2 -top-10 text-sm font-bold px-3 py-1.5 rounded shadow-lg animate-pulse whitespace-nowrap"
+                style={{
+                  backgroundColor: dragColor,
+                  color: 'white',
+                  boxShadow: `0 0 20px ${dragColor}`
+                }}
+              >
+                {dragLabel === 'TP' ? '🎯' : '🛑'} Criar {dragLabel}
+              </div>
+            )}
           </div>
         )
       })}

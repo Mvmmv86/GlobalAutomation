@@ -30,6 +30,17 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue
 }
 
+// Interface para posição aberta
+interface OpenPosition {
+  id: string
+  symbol: string
+  side: 'LONG' | 'SHORT'
+  size: number  // Quantidade em tokens
+  entryPrice: number
+  unrealizedPnl?: number
+  leverage?: number
+}
+
 interface TradingPanelProps {
   symbol: string
   currentPrice: number
@@ -37,6 +48,8 @@ interface TradingPanelProps {
   selectedAccountId?: string
   onAccountChange?: (accountId: string) => void
   onOrderSubmit: (order: OrderData) => void
+  onClosePosition?: (positionId: string, quantity: number, price?: number) => void
+  openPosition?: OpenPosition | null  // Posição aberta para o símbolo atual
   isSubmitting?: boolean
   className?: string
 }
@@ -63,6 +76,8 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
   selectedAccountId = '',
   onAccountChange,
   onOrderSubmit,
+  onClosePosition,
+  openPosition,
   isSubmitting = false,
   className
 }) => {
@@ -117,6 +132,8 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
   const [takeProfit, setTakeProfit] = useState<string>('')
   const [useRiskManagement, setUseRiskManagement] = useState<boolean>(false)
   const [positionSize, setPositionSize] = useState<number>(25) // Percentage
+  const [closePercentage, setClosePercentage] = useState<number>(100) // % da posição a fechar
+  const [closePrice, setClosePrice] = useState<string>('') // Preço de fechamento (opcional)
 
   // SPOT: Calcular saldo disponível baseado em BUY/SELL
   const availableSpotBalance = useMemo(() => {
@@ -392,29 +409,172 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
               </TabsContent>
 
               <TabsContent value="stop" className="space-y-4 mt-4">
-                <FormField
-                  label="Preço Stop"
-                  type="number"
-                  placeholder={currentPrice.toString()}
-                  value={stopPrice}
-                  onChange={(e) => setStopPrice(e.target.value)}
-                />
-                <FormField
-                  label="Quantidade"
-                  type="number"
-                  placeholder="0.00000000"
-                  value={quantity}
-                  onChange={(e) => handleQuantityChange(e.target.value)}
-                  hint={`≈ ${orderValue.toFixed(2)} USDT`}
-                />
-                <FormField
-                  label={operationType === 'futures' ? 'Margem USDT' : 'Valor em USDT'}
-                  type="number"
-                  placeholder="0.00"
-                  value={marginUsdt}
-                  onChange={(e) => handleMarginUsdtChange(e.target.value)}
-                  hint={operationType === 'futures' ? `Leverage ${leverage}x` : 'Valor total da ordem'}
-                />
+                {/* Stop/Close Position Mode */}
+                {openPosition ? (
+                  // TEM POSIÇÃO ABERTA - Mostrar UI de fechamento
+                  <div className="space-y-4">
+                    {/* Info da Posição Aberta */}
+                    <div className="p-3 border rounded-lg bg-muted/30 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-warning" />
+                          Posição Aberta
+                        </span>
+                        <Badge variant={openPosition.side === 'LONG' ? 'default' : 'destructive'}>
+                          {openPosition.side}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Quantidade:</span>
+                          <span className="font-mono ml-2">{openPosition.size.toFixed(4)}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Entrada:</span>
+                          <span className="font-mono ml-2">${openPosition.entryPrice.toFixed(2)}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Valor:</span>
+                          <span className="font-mono ml-2">${(openPosition.size * currentPrice).toFixed(2)}</span>
+                        </div>
+                        {openPosition.unrealizedPnl !== undefined && (
+                          <div>
+                            <span className="text-muted-foreground">P&L:</span>
+                            <span className={cn(
+                              "font-mono ml-2",
+                              openPosition.unrealizedPnl >= 0 ? "text-success" : "text-destructive"
+                            )}>
+                              ${openPosition.unrealizedPnl.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Quantidade a Fechar */}
+                    <div className="p-3 border border-destructive/30 rounded-lg bg-destructive/5 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-destructive flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4" />
+                          Fechar Posição
+                        </span>
+                        <div className="text-right">
+                          <div className="font-mono text-sm">
+                            {(openPosition.size * closePercentage / 100).toFixed(4)} {baseAsset}
+                          </div>
+                          <div className="font-mono text-xs text-muted-foreground">
+                            ≈ ${(openPosition.size * closePercentage / 100 * currentPrice).toFixed(2)} USDT
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Slider */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Quantidade:</span>
+                          <span className="font-mono font-medium">{closePercentage}%</span>
+                        </div>
+                        <Slider
+                          value={[closePercentage]}
+                          onValueChange={(value) => setClosePercentage(value[0])}
+                          max={100}
+                          min={25}
+                          step={25}
+                          className="w-full"
+                        />
+                        <div className="flex justify-between text-xs text-muted-foreground">
+                          <span>25%</span>
+                          <span>50%</span>
+                          <span>75%</span>
+                          <span>100%</span>
+                        </div>
+                      </div>
+
+                      {/* Quick Buttons */}
+                      <div className="grid grid-cols-4 gap-2">
+                        {[25, 50, 75, 100].map((pct) => (
+                          <Button
+                            key={pct}
+                            variant={closePercentage === pct ? "default" : "outline"}
+                            size="sm"
+                            className={cn(
+                              "text-xs flex flex-col py-2 h-auto",
+                              closePercentage === pct && "bg-destructive hover:bg-destructive/90"
+                            )}
+                            onClick={() => setClosePercentage(pct)}
+                          >
+                            <span className="font-bold">{pct}%</span>
+                            <span className="text-[10px] opacity-70">
+                              ${(openPosition.size * pct / 100 * currentPrice).toFixed(0)}
+                            </span>
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Preço de Fechamento (opcional) */}
+                    <FormField
+                      label="Preço (opcional)"
+                      type="number"
+                      placeholder={`Market (${currentPrice.toFixed(2)})`}
+                      value={closePrice}
+                      onChange={(e) => setClosePrice(e.target.value)}
+                      hint="Deixe vazio para fechar a mercado"
+                    />
+
+                    {/* Resumo */}
+                    <div className="space-y-2 p-3 border rounded-lg bg-muted/30">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Quantidade:</span>
+                        <span className="font-mono">{(openPosition.size * closePercentage / 100).toFixed(4)} {baseAsset}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Valor Aprox.:</span>
+                        <span className="font-mono">${(openPosition.size * closePercentage / 100 * currentPrice).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Tipo:</span>
+                        <span className="font-mono">{closePrice ? 'Limit' : 'Market'}</span>
+                      </div>
+                    </div>
+
+                    {/* Botão Fechar */}
+                    <Button
+                      onClick={() => {
+                        if (onClosePosition && openPosition) {
+                          const qtyToClose = openPosition.size * closePercentage / 100
+                          const priceToUse = closePrice ? parseFloat(closePrice) : undefined
+                          onClosePosition(openPosition.id, qtyToClose, priceToUse)
+                        }
+                      }}
+                      className="w-full bg-destructive hover:bg-destructive/90"
+                      disabled={isSubmitting || !openPosition}
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <div className="h-4 w-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          Fechando...
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="h-4 w-4 mr-2" />
+                          Fechar {closePercentage}% da Posição
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  // SEM POSIÇÃO ABERTA - Mostrar mensagem
+                  <div className="p-6 text-center border rounded-lg bg-muted/30">
+                    <AlertTriangle className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">
+                      Nenhuma posição aberta para {symbol}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Abra uma posição usando as abas Market ou Limit
+                    </p>
+                  </div>
+                )}
               </TabsContent>
             </Tabs>
 

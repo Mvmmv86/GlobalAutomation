@@ -13,7 +13,7 @@ import { useChartPositions } from '@/hooks/useChartPositions'
 import { useCandles } from '@/hooks/useCandles'
 import { usePositionOrders } from '@/hooks/usePositionOrders'
 import { cn } from '@/lib/utils'
-import { updatePositionSLTP } from '@/lib/api'
+import { updatePositionSLTP, createPositionSLTP, cancelPositionSLTP } from '@/lib/api'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -635,6 +635,76 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
                   toast.error('Erro ao atualizar ordem', {
                     id: `sltp-update-${positionId}`,
+                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
+                  })
+                }
+              }}
+              onCreateSLTP={async (positionId, type, price, side) => {
+                console.log(`🎯 Criando ${type} para posição ${positionId} @ $${price.toFixed(2)} (${side})`)
+
+                const queryKey = ['position-orders', exchangeAccountId, symbol]
+
+                try {
+                  // Mostrar feedback visual
+                  toast.loading(`Criando ${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}...`, {
+                    id: `sltp-create-${positionId}`
+                  })
+
+                  // Chamar API para criar SL/TP
+                  const result = await createPositionSLTP(positionId, type, price, side)
+
+                  // ✅ Invalidar cache para forçar refetch
+                  await queryClient.invalidateQueries({ queryKey })
+                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
+                  await queryClient.invalidateQueries({ queryKey: ['chart-positions'] })
+
+                  toast.success(`${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'} criado!`, {
+                    id: `sltp-create-${positionId}`,
+                    description: `Ordem criada: ${result.order_id} @ $${price.toFixed(2)}`
+                  })
+
+                  console.log('✅ SL/TP criado:', result)
+
+                } catch (error: any) {
+                  console.error('Erro ao criar SL/TP:', error)
+
+                  toast.error('Erro ao criar ordem', {
+                    id: `sltp-create-${positionId}`,
+                    description: error.response?.data?.detail || error.message || 'Erro desconhecido'
+                  })
+                }
+              }}
+              onCancelOrder={async (positionId, type) => {
+                console.log(`❌ Cancelando ${type} para posição ${positionId}`)
+
+                const queryKey = ['position-orders', exchangeAccountId, symbol]
+
+                try {
+                  // Mostrar feedback visual
+                  toast.loading(`Cancelando ${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}...`, {
+                    id: `sltp-cancel-${positionId}`
+                  })
+
+                  // Chamar API para cancelar SL/TP
+                  const result = await cancelPositionSLTP(positionId, type)
+
+                  // ✅ Invalidar cache para forçar refetch
+                  await queryClient.invalidateQueries({ queryKey })
+                  await queryClient.invalidateQueries({ queryKey: ['positions'] })
+                  await queryClient.invalidateQueries({ queryKey: ['chart-positions'] })
+
+                  toast.success(`${type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'} cancelado!`, {
+                    id: `sltp-cancel-${positionId}`,
+                    description: result.message
+                  })
+
+                  console.log('✅ SL/TP cancelado:', result)
+
+                } catch (error: any) {
+                  console.error('Erro ao cancelar SL/TP:', error)
+
+                  toast.error('Erro ao cancelar ordem', {
+                    id: `sltp-cancel-${positionId}`,
                     description: error.response?.data?.detail || error.message || 'Erro desconhecido'
                   })
                 }

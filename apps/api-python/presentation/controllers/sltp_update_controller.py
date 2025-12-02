@@ -28,6 +28,20 @@ class UpdateSLTPRequest(BaseModel):
     price: float
 
 
+class CreateSLTPRequest(BaseModel):
+    """Request para criar SL/TP novo"""
+    position_id: str
+    type: str  # 'stopLoss' ou 'takeProfit'
+    price: float
+    side: str  # 'LONG' ou 'SHORT'
+
+
+class CancelSLTPRequest(BaseModel):
+    """Request para cancelar SL/TP"""
+    position_id: str
+    type: str  # 'stopLoss' ou 'takeProfit'
+
+
 @router.patch("/positions/{position_id}/sltp")
 async def update_position_sltp(
     position_id: str,
@@ -397,6 +411,405 @@ async def update_position_sltp(
         raise HTTPException(status_code=400, detail=f"Erro da Binance: {e.message}")
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar SL/TP: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/positions/{position_id}/sltp")
+async def create_position_sltp(
+    position_id: str,
+    create_data: CreateSLTPRequest,
+    x_idempotency_key: Optional[str] = Header(None)
+):
+    """
+    Cria Stop Loss ou Take Profit para uma posição existente
+
+    Este endpoint é usado quando o usuário arrasta a linha de entrada
+    no gráfico para criar um novo SL ou TP.
+
+    Este endpoint:
+    1. Verifica idempotência (previne duplicação)
+    2. Busca a posição e suas credenciais
+    3. Cria uma nova ordem SL/TP com o preço especificado
+    4. Salva no banco de dados
+    """
+    logger.info(f"📝 Criando SL/TP para posição {position_id}")
+    logger.info(f"📊 Tipo: {create_data.type}, Preço: ${create_data.price}, Side: {create_data.side}")
+
+    # ✅ IDEMPOTÊNCIA: Verificar se esta requisição já foi processada
+    if x_idempotency_key:
+        cached_response = await check_idempotency(x_idempotency_key)
+        if cached_response:
+            logger.info(f"✅ Retornando resposta cacheada para idempotency_key: {x_idempotency_key}")
+            return cached_response
+
+    try:
+        # 1. Buscar a posição no banco
+        position = await transaction_db.fetchrow("""
+            SELECT
+                p.*,
+                ea.api_key,
+                ea.secret_key,
+                ea.testnet,
+                ea.exchange,
+                COALESCE(ea.position_mode, 'hedge') as position_mode
+            FROM positions p
+            JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
+            WHERE p.id = $1
+        """, position_id)
+
+        if not position:
+            raise HTTPException(status_code=404, detail="Posição não encontrada")
+
+        logger.info(f"✅ Posição encontrada: {position['symbol']} {position['side']}")
+
+        # 2. Criar connector da exchange correta
+        exchange = position['exchange'].lower()
+        logger.info(f"🏦 Exchange detectada: {exchange}")
+
+        if exchange == 'bingx':
+            connector = BingXConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+        else:  # binance
+            connector = BinanceConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+
+        # 3. Arredondar preço para precisão correta
+        order_type = create_data.type
+        new_price = create_data.price
+        symbol = position['symbol'].upper()
+
+        if 'BTC' in symbol:
+            rounded_price = round(new_price, 1)
+        elif 'ETH' in symbol:
+            rounded_price = round(new_price, 2)
+        else:
+            rounded_price = round(new_price, 2)
+
+        logger.info(f"📝 Criando ordem {order_type} @ ${rounded_price}")
+
+        # 4. Determinar side da ordem (inverso da posição)
+        order_side = 'SELL' if create_data.side.upper() == 'LONG' else 'BUY'
+        position_side = create_data.side.upper()  # LONG ou SHORT
+
+        # 5. Buscar quantidade da posição
+        quantity = float(position['size'])
+
+        if exchange == 'bingx':
+            # Buscar quantidade disponível diretamente da BingX
+            symbol_bingx = position['symbol'].replace("USDT", "-USDT") if "-" not in position['symbol'] else position['symbol']
+
+            bingx_positions = await connector.get_futures_positions()
+            if bingx_positions.get('success') and bingx_positions.get('positions'):
+                for pos in bingx_positions['positions']:
+                    pos_symbol = pos.get('symbol', '')
+                    pos_side = pos.get('positionSide', '').upper()
+                    if pos_symbol == symbol_bingx and pos_side == position_side:
+                        bingx_available = abs(float(pos.get('availableAmt', 0)))
+                        if bingx_available > 0:
+                            quantity = bingx_available
+                            logger.info(f"📊 Usando availableAmt da BingX: {quantity}")
+                        break
+
+            logger.info(f"📊 Criando SL/TP BingX: position_side={position_side}, order_side={order_side}, quantity={quantity}")
+
+            if order_type == 'stopLoss':
+                result = await connector.create_stop_loss_order(
+                    symbol=symbol_bingx,
+                    side=order_side,
+                    quantity=quantity,
+                    stop_price=rounded_price,
+                    reduce_only=False,
+                    position_side=position_side
+                )
+            else:  # takeProfit
+                result = await connector.create_take_profit_order(
+                    symbol=symbol_bingx,
+                    side=order_side,
+                    quantity=quantity,
+                    stop_price=rounded_price,
+                    reduce_only=False,
+                    position_side=position_side
+                )
+
+            if not result.get('success'):
+                raise Exception(f"BingX order creation failed: {result.get('error')}")
+
+            new_order_id = str(result.get('order_id'))
+            logger.info(f"✅ Nova ordem criada na BingX: {new_order_id}")
+        else:
+            # Binance
+            if order_type == 'stopLoss':
+                order_params = {
+                    'symbol': position['symbol'].upper(),
+                    'side': order_side,
+                    'type': 'STOP_MARKET',
+                    'stopPrice': rounded_price,
+                    'closePosition': 'true'
+                }
+            else:  # takeProfit
+                order_params = {
+                    'symbol': position['symbol'].upper(),
+                    'side': order_side,
+                    'type': 'TAKE_PROFIT_MARKET',
+                    'stopPrice': rounded_price,
+                    'closePosition': 'true'
+                }
+
+            order_result = await asyncio.to_thread(
+                connector.client.futures_create_order,
+                **order_params
+            )
+
+            new_order_id = str(order_result.get('orderId'))
+            logger.info(f"✅ Nova ordem criada na Binance: {new_order_id}")
+
+        # 6. Salvar nova ordem no banco
+        sl_tp_prefix = 'sl' if order_type == 'stopLoss' else 'tp'
+        client_order_id = f"{sl_tp_prefix}_{uuid.uuid4().hex[:16]}"
+
+        db_order_id = await transaction_db.fetchval("""
+            INSERT INTO orders (
+                client_order_id,
+                source,
+                exchange_account_id,
+                external_id,
+                symbol,
+                side,
+                type,
+                status,
+                quantity,
+                stop_price,
+                filled_quantity,
+                fees_paid,
+                time_in_force,
+                retry_count,
+                reduce_only,
+                post_only,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+            RETURNING id
+        """,
+            client_order_id,
+            'PLATFORM',
+            position['exchange_account_id'],
+            new_order_id,
+            position['symbol'],
+            order_side.lower(),
+            'market',
+            'submitted',
+            Decimal(str(quantity)),
+            Decimal(str(rounded_price)),
+            Decimal('0'),
+            Decimal('0'),
+            'gtc',
+            0,
+            True,
+            False,
+            datetime.utcnow()
+        )
+
+        logger.info(f"✅ Nova ordem salva no banco: {db_order_id}")
+
+        # Preparar resposta
+        response = {
+            "success": True,
+            "message": f"{order_type} criado com sucesso",
+            "order_id": new_order_id,
+            "new_price": rounded_price
+        }
+
+        # ✅ IDEMPOTÊNCIA: Cachear resposta
+        if x_idempotency_key:
+            await cache_response(x_idempotency_key, response, ttl=60)
+
+        return response
+
+    except BinanceAPIException as e:
+        logger.error(f"❌ Erro da API Binance: {e}")
+        raise HTTPException(status_code=400, detail=f"Erro da Binance: {e.message}")
+    except Exception as e:
+        logger.error(f"❌ Erro ao criar SL/TP: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/positions/{position_id}/sltp")
+async def cancel_position_sltp(
+    position_id: str,
+    cancel_data: CancelSLTPRequest
+):
+    """
+    Cancela Stop Loss ou Take Profit de uma posição existente
+
+    Este endpoint é usado quando o usuário clica no X para remover uma ordem SL/TP.
+
+    Este endpoint:
+    1. Busca a posição e suas credenciais
+    2. Busca a ordem SL/TP associada
+    3. Cancela a ordem na exchange
+    4. Atualiza o status no banco de dados
+    """
+    logger.info(f"❌ Cancelando SL/TP para posição {position_id}")
+    logger.info(f"📊 Tipo: {cancel_data.type}")
+
+    try:
+        # 1. Buscar a posição no banco
+        position = await transaction_db.fetchrow("""
+            SELECT
+                p.*,
+                ea.api_key,
+                ea.secret_key,
+                ea.testnet,
+                ea.exchange,
+                COALESCE(ea.position_mode, 'hedge') as position_mode
+            FROM positions p
+            JOIN exchange_accounts ea ON p.exchange_account_id = ea.id
+            WHERE p.id = $1
+        """, position_id)
+
+        if not position:
+            raise HTTPException(status_code=404, detail="Posição não encontrada")
+
+        logger.info(f"✅ Posição encontrada: {position['symbol']} {position['side']}")
+
+        # 2. Buscar ordens SL/TP associadas à posição
+        order_type_db = 'market'  # Ordens SL/TP são salvas como market
+
+        # Determinar side da ordem baseado no tipo de posição
+        order_side = 'sell' if position['side'].upper() == 'LONG' else 'buy'
+
+        orders = await transaction_db.fetch("""
+            SELECT * FROM orders
+            WHERE exchange_account_id = $1
+            AND symbol = $2
+            AND side = $3
+            AND reduce_only = true
+            AND status IN ('submitted', 'new', 'partially_filled')
+            ORDER BY created_at DESC
+        """, position['exchange_account_id'], position['symbol'], order_side)
+
+        if not orders:
+            logger.warning(f"⚠️ Nenhuma ordem SL/TP encontrada para posição {position_id}")
+            # Mesmo sem ordens no banco, podemos tentar buscar na exchange
+
+        # 3. Criar connector da exchange
+        exchange = position['exchange'].lower()
+        logger.info(f"🏦 Exchange detectada: {exchange}")
+
+        if exchange == 'bingx':
+            connector = BingXConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+        else:  # binance
+            connector = BinanceConnector(
+                api_key=position['api_key'],
+                api_secret=position['secret_key'],
+                testnet=position['testnet']
+            )
+
+        # 4. Buscar ordens abertas na exchange para o símbolo
+        cancelled_order_id = None
+        symbol = position['symbol'].upper()
+
+        if exchange == 'bingx':
+            symbol_bingx = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
+
+            # Buscar todas as ordens abertas
+            open_orders = await connector.get_open_orders(symbol_bingx)
+
+            if open_orders.get('success') and open_orders.get('orders'):
+                for order in open_orders['orders']:
+                    order_type_str = order.get('type', '').upper()
+
+                    # Identificar se é SL ou TP
+                    is_sl = 'STOP' in order_type_str and 'TAKE' not in order_type_str
+                    is_tp = 'TAKE_PROFIT' in order_type_str or 'PROFIT' in order_type_str
+
+                    should_cancel = (
+                        (cancel_data.type == 'stopLoss' and is_sl) or
+                        (cancel_data.type == 'takeProfit' and is_tp)
+                    )
+
+                    if should_cancel:
+                        order_id = order.get('orderId') or order.get('order_id')
+                        logger.info(f"🎯 Cancelando ordem BingX: {order_id}")
+
+                        result = await connector.cancel_order(symbol_bingx, order_id)
+
+                        if result.get('success'):
+                            cancelled_order_id = str(order_id)
+                            logger.info(f"✅ Ordem cancelada na BingX: {cancelled_order_id}")
+                        else:
+                            logger.error(f"❌ Erro ao cancelar ordem BingX: {result.get('error')}")
+
+                        break  # Cancelar apenas a primeira ordem encontrada
+        else:
+            # Binance
+            open_orders = await asyncio.to_thread(
+                connector.client.futures_get_open_orders,
+                symbol=symbol
+            )
+
+            for order in open_orders:
+                order_type_str = order.get('type', '').upper()
+
+                # Identificar se é SL ou TP
+                is_sl = order_type_str in ['STOP_MARKET', 'STOP']
+                is_tp = order_type_str in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT']
+
+                should_cancel = (
+                    (cancel_data.type == 'stopLoss' and is_sl) or
+                    (cancel_data.type == 'takeProfit' and is_tp)
+                )
+
+                if should_cancel:
+                    order_id = order.get('orderId')
+                    logger.info(f"🎯 Cancelando ordem Binance: {order_id}")
+
+                    result = await asyncio.to_thread(
+                        connector.client.futures_cancel_order,
+                        symbol=symbol,
+                        orderId=order_id
+                    )
+
+                    cancelled_order_id = str(order_id)
+                    logger.info(f"✅ Ordem cancelada na Binance: {cancelled_order_id}")
+                    break
+
+        # 5. Atualizar status no banco de dados (se encontrou ordem)
+        if cancelled_order_id:
+            await transaction_db.execute("""
+                UPDATE orders
+                SET status = 'cancelled', updated_at = $1
+                WHERE external_id = $2
+            """, datetime.utcnow(), cancelled_order_id)
+
+            logger.info(f"✅ Status da ordem atualizado no banco")
+
+        return {
+            "success": True,
+            "message": f"{cancel_data.type} cancelado com sucesso",
+            "cancelled_order_id": cancelled_order_id
+        }
+
+    except BinanceAPIException as e:
+        logger.error(f"❌ Erro da API Binance: {e}")
+        raise HTTPException(status_code=400, detail=f"Erro da Binance: {e.message}")
+    except Exception as e:
+        logger.error(f"❌ Erro ao cancelar SL/TP: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

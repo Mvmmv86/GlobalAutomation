@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { TrendingUp, Bell } from 'lucide-react'
 import { Card } from '../atoms/Card'
 import { Button } from '../atoms/Button'
@@ -87,7 +87,23 @@ const TradingPage: React.FC = () => {
   } = useSpotBalances(selectedAccount)
 
   const isLoadingPositions = selectedAccount && (isLoadingOpen || isLoadingClosed || isLoadingSpot)
-  
+
+  // Encontrar posição aberta do símbolo atual para o TradingPanel
+  const currentOpenPosition = useMemo(() => {
+    if (!openPositions || openPositions.length === 0) return null
+    const position = openPositions.find(p => p.symbol?.toUpperCase() === selectedSymbol?.toUpperCase())
+    if (!position) return null
+    return {
+      id: position.id,
+      symbol: position.symbol,
+      side: (position.side?.toUpperCase() || 'LONG') as 'LONG' | 'SHORT',
+      size: position.size || position.quantity || 0,
+      entryPrice: position.entryPrice || position.entry_price || 0,
+      unrealizedPnl: position.unrealizedPnl || position.unrealized_pnl,
+      leverage: position.leverage
+    }
+  }, [openPositions, selectedSymbol])
+
   // Notification helper - logs to console for now (real notifications go to backend)
   const addNotification = useCallback((notification: { type: string; title: string; message: string; category?: string }) => {
     console.log('📢 Notification:', notification)
@@ -419,6 +435,14 @@ const TradingPage: React.FC = () => {
             onOrderSubmit={handleOrderSubmit}
             isSubmitting={createOrderMutation.isPending}
             className="h-full"
+            openPosition={currentOpenPosition}
+            onClosePosition={(positionId, quantity, _price) => {
+              // Calcular porcentagem baseado no tamanho da posição
+              const percentage = currentOpenPosition
+                ? Math.round((quantity / currentOpenPosition.size) * 100)
+                : 100
+              handleClosePosition(positionId, percentage)
+            }}
           />
         </div>
       </div>

@@ -169,3 +169,53 @@ export const updatePositionSLTP = async (
 
   return response.data
 }
+
+/**
+ * Cria Stop Loss ou Take Profit para uma posição existente
+ * Usado quando o usuário arrasta a linha de entrada para criar SL/TP
+ */
+export const createPositionSLTP = async (
+  positionId: string,
+  type: 'stopLoss' | 'takeProfit',
+  price: number,
+  side: 'LONG' | 'SHORT'
+): Promise<UpdateSLTPResponse> => {
+  // Gerar idempotency key
+  const idempotencyKey = generateIdempotencyKey(positionId, type, price)
+
+  const response = await apiClient.getAxiosInstance().post<UpdateSLTPResponse>(
+    `/orders/positions/${positionId}/sltp`,
+    { position_id: positionId, type, price, side },
+    {
+      headers: {
+        'X-Idempotency-Key': idempotencyKey
+      }
+    }
+  )
+
+  return response.data
+}
+
+export interface CancelSLTPResponse {
+  success: boolean
+  message: string
+  cancelled_order_id?: string
+}
+
+/**
+ * Cancela Stop Loss ou Take Profit de uma posição
+ * Usado quando o usuário clica no X para cancelar uma ordem
+ */
+export const cancelPositionSLTP = async (
+  positionId: string,
+  type: 'stopLoss' | 'takeProfit'
+): Promise<CancelSLTPResponse> => {
+  const response = await apiClient.getAxiosInstance().delete<CancelSLTPResponse>(
+    `/orders/positions/${positionId}/sltp`,
+    {
+      data: { position_id: positionId, type }
+    }
+  )
+
+  return response.data
+}

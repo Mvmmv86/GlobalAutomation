@@ -210,10 +210,11 @@ def create_orders_router() -> APIRouter:
         try:
             logger.info(f"🔵 CREATE ORDER CHAMADO! Payload: {order_request.model_dump()}")
 
-            # 1. Buscar dados da conta
+            # 1. Buscar dados da conta (incluindo position_mode para BingX)
             account = await transaction_db.fetchrow("""
                 SELECT
-                    id, exchange, api_key, secret_key, testnet
+                    id, exchange, api_key, secret_key, testnet,
+                    COALESCE(position_mode, 'hedge') as position_mode
                 FROM exchange_accounts
                 WHERE id = $1 AND is_active = true
             """, order_request.exchange_account_id)
@@ -322,6 +323,18 @@ def create_orders_router() -> APIRouter:
 
             # 9. Executar ordem na exchange (REAL)
             if order_request.operation_type == 'futures':
+                # BingX: Calcular position_side baseado no modo da conta (Hedge/One-Way)
+                position_side = None
+                if exchange_type == 'bingx':
+                    position_mode = account.get('position_mode', 'hedge')
+                    if position_mode == 'hedge':
+                        # Hedge Mode: LONG para BUY, SHORT para SELL
+                        position_side = "LONG" if order_request.side.upper() == "BUY" else "SHORT"
+                    else:
+                        # One-Way Mode: usar BOTH
+                        position_side = "BOTH"
+                    logger.info(f"🔷 BingX position_mode={position_mode}, position_side={position_side}")
+
                 exchange_result = await connector.create_futures_order(
                     symbol=order_request.symbol,
                     side=order_request.side,
@@ -331,7 +344,8 @@ def create_orders_router() -> APIRouter:
                     stop_price=order_request.stop_price,
                     leverage=order_request.leverage or 1,
                     stop_loss=order_request.stop_loss,
-                    take_profit=order_request.take_profit
+                    take_profit=order_request.take_profit,
+                    position_side=position_side  # BingX: passa position_side, outras exchanges: None
                 )
             else:  # SPOT
                 exchange_result = await connector.create_spot_order(

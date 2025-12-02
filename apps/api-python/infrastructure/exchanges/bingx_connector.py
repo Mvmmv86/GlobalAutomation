@@ -917,10 +917,49 @@ class BingXConnector:
                     "raw_response": result
                 }
             else:
+                error_msg = result.get("msg", "Unknown error")
+                error_code = result.get("code")
+
+                # FALLBACK: Detectar erro de One-Way Mode e retentar com BOTH
+                # Erro típico: "In the One-way mode, the 'PositionSide' field can only be set to BOTH"
+                if "One-way mode" in error_msg and use_position_side and position_side != "BOTH":
+                    logger.warning(f"⚠️ BingX One-Way Mode detectado! Retentando com positionSide=BOTH")
+                    params["positionSide"] = "BOTH"
+
+                    # Retentar a ordem com BOTH
+                    retry_result = await self._make_request("POST", "/openApi/swap/v2/trade/order", params, signed=True, use_body=True)
+
+                    if retry_result.get("code") == 0:
+                        order_data = retry_result.get("data", {})
+                        logger.info(f"✅ BingX ordem criada com sucesso após fallback para One-Way Mode")
+                        return {
+                            "success": True,
+                            "demo": False,
+                            "order_id": str(order_data.get("orderId")),
+                            "symbol": symbol,
+                            "side": side,
+                            "type": order_type,
+                            "quantity": str(quantity),
+                            "status": order_data.get("status", "NEW"),
+                            "filled_quantity": str(order_data.get("executedQty", "0")),
+                            "average_price": str(order_data.get("avgPrice", "0")),
+                            "timestamp": int(time.time() * 1000),
+                            "raw_response": retry_result,
+                            "fallback_used": "one_way_mode"  # Indica que usou fallback
+                        }
+                    else:
+                        # Fallback também falhou
+                        return {
+                            "success": False,
+                            "error": retry_result.get("msg", "Unknown error"),
+                            "code": retry_result.get("code"),
+                            "fallback_attempted": True
+                        }
+
                 return {
                     "success": False,
-                    "error": result.get("msg", "Unknown error"),
-                    "code": result.get("code")
+                    "error": error_msg,
+                    "code": error_code
                 }
 
         except Exception as e:

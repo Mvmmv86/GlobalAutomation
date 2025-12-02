@@ -247,6 +247,7 @@ class BotBroadcastService:
                 ea.exchange,
                 ea.api_key,
                 ea.secret_key as api_secret,
+                COALESCE(ea.position_mode, 'hedge') as position_mode,
                 b.default_leverage,
                 b.default_margin_usd,
                 b.default_stop_loss_pct,
@@ -340,19 +341,36 @@ class BotBroadcastService:
             sl_price = None
             tp_price = None
 
+            # BingX: Calcular position_side baseado no modo da conta (Hedge/One-Way)
+            position_side = None
+            if exchange == "bingx":
+                position_mode = subscription.get("position_mode", "hedge")
+                if position_mode == "hedge":
+                    # Hedge Mode: LONG para BUY, SHORT para SELL
+                    position_side = "LONG" if action.lower() == "buy" else "SHORT"
+                else:
+                    # One-Way Mode: usar BOTH
+                    position_side = "BOTH"
+                logger.info(
+                    f"BingX position_mode={position_mode}, position_side={position_side}",
+                    user_id=str(user_id)
+                )
+
             if action.lower() == "buy":
                 order_result = await connector.create_futures_order(
                     symbol=ticker,
                     side="BUY",
                     order_type="MARKET",
-                    quantity=quantity
+                    quantity=quantity,
+                    position_side=position_side  # BingX: passa position_side, outras exchanges: None
                 )
             elif action.lower() == "sell":
                 order_result = await connector.create_futures_order(
                     symbol=ticker,
                     side="SELL",
                     order_type="MARKET",
-                    quantity=quantity
+                    quantity=quantity,
+                    position_side=position_side  # BingX: passa position_side, outras exchanges: None
                 )
             elif action.lower() == "close":
                 # Close existing position and record the trade

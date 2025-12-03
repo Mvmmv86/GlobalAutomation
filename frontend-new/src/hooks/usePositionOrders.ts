@@ -97,9 +97,9 @@ export const usePositionOrders = (exchangeAccountId?: string, symbol?: string) =
       }
     },
     enabled: !!exchangeAccountId,
-    // 🚀 PERFORMANCE: Increased from 5s to 10s to reduce API calls
-    refetchInterval: 10000, // Atualizar a cada 10 segundos
-    staleTime: 5000, // Cache de 5 segundos para evitar refetch durante optimistic update
-    gcTime: 20000 // Garbage collection após 20 segundos
+    // 🚀 RATE LIMIT FIX: Increased from 10s to 30s to reduce API calls
+    refetchInterval: 30000, // Atualizar a cada 30 segundos (was 10s)
+    staleTime: 15000, // Cache de 15 segundos (was 5s)
+    gcTime: 60000 // Garbage collection após 60 segundos (was 20s)
   })
 }

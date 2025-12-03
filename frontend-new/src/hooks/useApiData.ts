@@ -134,8 +134,9 @@ export const usePositions = (params?: {
   return useQuery({
     queryKey: ['positions', params],
     queryFn: () => positionService.getPositions(params),
-    staleTime: isOpenPositions ? 3 * 1000 : 30 * 1000, // 3s para abertas, 30s para outras
-    refetchInterval: isOpenPositions ? 5 * 1000 : undefined, // 5s polling para abertas
+    // 🚀 RATE LIMIT FIX: Increased from 3s/5s to 15s/30s to reduce BingX API calls
+    staleTime: isOpenPositions ? 15 * 1000 : 30 * 1000, // 15s para abertas, 30s para outras
+    refetchInterval: isOpenPositions ? 30 * 1000 : undefined, // 30s polling para abertas (was 5s)
     refetchIntervalInBackground: isOpenPositions,
     enabled: !!params?.exchangeAccountId || isClosedPositions, // Só funciona com conta selecionada ou fechadas
   })
@@ -280,8 +281,9 @@ export const useActivePositionsFromExchange = () => {
   return useQuery({
     queryKey: ['active-positions-exchange'],
     queryFn: dashboardService.getActivePositions,
-    staleTime: 5 * 1000, // 5 seconds - positions need real-time updates
-    refetchInterval: 10 * 1000, // 10 seconds polling
+    // 🚀 RATE LIMIT FIX: Increased from 5s/10s to 15s/30s to reduce BingX API calls
+    staleTime: 15 * 1000, // 15 seconds (was 5s)
+    refetchInterval: 30 * 1000, // 30 seconds polling (was 10s)
     refetchIntervalInBackground: true,
   })
 }

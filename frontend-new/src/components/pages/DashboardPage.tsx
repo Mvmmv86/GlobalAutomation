@@ -152,10 +152,13 @@ const DashboardPage: React.FC = () => {
     // Balances from exchange
     futuresBalance: balancesSummary?.futures?.total_balance_usd || 0,
     futuresUnrealizedPnL: balancesSummary?.futures?.unrealized_pnl || 0,
+    futuresRealizedPnLToday: balancesSummary?.futures?.realized_pnl_today || 0,
     spotBalance: balancesSummary?.spot?.total_balance_usd || 0,
     spotAssets: balancesSummary?.spot?.assets?.length || 0,
     spotPnL: balancesSummary?.spot?.unrealized_pnl || 0,
     totalPnL: balancesSummary?.total?.pnl || 0,
+    totalRealizedPnLToday: balancesSummary?.total?.realized_pnl_today || 0,
+    totalPnLToday: balancesSummary?.total?.total_pnl_today || 0,
 
     // Stats from exchange (NEW endpoints)
     activePositions: dashboardStats?.active_positions || 0,
@@ -273,9 +276,16 @@ const DashboardPage: React.FC = () => {
             </div>
             <p className="text-xs text-muted-foreground">
               P&L não realizado: <span className={stats.futuresUnrealizedPnL >= 0 ? 'text-green-600' : 'text-red-600'}>
-                ${stats.futuresUnrealizedPnL.toFixed(2)}
+                ${stats.futuresUnrealizedPnL >= 0 ? '+' : ''}{stats.futuresUnrealizedPnL.toFixed(2)}
               </span>
             </p>
+            {stats.futuresRealizedPnLToday !== 0 && (
+              <p className="text-xs text-muted-foreground">
+                Realizado hoje: <span className={stats.futuresRealizedPnLToday >= 0 ? 'text-green-600' : 'text-red-600'}>
+                  ${stats.futuresRealizedPnLToday >= 0 ? '+' : ''}{stats.futuresRealizedPnLToday.toFixed(2)}
+                </span>
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -302,11 +312,18 @@ const DashboardPage: React.FC = () => {
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${stats.totalPnL >= 0 ? 'text-success' : 'text-danger'}`}>
-              {stats.totalPnL >= 0 ? '+' : ''}${Math.abs(stats.totalPnL).toFixed(2)}
+            <div className={`text-2xl font-bold ${stats.totalPnLToday >= 0 ? 'text-success' : 'text-danger'}`}>
+              {stats.totalPnLToday >= 0 ? '+' : ''}${Math.abs(stats.totalPnLToday).toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Futures + Spot
+              Não realizado: <span className={stats.totalPnL >= 0 ? 'text-green-600' : 'text-red-600'}>
+                ${stats.totalPnL >= 0 ? '+' : ''}{stats.totalPnL.toFixed(2)}
+              </span>
+              {stats.totalRealizedPnLToday !== 0 && (
+                <> | Realizado: <span className={stats.totalRealizedPnLToday >= 0 ? 'text-green-600' : 'text-red-600'}>
+                  ${stats.totalRealizedPnLToday >= 0 ? '+' : ''}{stats.totalRealizedPnLToday.toFixed(2)}
+                </span></>
+              )}
             </p>
           </CardContent>
         </Card>

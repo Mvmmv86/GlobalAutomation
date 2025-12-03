@@ -125,6 +125,7 @@ export const BotPnLChart: React.FC<BotPnLChartProps> = ({ data, height = 300, sh
     const absMax = Math.max(Math.abs(min), Math.abs(max))
 
     // RESPONSIVE SCALE: Choose step based on ACTUAL data range, not fixed thresholds
+    // Enhanced for small values to avoid cramped labels
     let scaleStep: number
     if (absMax >= 100000) {
       scaleStep = 25000 // $25K steps
@@ -143,11 +144,17 @@ export const BotPnLChart: React.FC<BotPnLChartProps> = ({ data, height = 300, sh
     } else if (absMax >= 50) {
       scaleStep = 10 // $10 steps
     } else if (absMax >= 10) {
-      scaleStep = 5 // $5 steps
-    } else if (absMax >= 1) {
+      scaleStep = 2.5 // $2.50 steps (improved)
+    } else if (absMax >= 5) {
       scaleStep = 1 // $1 steps
+    } else if (absMax >= 2) {
+      scaleStep = 0.5 // $0.50 steps
+    } else if (absMax >= 1) {
+      scaleStep = 0.25 // $0.25 steps for small values
+    } else if (absMax >= 0.5) {
+      scaleStep = 0.1 // $0.10 steps for tiny values
     } else {
-      scaleStep = 0.5 // $0.50 steps for very small values
+      scaleStep = 0.05 // $0.05 steps for very tiny values
     }
 
     // Round min/max to nice values
@@ -339,17 +346,17 @@ export const BotPnLChart: React.FC<BotPnLChartProps> = ({ data, height = 300, sh
         )}
       </div>
 
-      {/* Drag hint */}
-      {data.length > 5 && (
-        <div className="absolute top-0 left-0 z-10 flex items-center gap-1 text-xs text-muted-foreground/60 bg-card/60 rounded px-2 py-1">
+      {/* Drag hint - hidden on smaller views to avoid clutter */}
+      {data.length > 10 && (
+        <div className="absolute top-0 left-20 z-10 hidden md:flex items-center gap-1 text-xs text-muted-foreground/40 rounded px-2 py-1">
           <Move className="w-3 h-3" />
-          <span>Arraste para selecionar</span>
+          <span>Arraste para zoom</span>
         </div>
       )}
 
-      {/* Summary badge */}
+      {/* Summary badge - positioned to avoid axis overlap */}
       {visibleData.length > 0 && hasData && (
-        <div className="absolute top-8 left-0 z-10 flex items-center gap-2">
+        <div className="absolute top-8 left-20 z-10 flex items-center gap-2">
           <div
             className={`px-2 py-1 rounded text-xs font-bold ${
               isProfit
@@ -426,11 +433,13 @@ export const BotPnLChart: React.FC<BotPnLChartProps> = ({ data, height = 300, sh
           <XAxis
             dataKey="date"
             tickFormatter={formatDate}
-            tick={{ fill: '#9ca3af', fontSize: 11 }}
+            tick={{ fill: '#9ca3af', fontSize: 10 }}
             axisLine={{ stroke: '#374151' }}
             tickLine={{ stroke: '#374151' }}
             interval="preserveStartEnd"
-            minTickGap={40}
+            minTickGap={50}
+            height={30}
+            padding={{ left: 10, right: 10 }}
           />
 
           {/* Y-Axis for P&L (left) - RESPONSIVE TO DATA
@@ -441,12 +450,13 @@ export const BotPnLChart: React.FC<BotPnLChartProps> = ({ data, height = 300, sh
             orientation="left"
             domain={[minPnl, maxPnl]}
             tickFormatter={formatCurrency}
-            tick={{ fill: '#9ca3af', fontSize: 11 }}
+            tick={{ fill: '#9ca3af', fontSize: 10 }}
             axisLine={{ stroke: '#374151' }}
             tickLine={{ stroke: '#374151' }}
-            width={70}
-            tickCount={7}
+            width={55}
+            tickCount={5}
             allowDataOverflow={false}
+            interval="preserveStartEnd"
           />
 
           {/* Y-Axis for Trades (right) */}

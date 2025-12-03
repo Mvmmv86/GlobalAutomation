@@ -121,9 +121,10 @@ export const useCandles = (symbol: string, interval: string) => {
         count: candles.length
       }
     },
-    staleTime: 5000, // 5 segundos - dados ficam stale rapidamente para real-time
+    // 🚀 RATE LIMIT FIX: Increased from 5s/10s to 15s/30s to reduce API calls
+    staleTime: 15000, // 15 segundos (was 5s)
     gcTime: 300000, // 5 minutos no cache
-    refetchInterval: 10000, // Re-fetch a cada 10 segundos para real-time updates
+    refetchInterval: 30000, // Re-fetch a cada 30 segundos (was 10s)
     refetchOnWindowFocus: true,
     enabled: !!symbol && !!interval,
     retry: 2, // Tentar apenas 2 vezes em caso de erro

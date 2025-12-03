@@ -1,10 +1,11 @@
 """
 Background Scheduler for Data Synchronization
-Executa sincronização automática a cada 30 segundos
+Executa sincronização automática a cada 30 segundos (60s para BingX)
 """
 
 import asyncio
 import structlog
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 from dotenv import load_dotenv
@@ -21,6 +22,11 @@ from infrastructure.pricing.binance_price_service import BinancePriceService
 
 logger = structlog.get_logger(__name__)
 
+# 🚀 RATE LIMIT FIX: Track last sync time per account to respect different intervals
+# BingX has more restrictive rate limits, so we sync it less frequently
+BINGX_SYNC_INTERVAL = 60  # 60 seconds for BingX
+DEFAULT_SYNC_INTERVAL = 30  # 30 seconds for other exchanges
+
 
 class SyncScheduler:
     """Scheduler para sincronização automática de dados das exchanges"""
@@ -28,6 +34,8 @@ class SyncScheduler:
     def __init__(self):
         self.is_running = False
         self._task = None
+        # 🚀 RATE LIMIT FIX: Track last sync time per account
+        self._last_sync_times: Dict[str, float] = {}
 
     async def start(self):
         """Inicia o scheduler"""
@@ -74,9 +82,27 @@ class SyncScheduler:
 
             logger.info(f"🔄 Syncing {len(accounts)} active accounts")
 
+            current_time = time.time()
+
             for account in accounts:
                 try:
+                    account_id = str(account['id'])
+                    exchange = account['exchange'].lower()
+
+                    # 🚀 RATE LIMIT FIX: Check if enough time has passed for this account
+                    sync_interval = BINGX_SYNC_INTERVAL if exchange == 'bingx' else DEFAULT_SYNC_INTERVAL
+
+                    if account_id in self._last_sync_times:
+                        elapsed = current_time - self._last_sync_times[account_id]
+                        if elapsed < sync_interval:
+                            logger.debug(f"⏭️ Skipping {exchange} account {account['name']} - next sync in {sync_interval - elapsed:.0f}s")
+                            continue
+
                     await self._sync_account_data(account)
+
+                    # Update last sync time
+                    self._last_sync_times[account_id] = current_time
+
                 except Exception as e:
                     logger.error(f"Error syncing account {account['id']}: {e}")
 
@@ -141,8 +167,8 @@ class SyncScheduler:
             # Usar HTTP interno para evitar problemas de import
             import httpx
             import os
-            api_port = os.getenv('PORT', '3001')  # Usa PORT do .env ou 3001 como padrão
-            async with httpx.AsyncClient() as client:
+            api_port = os.getenv('PORT', '8001')  # Usa PORT do .env ou 8001 como padrão
+            async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(f"http://localhost:{api_port}/api/v1/sync/balances/{account_id}")
                 result = response.json()
 
@@ -162,8 +188,8 @@ class SyncScheduler:
             # Usar HTTP interno para evitar problemas de import
             import httpx
             import os
-            api_port = os.getenv('PORT', '3001')  # Usa PORT do .env ou 3001 como padrão
-            async with httpx.AsyncClient() as client:
+            api_port = os.getenv('PORT', '8001')  # Usa PORT do .env ou 8001 como padrão
+            async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(f"http://localhost:{api_port}/api/v1/sync/positions/{account_id}")
                 result = response.json()
 

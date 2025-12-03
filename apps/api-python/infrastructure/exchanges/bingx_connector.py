@@ -15,6 +15,15 @@ import structlog
 
 logger = structlog.get_logger()
 
+# 🚀 RATE LIMIT FIX: Global cache for BingX balances
+# Cache TTL: 60 seconds - reduces API calls significantly
+_bingx_balance_cache: Dict[str, Dict[str, Any]] = {}
+_bingx_cache_timestamps: Dict[str, float] = {}
+BINGX_CACHE_TTL = 60  # 60 seconds cache for balances
+
+# 🚀 RATE LIMIT FIX: Track rate limit errors with backoff
+_bingx_rate_limit_until: Dict[str, float] = {}  # api_key -> timestamp when rate limit expires
+
 
 class BingXConnector:
     """Connector para BingX API"""
@@ -2145,6 +2154,8 @@ class BingXConnector:
                 "price_sources": dict        # Count by source (BINANCE, BINGX, STABLE)
             }
         """
+        global _bingx_balance_cache, _bingx_cache_timestamps, _bingx_rate_limit_until
+
         try:
             if self.is_demo_mode():
                 return {
@@ -2156,6 +2167,42 @@ class BingXConnector:
                     "assets_count": 3,
                     "price_sources": {"BINANCE": 2, "STABLE": 1}
                 }
+
+            # 🚀 RATE LIMIT FIX: Check if we're in rate limit cooldown
+            cache_key = self.api_key[:16] if self.api_key else "default"
+            current_time = time.time()
+
+            if cache_key in _bingx_rate_limit_until:
+                rate_limit_until = _bingx_rate_limit_until[cache_key]
+                if current_time < rate_limit_until:
+                    wait_seconds = int(rate_limit_until - current_time)
+                    logger.warning(f"⏳ BingX rate limit active, returning cached data. Wait {wait_seconds}s")
+                    # Return cached data if available
+                    if cache_key in _bingx_balance_cache:
+                        cached = _bingx_balance_cache[cache_key].copy()
+                        cached["from_cache"] = True
+                        cached["rate_limited"] = True
+                        return cached
+                    # No cache available, return error
+                    return {
+                        "success": False,
+                        "error": f"Rate limited. Please wait {wait_seconds}s",
+                        "rate_limited": True,
+                        "wallet_total_usdt": 0,
+                        "spot_usdt": 0,
+                        "futures_usdt": 0,
+                        "assets_count": 0,
+                        "price_sources": {}
+                    }
+
+            # 🚀 RATE LIMIT FIX: Check cache first (60 second TTL)
+            if cache_key in _bingx_cache_timestamps:
+                cache_age = current_time - _bingx_cache_timestamps[cache_key]
+                if cache_age < BINGX_CACHE_TTL and cache_key in _bingx_balance_cache:
+                    logger.info(f"✅ BingX balance from cache (age: {cache_age:.1f}s)")
+                    cached = _bingx_balance_cache[cache_key].copy()
+                    cached["from_cache"] = True
+                    return cached
 
             # 1. Get FUND and SPOT account balances IN PARALLEL (PERFORMANCE OPTIMIZATION)
             # This reduces request time by ~50% (sequential: 2s, parallel: 1s)
@@ -2203,6 +2250,9 @@ class BingXConnector:
             assets_converted = 0
             price_sources = {"BINANCE": 0, "BINGX": 0, "STABLE": 0, "NOT_FOUND": 0}
 
+            # 📊 DETAILED BREAKDOWN for debugging SPOT balance calculation
+            asset_breakdown = []
+
             for asset, amount in combined_balances.items():
                 if amount <= 0:
                     continue
@@ -2216,13 +2266,33 @@ class BingXConnector:
                     wallet_total_usdt += value_usdt
                     price_sources[source] += 1
 
+                    # 📊 Track ALL assets for breakdown (not just > $1)
+                    if value_usdt >= 0.01:  # Track assets worth at least 1 cent
+                        asset_breakdown.append({
+                            "asset": asset,
+                            "amount": amount,
+                            "price": price,
+                            "value_usdt": value_usdt,
+                            "source": source
+                        })
+
                     # Only count as "converted" if value >= $1
                     if value_usdt >= 1.0:
                         assets_converted += 1
-                        logger.debug(f"{asset}: {amount:.8f} @ ${price:.2f} ({source}) = ${value_usdt:.2f}")
 
                 # Small delay to avoid rate limits
                 await asyncio.sleep(0.05)
+
+            # 📊 LOG DETAILED BREAKDOWN - sorted by value descending
+            asset_breakdown.sort(key=lambda x: x["value_usdt"], reverse=True)
+            logger.info("=" * 60)
+            logger.info("📊 SPOT BALANCE BREAKDOWN (FUND + SPOT accounts):")
+            logger.info("-" * 60)
+            for item in asset_breakdown:
+                logger.info(f"  {item['asset']:8s} | {item['amount']:>15.8f} | @ ${item['price']:<10.4f} | = ${item['value_usdt']:>10.2f} | {item['source']}")
+            logger.info("-" * 60)
+            logger.info(f"  {'TOTAL':8s} | {'':<15} | {'':<12} | = ${wallet_total_usdt:>10.2f}")
+            logger.info("=" * 60)
 
             logger.info(
                 f"Wallet total: ${wallet_total_usdt:.2f} "
@@ -2252,12 +2322,16 @@ class BingXConnector:
             else:
                 logger.warning(f"Could not get futures balance: {futures_result.get('msg')}")
 
-            # 4. Calculate SPOT = WALLET - FUTURES
-            spot_balance = wallet_total_usdt - futures_balance
+            # 4. SPOT = WALLET_TOTAL (FUND + SPOT accounts are already SPOT balances)
+            # NOTE: BingX has separate accounts - FUND/SPOT accounts don't include FUTURES balance
+            # So we should NOT subtract futures from wallet_total
+            # wallet_total_usdt = value of all assets in FUND + SPOT accounts (LINK, PENDLE, USDT, etc.)
+            # futures_balance = USDT balance in FUTURES account (separate)
+            spot_balance = wallet_total_usdt  # SPOT = FUND + SPOT account balances
 
-            logger.info(f"Final balances - SPOT: ${spot_balance:.2f}, FUTURES: ${futures_balance:.2f}")
+            logger.info(f"Final balances - SPOT: ${spot_balance:.2f} (from FUND+SPOT accounts), FUTURES: ${futures_balance:.2f} (from swap account)")
 
-            return {
+            result = {
                 "success": True,
                 "demo": False,
                 "wallet_total_usdt": round(wallet_total_usdt, 2),
@@ -2269,11 +2343,45 @@ class BingXConnector:
                 }
             }
 
+            # 🚀 RATE LIMIT FIX: Cache successful result
+            _bingx_balance_cache[cache_key] = result.copy()
+            _bingx_cache_timestamps[cache_key] = current_time
+            logger.info(f"✅ BingX balance cached for {BINGX_CACHE_TTL}s")
+
+            return result
+
         except Exception as e:
+            error_str = str(e)
             logger.error(f"Error getting separated balances: {e}")
+
+            # 🚀 RATE LIMIT FIX: Handle error 100410 (rate limit)
+            if "100410" in error_str:
+                # Parse the unblock timestamp from the error message
+                # Example: "code:100410:The endpoint trigger frequency limit rule is currently in the disabled period and will be unblocked after 1764702400615"
+                import re
+                match = re.search(r'unblocked after (\d+)', error_str)
+                if match:
+                    unblock_ts_ms = int(match.group(1))
+                    unblock_ts_s = unblock_ts_ms / 1000
+                    _bingx_rate_limit_until[cache_key] = unblock_ts_s
+                    wait_seconds = int(unblock_ts_s - time.time())
+                    logger.warning(f"🚫 BingX rate limit detected. Will retry after {wait_seconds}s")
+                else:
+                    # Default backoff: 60 seconds
+                    _bingx_rate_limit_until[cache_key] = time.time() + 60
+                    logger.warning(f"🚫 BingX rate limit detected. Backing off for 60s")
+
+                # Return cached data if available
+                if cache_key in _bingx_balance_cache:
+                    logger.info(f"⏳ Returning cached balance data during rate limit")
+                    cached = _bingx_balance_cache[cache_key].copy()
+                    cached["from_cache"] = True
+                    cached["rate_limited"] = True
+                    return cached
+
             return {
                 "success": False,
-                "error": str(e),
+                "error": error_str,
                 "wallet_total_usdt": 0,
                 "spot_usdt": 0,
                 "futures_usdt": 0,

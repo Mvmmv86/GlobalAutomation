@@ -210,11 +210,10 @@ def create_orders_router() -> APIRouter:
         try:
             logger.info(f"🔵 CREATE ORDER CHAMADO! Payload: {order_request.model_dump()}")
 
-            # 1. Buscar dados da conta (incluindo position_mode para BingX)
+            # 1. Buscar dados da conta
             account = await transaction_db.fetchrow("""
                 SELECT
-                    id, exchange, api_key, secret_key, testnet,
-                    COALESCE(position_mode, 'hedge') as position_mode
+                    id, exchange, api_key, secret_key, testnet
                 FROM exchange_accounts
                 WHERE id = $1 AND is_active = true
             """, order_request.exchange_account_id)
@@ -324,9 +323,10 @@ def create_orders_router() -> APIRouter:
             # 9. Executar ordem na exchange (REAL)
             if order_request.operation_type == 'futures':
                 # BingX: Calcular position_side baseado no modo da conta (Hedge/One-Way)
+                # Default to 'hedge' mode since most BingX accounts use Hedge Mode
                 position_side = None
                 if exchange_type == 'bingx':
-                    position_mode = account.get('position_mode', 'hedge')
+                    position_mode = 'hedge'  # Default - BingX accounts typically use Hedge Mode
                     if position_mode == 'hedge':
                         # Hedge Mode: LONG para BUY, SHORT para SELL
                         position_side = "LONG" if order_request.side.upper() == "BUY" else "SHORT"

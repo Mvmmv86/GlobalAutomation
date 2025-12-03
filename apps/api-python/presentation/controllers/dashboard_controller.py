@@ -245,6 +245,7 @@ def create_dashboard_router() -> APIRouter:
     @router.get("/balances")
     async def get_balances_summary(request: Request):
         """Get futures and spot balances summary with cache - filtered by authenticated user"""
+        connector = None  # Initialize connector at function level for cleanup in finally
         try:
             # Extract user_id from JWT token
             user_uuid = get_user_uuid_from_request(request)
@@ -298,12 +299,13 @@ def create_dashboard_router() -> APIRouter:
             spot_balance = 0
             futures_assets = []
             spot_assets = []
-            futures_pnl = 0.0
+            futures_pnl = 0.0  # Unrealized P&L (open positions)
             spot_pnl = 0.0
-            connector = None  # Initialize connector to None for cleanup
+            futures_realized_pnl = 0.0  # Realized P&L (closed positions today)
 
             try:
                 # main_account already fetched above for cache key
+                connector = None  # Re-initialize here to ensure it's defined in this scope
                 if main_account:
                     # Get API keys from database (plain text - Supabase encryption at rest)
                     api_key = main_account.get('api_key')
@@ -524,25 +526,46 @@ def create_dashboard_router() -> APIRouter:
                         positions = positions_result.get('positions', [])
                         for position in positions:
                             try:
-                                # Calculate unrealized PnL from real Binance data
-                                unrealized_pnl = float(position.get('unRealizedProfit', position.get('unrealizedPnl', 0)))
+                                # Calculate unrealized PnL from real exchange data
+                                # BingX uses 'unrealizedProfit', Binance uses 'unRealizedProfit'
+                                unrealized_pnl = float(position.get('unrealizedProfit', position.get('unRealizedProfit', position.get('unrealizedPnl', 0))))
                                 futures_pnl += unrealized_pnl
                             except (ValueError, TypeError):
                                 continue
 
                     logger.info(f"✅ Real-time futures P&L: ${futures_pnl:.2f}")
 
-                    # 4. GET SPOT P&L - Use SpotPnlService (already implemented)
-                    logger.info("📊 Calculating SPOT P&L using SpotPnlService...")
+                    # 4. GET SPOT P&L - Use SpotPnlService with real trade history from exchange
+                    logger.info("📊 Calculating SPOT P&L using SpotPnlService (real trade history)...")
                     try:
                         from infrastructure.pricing.spot_pnl_service import SpotPnlService
-                        spot_pnl_service = SpotPnlService()
-                        spot_pnl_result = await spot_pnl_service.calculate_spot_pnl(str(main_account['id']))
+                        spot_pnl_service = SpotPnlService(connector=connector)
+                        spot_pnl_result = await spot_pnl_service.calculate_spot_pnl(str(main_account['id']), connector=connector)
                         if spot_pnl_result.get('success'):
                             spot_pnl = spot_pnl_result.get('total_pnl_usdt', 0.0)
                             logger.info(f"✅ Real-time spot P&L: ${spot_pnl:.2f} ({spot_pnl_result.get('active_assets_count', 0)} assets)")
                     except Exception as spot_err:
                         logger.warning(f"⚠️ Error calculating spot P&L: {spot_err}")
+
+                    # 5. GET REALIZED P&L FROM CLOSED POSITIONS TODAY
+                    logger.info("💰 Calculating realized P&L from closed positions today...")
+                    try:
+                        from datetime import datetime, timezone
+                        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                        realized_pnl_result = await transaction_db.fetchrow("""
+                            SELECT COALESCE(SUM(realized_pnl), 0) as total_realized_pnl
+                            FROM positions
+                            WHERE exchange_account_id = $1
+                              AND status = 'closed'
+                              AND closed_at >= $2
+                        """, str(main_account['id']), today_start)
+
+                        if realized_pnl_result:
+                            futures_realized_pnl = float(realized_pnl_result['total_realized_pnl'] or 0)
+                            logger.info(f"✅ Realized P&L today: ${futures_realized_pnl:.2f}")
+                    except Exception as realized_err:
+                        logger.warning(f"⚠️ Error calculating realized P&L: {realized_err}")
 
             except Exception as e:
                 logger.error(f"Error getting real-time P&L: {e}")
@@ -567,6 +590,7 @@ def create_dashboard_router() -> APIRouter:
                 "futures": {
                     "total_balance_usd": futures_balance,
                     "unrealized_pnl": futures_pnl,
+                    "realized_pnl_today": futures_realized_pnl,
                     "net_balance": futures_balance + futures_pnl,
                     "assets": futures_assets  # ALL assets (no limit)
                 },
@@ -578,7 +602,9 @@ def create_dashboard_router() -> APIRouter:
                 },
                 "total": {
                     "balance_usd": futures_balance + spot_balance,
-                    "pnl": futures_pnl + spot_pnl,
+                    "pnl": futures_pnl + spot_pnl,  # Unrealized only
+                    "realized_pnl_today": futures_realized_pnl,  # Realized P&L today
+                    "total_pnl_today": (futures_pnl + spot_pnl) + futures_realized_pnl,  # Unrealized + Realized
                     "net_worth": (futures_balance + spot_balance) + (futures_pnl + spot_pnl)
                 }
             }

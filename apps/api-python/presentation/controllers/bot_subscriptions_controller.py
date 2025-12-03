@@ -687,12 +687,39 @@ async def get_subscription_performance(
         win_rate = (total_wins / total_trades_alltime * 100) if total_trades_alltime > 0 else 0
         total_pnl = float(subscription["total_pnl_usd"] or 0)
 
-        # Get REAL-TIME positions from exchange API for this bot's subscription
+        # Get BOT positions - only count positions opened by THIS BOT
+        # Instead of fetching ALL exchange positions, we filter by bot signal executions
         realtime_positions = 0
         realtime_positions_data = []
         try:
-            # Get exchange account linked to this subscription
-            # NOTE: Column is 'secret_key' in DB (not 'api_secret')
+            # Get symbols that this bot has opened positions for (via signal executions)
+            # These are positions that haven't been closed yet (no matching bot_trade with status='closed')
+            bot_open_positions = await transaction_db.fetch("""
+                SELECT DISTINCT
+                    bs_sig.ticker as symbol,
+                    bs_sig.action as side,
+                    bse.executed_price as entry_price,
+                    bse.executed_quantity as size,
+                    bse.created_at as entry_time
+                FROM bot_signal_executions bse
+                INNER JOIN bot_signals bs_sig ON bs_sig.id = bse.signal_id
+                WHERE bse.subscription_id = $1
+                  AND bse.status = 'success'
+                  AND bse.id NOT IN (
+                      SELECT signal_execution_id FROM bot_trades
+                      WHERE signal_execution_id IS NOT NULL AND status = 'closed'
+                  )
+                ORDER BY bse.created_at DESC
+            """, subscription_id)
+
+            bot_symbols = set()
+            for pos in bot_open_positions:
+                symbol = pos["symbol"].replace("-", "").replace("USDT", "") + "USDT"
+                bot_symbols.add(symbol)
+
+            logger.info(f"Bot {subscription_id} has {len(bot_symbols)} open positions from signals: {bot_symbols}")
+
+            # Now get REAL-TIME data for only these bot positions from exchange
             exchange_account = await transaction_db.fetchrow("""
                 SELECT ea.id, ea.exchange, ea.api_key, ea.secret_key, ea.testnet
                 FROM bot_subscriptions bs
@@ -700,11 +727,10 @@ async def get_subscription_performance(
                 WHERE bs.id = $1
             """, subscription_id)
 
-            if exchange_account:
-                # Fetch positions DIRECTLY from exchange API (not from empty bot_trades table)
+            if exchange_account and bot_symbols:
                 exchange_type = exchange_account["exchange"].lower()
                 api_key = exchange_account["api_key"]
-                api_secret = exchange_account["secret_key"]  # Column is 'secret_key' in DB
+                api_secret = exchange_account["secret_key"]
                 is_testnet = exchange_account["testnet"] or False
 
                 if exchange_type == "bingx":
@@ -714,21 +740,22 @@ async def get_subscription_performance(
                         positions_result = await connector.get_futures_positions()
                         if positions_result.get("success"):
                             exchange_positions = positions_result.get("positions", [])
-                            realtime_positions = len(exchange_positions)
-                            realtime_positions_data = [
-                                {
-                                    "symbol": pos.get("symbol", "").replace("-", ""),
-                                    "side": "LONG" if float(pos.get("positionAmt", 0)) > 0 else "SHORT",
-                                    "entry_price": float(pos.get("avgPrice", pos.get("entryPrice", 0))),
-                                    "size": abs(float(pos.get("positionAmt", 0))),
-                                    "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
-                                    "mark_price": float(pos.get("markPrice", 0)),
-                                    "leverage": int(pos.get("leverage", 1)),
-                                    "liquidation_price": float(pos.get("liquidationPrice", 0))
-                                }
-                                for pos in exchange_positions
-                            ]
-                            logger.info(f"Fetched {realtime_positions} real-time positions from BingX for subscription {subscription_id}")
+                            # Filter only positions that match bot's open signals
+                            for pos in exchange_positions:
+                                pos_symbol = pos.get("symbol", "").replace("-", "")
+                                if pos_symbol in bot_symbols:
+                                    realtime_positions += 1
+                                    realtime_positions_data.append({
+                                        "symbol": pos_symbol,
+                                        "side": "LONG" if float(pos.get("positionAmt", 0)) > 0 else "SHORT",
+                                        "entry_price": float(pos.get("avgPrice", pos.get("entryPrice", 0))),
+                                        "size": abs(float(pos.get("positionAmt", 0))),
+                                        "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
+                                        "mark_price": float(pos.get("markPrice", 0)),
+                                        "leverage": int(pos.get("leverage", 1)),
+                                        "liquidation_price": float(pos.get("liquidationPrice", 0))
+                                    })
+                            logger.info(f"Filtered {realtime_positions} BOT positions from {len(exchange_positions)} total BingX positions")
                     finally:
                         await connector.close()
 
@@ -739,45 +766,40 @@ async def get_subscription_performance(
                         positions_result = await connector.get_futures_positions()
                         if positions_result.get("success"):
                             exchange_positions = positions_result.get("positions", [])
-                            realtime_positions = len(exchange_positions)
-                            realtime_positions_data = [
-                                {
-                                    "symbol": pos.get("symbol", ""),
-                                    "side": pos.get("positionSide", "LONG"),
-                                    "entry_price": float(pos.get("entryPrice", 0)),
-                                    "size": abs(float(pos.get("positionAmt", 0))),
-                                    "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
-                                    "mark_price": float(pos.get("markPrice", 0)),
-                                    "leverage": int(pos.get("leverage", 1)),
-                                    "liquidation_price": float(pos.get("liquidationPrice", 0))
-                                }
-                                for pos in exchange_positions
-                            ]
-                            logger.info(f"Fetched {realtime_positions} real-time positions from Binance for subscription {subscription_id}")
+                            # Filter only positions that match bot's open signals
+                            for pos in exchange_positions:
+                                pos_symbol = pos.get("symbol", "")
+                                if pos_symbol in bot_symbols:
+                                    realtime_positions += 1
+                                    realtime_positions_data.append({
+                                        "symbol": pos_symbol,
+                                        "side": pos.get("positionSide", "LONG"),
+                                        "entry_price": float(pos.get("entryPrice", 0)),
+                                        "size": abs(float(pos.get("positionAmt", 0))),
+                                        "unrealized_pnl": float(pos.get("unrealizedProfit", 0)),
+                                        "mark_price": float(pos.get("markPrice", 0)),
+                                        "leverage": int(pos.get("leverage", 1)),
+                                        "liquidation_price": float(pos.get("liquidationPrice", 0))
+                                    })
+                            logger.info(f"Filtered {realtime_positions} BOT positions from {len(exchange_positions)} total Binance positions")
                     finally:
                         await connector.close()
-                else:
-                    # Fallback to bot_trades table for other exchanges
-                    open_positions = await transaction_db.fetch("""
-                        SELECT symbol, side, entry_price, size, unrealized_pnl, entry_time
-                        FROM bot_trades
-                        WHERE subscription_id = $1 AND status = 'open'
-                        ORDER BY entry_time DESC
-                    """, subscription_id)
-                    realtime_positions = len(open_positions)
-                    realtime_positions_data = [
-                        {
-                            "symbol": pos["symbol"],
-                            "side": pos["side"],
-                            "entry_price": float(pos["entry_price"]) if pos["entry_price"] else 0,
-                            "size": float(pos["size"]) if pos["size"] else 0,
-                            "unrealized_pnl": float(pos["unrealized_pnl"]) if pos["unrealized_pnl"] else 0,
-                            "entry_time": pos["entry_time"].isoformat() if pos["entry_time"] else None
-                        }
-                        for pos in open_positions
-                    ]
+            elif not bot_symbols:
+                # No open bot positions - use signal execution count as fallback
+                realtime_positions = len(bot_open_positions)
+                realtime_positions_data = [
+                    {
+                        "symbol": pos["symbol"].replace("-", ""),
+                        "side": pos["side"].upper() if pos["side"] else "LONG",
+                        "entry_price": float(pos["entry_price"]) if pos["entry_price"] else 0,
+                        "size": float(pos["size"]) if pos["size"] else 0,
+                        "unrealized_pnl": 0,
+                        "entry_time": pos["entry_time"].isoformat() if pos["entry_time"] else None
+                    }
+                    for pos in bot_open_positions
+                ]
         except Exception as e:
-            logger.warning(f"Could not fetch real-time positions from exchange: {e}")
+            logger.warning(f"Could not fetch bot positions: {e}")
             realtime_positions = subscription["current_positions"] or 0
 
         return {

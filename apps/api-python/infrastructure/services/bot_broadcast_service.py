@@ -623,7 +623,7 @@ class BotBroadcastService:
                 )
 
                 if sl_result.get("success"):
-                    sl_order_id = sl_result.get("orderId")
+                    sl_order_id = sl_result.get("order_id")  # Fixed: was "orderId", should be "order_id"
                     logger.info("Stop Loss order created successfully", order_id=sl_order_id)
                     break
                 else:
@@ -663,7 +663,7 @@ class BotBroadcastService:
                 )
 
                 if tp_result.get("success"):
-                    tp_order_id = tp_result.get("orderId")
+                    tp_order_id = tp_result.get("order_id")  # Fixed: was "orderId", should be "order_id"
                     logger.info("Take Profit order created successfully", order_id=tp_order_id)
                     break
                 else:

@@ -1,10 +1,43 @@
 import React, { useEffect, useState } from 'react'
-import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2 } from 'lucide-react'
+import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info } from 'lucide-react'
 import { BotSubscription, botsService, SubscriptionPerformance } from '@/services/botsService'
 import { BotPnLChart } from './BotPnLChart'
 import { BotWinRateChart } from './BotWinRateChart'
 import { SharePnLModal } from './SharePnLModal'
 import { useAuth } from '@/contexts/AuthContext'
+
+// Tooltip component for info icons
+interface InfoTooltipProps {
+  text: string
+}
+
+const InfoTooltip: React.FC<InfoTooltipProps> = ({ text }) => {
+  const [isVisible, setIsVisible] = useState(false)
+
+  return (
+    <div className="relative inline-block ml-1">
+      <button
+        onMouseEnter={() => setIsVisible(true)}
+        onMouseLeave={() => setIsVisible(false)}
+        onClick={(e) => {
+          e.stopPropagation()
+          setIsVisible(!isVisible)
+        }}
+        className="text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+      >
+        <Info className="w-3.5 h-3.5" />
+      </button>
+      {isVisible && (
+        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-popover border border-border rounded-lg shadow-lg text-xs text-popover-foreground">
+          <div className="relative">
+            {text}
+            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-border" />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface BotDetailsModalProps {
   isOpen: boolean
@@ -194,6 +227,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div className="flex items-center gap-2 mb-2">
                 <TrendingUp className="w-5 h-5 text-primary" />
                 <p className="text-sm text-muted-foreground">Win Rate</p>
+                <InfoTooltip text="Percentual de trades lucrativos. Calculado como: Wins / (Wins + Losses) x 100" />
               </div>
               <p className={`text-2xl font-bold ${Number(getWinRate()) >= 50 ? 'text-success' : 'text-danger'}`}>
                 {getWinRate()}%
@@ -207,6 +241,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div className="flex items-center gap-2 mb-2">
                 <DollarSign className="w-5 h-5 text-success" />
                 <p className="text-sm text-muted-foreground">P&L</p>
+                <InfoTooltip text="Lucro ou Prejuizo total em USD. Soma de todos os trades fechados no periodo selecionado." />
               </div>
               <p className={`text-2xl font-bold ${getTotalPnl() >= 0 ? 'text-success' : 'text-danger'}`}>
                 {getTotalPnl() >= 0 ? '+' : ''}${getTotalPnl().toFixed(2)}
@@ -217,6 +252,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div className="flex items-center gap-2 mb-2">
                 <Activity className="w-5 h-5 text-primary" />
                 <p className="text-sm text-muted-foreground">Sinais</p>
+                <InfoTooltip text="Total de sinais recebidos do bot. Executadas = sinais que abriram posicoes na exchange." />
               </div>
               <p className="text-2xl font-bold text-foreground">
                 {getSignals()}
@@ -229,7 +265,8 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
             <div className="bg-secondary/50 p-4 rounded-lg border border-border">
               <div className="flex items-center gap-2 mb-2">
                 <Target className="w-5 h-5 text-warning" />
-                <p className="text-sm text-muted-foreground">Posições Atuais</p>
+                <p className="text-sm text-muted-foreground">Posicoes Atuais</p>
+                <InfoTooltip text="Posicoes abertas por ESTE bot especifico (nao inclui outras posicoes da conta)." />
               </div>
               <p className="text-2xl font-bold text-foreground">
                 {getCurrentPositions()}
@@ -243,6 +280,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div className="flex items-center gap-2 mb-2">
                 <Activity className="w-5 h-5 text-blue-400" />
                 <p className="text-sm text-muted-foreground">Trades</p>
+                <InfoTooltip text="Total de trades executados. Fechados = trades com SL/TP atingido. Abertos = posicoes ainda ativas." />
               </div>
               <p className="text-2xl font-bold text-foreground">
                 {getTotalTrades()}

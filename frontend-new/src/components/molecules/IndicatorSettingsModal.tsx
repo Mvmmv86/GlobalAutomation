@@ -19,6 +19,18 @@ interface IndicatorSettingsModalProps {
   onSave: (indicator: AnyIndicatorConfig) => void
 }
 
+// Tipo local para edição (evita problemas de tipagem com união de params)
+interface LocalIndicatorState {
+  id: string
+  type: string
+  enabled: boolean
+  color: string
+  lineWidth: number
+  displayType: 'overlay' | 'separate'
+  params: Record<string, any>
+  style?: { color: string; lineWidth: number; opacity: number }
+}
+
 // Cores predefinidas para seleção rápida
 const PRESET_COLORS = [
   '#2196F3', // Blue
@@ -39,7 +51,7 @@ const PRESET_COLORS = [
 const INDICATOR_PARAMS_CONFIG: Record<string, {
   label: string
   key: string
-  type: 'number' | 'color'
+  type: 'number' | 'color' | 'boolean'
   min?: number
   max?: number
   step?: number
@@ -152,6 +164,28 @@ const INDICATOR_PARAMS_CONFIG: Record<string, {
   // DIRECTIONAL
   ADX: [
     { label: 'Período', key: 'period', type: 'number', min: 1, max: 100, step: 1, description: 'Período do ADX' }
+  ],
+
+  // MARKET PROFILE
+  TPO: [
+    // SESSÃO 24H (como TradingView)
+    { label: 'Usar Sessão 24h?', key: 'use24hSession', type: 'boolean', description: 'Dividir por horário (como TradingView) ao invés de número de barras' },
+    { label: 'Hora Início Sessão (UTC)', key: 'sessionStartHour', type: 'number', min: 0, max: 23, step: 1, description: 'Hora de início da sessão de 24h (21 = 21:00 UTC = 18:00 BRT)' },
+    { label: 'Barras por Sessão', key: 'sessionBars', type: 'number', min: 12, max: 200, step: 1, description: 'Fallback: Número de barras (usado se Sessão 24h desativada)' },
+    // TICK SIZE
+    { label: 'Auto Tick Size?', key: 'autoTickSize', type: 'boolean', description: 'Calcular tick size automaticamente' },
+    { label: 'Avg Tick Size - Bars Back', key: 'tickBarsBack', type: 'number', min: 10, max: 200, step: 1, description: 'Barras para calcular média do tick size' },
+    { label: 'Target Session Height', key: 'targetSessionHeight', type: 'number', min: 3, max: 100, step: 1, description: 'Altura alvo da sessão em níveis de preço (maior = tick menor)' },
+    { label: 'Manual Tick Size', key: 'manualTickSize', type: 'number', min: 1, max: 1000, step: 1, description: 'Tick size manual (quando auto está desabilitado)' },
+    // VALUE AREA
+    { label: 'Value Area %', key: 'valueAreaPercent', type: 'number', min: 50, max: 90, step: 0.5, description: 'Percentual do Value Area (padrão: 68.26 = 1 std dev)' }
+  ],
+
+  // NADARAYA-WATSON
+  NWENVELOPE: [
+    { label: 'Window Size', key: 'windowSize', type: 'number', min: 10, max: 500, step: 1, description: 'Tamanho da janela para regressão' },
+    { label: 'Bandwidth', key: 'bandwidth', type: 'number', min: 1, max: 50, step: 0.5, description: 'Bandwidth do kernel Gaussiano' },
+    { label: 'Multiplier', key: 'multiplier', type: 'number', min: 1, max: 5, step: 0.1, description: 'Multiplicador do envelope' }
   ]
 }
 
@@ -162,8 +196,7 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
   onSave
 }) => {
   // Estado local para edição
-  const [localIndicator, setLocalIndicator] = useState<AnyIndicatorConfig | null>(null)
-  const [showColorPicker, setShowColorPicker] = useState(false)
+  const [localIndicator, setLocalIndicator] = useState<LocalIndicatorState | null>(null)
 
   // Sincronizar estado local quando o indicador muda
   useEffect(() => {
@@ -183,8 +216,20 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
     return INDICATOR_PARAMS_CONFIG[localIndicator.type] || []
   }, [localIndicator?.type])
 
-  // Handler para atualizar parâmetro
+  // Handler para atualizar parâmetro numérico
   const handleParamChange = (key: string, value: number) => {
+    if (!localIndicator) return
+    setLocalIndicator({
+      ...localIndicator,
+      params: {
+        ...localIndicator.params,
+        [key]: value
+      }
+    })
+  }
+
+  // Handler para atualizar parâmetro boolean
+  const handleBooleanParamChange = (key: string, value: boolean) => {
     if (!localIndicator) return
     setLocalIndicator({
       ...localIndicator,
@@ -232,10 +277,11 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
     if (localIndicator) {
       console.log('📝 IndicatorSettingsModal handleSave - enviando:', localIndicator)
       // 🔥 FIX: Criar cópia profunda para garantir que React detecte mudança
-      const indicatorToSave: AnyIndicatorConfig = {
+      // Usar type assertion pois LocalIndicatorState é compatível com AnyIndicatorConfig
+      const indicatorToSave = {
         ...localIndicator,
         params: { ...localIndicator.params }
-      }
+      } as unknown as AnyIndicatorConfig
       console.log('📝 Cópia para salvar:', indicatorToSave)
       onSave(indicatorToSave)
       // Não chamar onClose() aqui - o ChartContainer vai fechar o modal
@@ -344,37 +390,64 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
               </h3>
               {paramsConfig.map(param => (
                 <div key={param.key} className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-gray-300">
-                      {param.label}
+                  {/* Boolean (checkbox) */}
+                  {param.type === 'boolean' ? (
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div className="relative">
+                        <input
+                          type="checkbox"
+                          checked={localIndicator.params[param.key] === true}
+                          onChange={(e) => handleBooleanParamChange(param.key, e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-10 h-5 bg-gray-700 rounded-full peer peer-checked:bg-blue-600 transition-colors" />
+                        <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-5" />
+                      </div>
+                      <div className="flex-1">
+                        <span className="text-sm font-medium text-gray-300 group-hover:text-white">
+                          {param.label}
+                        </span>
+                        {param.description && (
+                          <p className="text-xs text-gray-500">{param.description}</p>
+                        )}
+                      </div>
                     </label>
-                    <span className="text-sm text-blue-400 font-mono">
-                      {localIndicator.params[param.key]}
-                    </span>
-                  </div>
-                  {param.description && (
-                    <p className="text-xs text-gray-500">{param.description}</p>
+                  ) : (
+                    /* Number (slider + input) */
+                    <>
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-gray-300">
+                          {param.label}
+                        </label>
+                        <span className="text-sm text-blue-400 font-mono">
+                          {localIndicator.params[param.key]}
+                        </span>
+                      </div>
+                      {param.description && (
+                        <p className="text-xs text-gray-500">{param.description}</p>
+                      )}
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={param.min || 1}
+                          max={param.max || 100}
+                          step={param.step || 1}
+                          value={localIndicator.params[param.key] || 0}
+                          onChange={(e) => handleParamChange(param.key, parseFloat(e.target.value))}
+                          className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                        />
+                        <input
+                          type="number"
+                          min={param.min || 1}
+                          max={param.max || 100}
+                          step={param.step || 1}
+                          value={localIndicator.params[param.key] || 0}
+                          onChange={(e) => handleParamChange(param.key, parseFloat(e.target.value))}
+                          className="w-20 px-2 py-1 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white text-center focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    </>
                   )}
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min={param.min || 1}
-                      max={param.max || 100}
-                      step={param.step || 1}
-                      value={localIndicator.params[param.key] || 0}
-                      onChange={(e) => handleParamChange(param.key, parseFloat(e.target.value))}
-                      className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                    />
-                    <input
-                      type="number"
-                      min={param.min || 1}
-                      max={param.max || 100}
-                      step={param.step || 1}
-                      value={localIndicator.params[param.key] || 0}
-                      onChange={(e) => handleParamChange(param.key, parseFloat(e.target.value))}
-                      className="w-20 px-2 py-1 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white text-center focus:border-blue-500 focus:outline-none"
-                    />
-                  </div>
                 </div>
               ))}
             </div>

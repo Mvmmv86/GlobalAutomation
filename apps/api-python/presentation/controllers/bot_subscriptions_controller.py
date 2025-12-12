@@ -4,7 +4,7 @@ Handles client subscriptions to managed bots
 """
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime, timedelta
 
@@ -14,6 +14,250 @@ from infrastructure.database.connection_transaction_mode import transaction_db
 from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
 
 logger = structlog.get_logger(__name__)
+
+
+# ============================================================================
+# Helper Functions for Exchange P&L Fetching
+# ============================================================================
+
+async def fetch_pnl_from_exchange(
+    exchange_type: str,
+    api_key: str,
+    api_secret: str,
+    is_testnet: bool,
+    symbols: List[str],
+    start_time: int,
+    end_time: int
+) -> Dict[str, Any]:
+    """
+    Fetch realized P&L directly from exchange API.
+
+    Args:
+        exchange_type: 'bingx' or 'binance'
+        api_key: Exchange API key
+        api_secret: Exchange API secret
+        is_testnet: Whether to use testnet
+        symbols: List of symbols to filter (e.g., ['AAVEUSDT', 'BTCUSDT'])
+        start_time: Start timestamp in milliseconds
+        end_time: End timestamp in milliseconds
+
+    Returns:
+        Dict with success, total_pnl, pnl_by_symbol, pnl_history
+    """
+    result = {
+        "success": False,
+        "total_pnl": 0.0,
+        "pnl_by_symbol": {},
+        "pnl_history": [],
+        "trades_list": [],  # Individual trades list
+        "wins": 0,
+        "losses": 0,
+        "source": "exchange",
+        "error": None
+    }
+
+    try:
+        if exchange_type == "bingx":
+            from infrastructure.exchanges.bingx_connector import BingXConnector
+            connector = BingXConnector(api_key=api_key, api_secret=api_secret, testnet=is_testnet)
+
+            try:
+                # Fetch REALIZED_PNL income history
+                income_result = await connector.get_futures_income_history(
+                    income_type="REALIZED_PNL",
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=1000
+                )
+
+                if income_result.get("success"):
+                    income_history = income_result.get("income_history", [])
+
+                    total_pnl = 0.0
+                    pnl_by_symbol = {}
+                    pnl_by_date = {}
+                    trades_list = []
+                    wins = 0
+                    losses = 0
+
+                    # Sort by time first
+                    sorted_income = sorted(income_history, key=lambda x: x.get("time", 0))
+
+                    for idx, record in enumerate(sorted_income, 1):
+                        symbol = record.get("symbol", "").replace("-", "").replace("USDT", "") + "USDT"
+                        original_symbol = record.get("symbol", "")
+                        income_amount = float(record.get("income", 0))
+                        timestamp = record.get("time", 0)
+
+                        # Filter by symbols if provided
+                        if symbols and symbol not in symbols:
+                            continue
+
+                        total_pnl += income_amount
+
+                        # Count wins/losses
+                        if income_amount > 0:
+                            wins += 1
+                            status = "WIN"
+                        elif income_amount < 0:
+                            losses += 1
+                            status = "LOSS"
+                        else:
+                            status = "BREAK-EVEN"
+
+                        # Build individual trade record
+                        date_time_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "N/A"
+                        trades_list.append({
+                            "index": idx,
+                            "datetime": date_time_str,
+                            "symbol": original_symbol,
+                            "pnl": round(income_amount, 2),
+                            "status": status
+                        })
+
+                        # Aggregate by symbol
+                        if symbol not in pnl_by_symbol:
+                            pnl_by_symbol[symbol] = 0.0
+                        pnl_by_symbol[symbol] += income_amount
+
+                        # Aggregate by date for chart
+                        if timestamp:
+                            date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d")
+                            if date_str not in pnl_by_date:
+                                pnl_by_date[date_str] = {"pnl": 0.0, "count": 0}
+                            pnl_by_date[date_str]["pnl"] += income_amount
+                            pnl_by_date[date_str]["count"] += 1
+
+                    # Convert to sorted history list
+                    pnl_history = []
+                    cumulative = 0.0
+                    for date_str in sorted(pnl_by_date.keys()):
+                        daily_pnl = pnl_by_date[date_str]["pnl"]
+                        cumulative += daily_pnl
+                        pnl_history.append({
+                            "date": date_str,
+                            "daily_pnl": round(daily_pnl, 2),
+                            "cumulative_pnl": round(cumulative, 2),
+                            "trades_count": pnl_by_date[date_str]["count"]
+                        })
+
+                    result["success"] = True
+                    result["total_pnl"] = round(total_pnl, 2)
+                    result["pnl_by_symbol"] = {k: round(v, 2) for k, v in pnl_by_symbol.items()}
+                    result["pnl_history"] = pnl_history
+                    result["trades_list"] = trades_list
+                    result["wins"] = wins
+                    result["losses"] = losses
+
+                    logger.info(f"Fetched P&L from BingX: total={total_pnl:.2f}, trades={len(trades_list)}, wins={wins}, losses={losses}")
+                else:
+                    result["error"] = income_result.get("error", "Failed to fetch income history")
+                    logger.warning(f"BingX income history fetch failed: {result['error']}")
+
+            finally:
+                await connector.close()
+
+        elif exchange_type == "binance":
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+            connector = BinanceConnector(api_key=api_key, api_secret=api_secret, testnet=is_testnet)
+
+            try:
+                # Binance uses get_futures_income
+                income_result = await connector.get_futures_income(
+                    income_type="REALIZED_PNL",
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=1000
+                )
+
+                if income_result.get("success"):
+                    income_history = income_result.get("income", [])
+
+                    total_pnl = 0.0
+                    pnl_by_symbol = {}
+                    pnl_by_date = {}
+                    trades_list = []
+                    wins = 0
+                    losses = 0
+
+                    # Sort by time first
+                    sorted_income = sorted(income_history, key=lambda x: x.get("time", 0))
+
+                    for idx, record in enumerate(sorted_income, 1):
+                        symbol = record.get("symbol", "")
+                        income_amount = float(record.get("income", 0))
+                        timestamp = record.get("time", 0)
+
+                        if symbols and symbol not in symbols:
+                            continue
+
+                        total_pnl += income_amount
+
+                        # Count wins/losses
+                        if income_amount > 0:
+                            wins += 1
+                            status = "WIN"
+                        elif income_amount < 0:
+                            losses += 1
+                            status = "LOSS"
+                        else:
+                            status = "BREAK-EVEN"
+
+                        # Build individual trade record
+                        date_time_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "N/A"
+                        trades_list.append({
+                            "index": idx,
+                            "datetime": date_time_str,
+                            "symbol": symbol,
+                            "pnl": round(income_amount, 2),
+                            "status": status
+                        })
+
+                        if symbol not in pnl_by_symbol:
+                            pnl_by_symbol[symbol] = 0.0
+                        pnl_by_symbol[symbol] += income_amount
+
+                        if timestamp:
+                            date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d")
+                            if date_str not in pnl_by_date:
+                                pnl_by_date[date_str] = {"pnl": 0.0, "count": 0}
+                            pnl_by_date[date_str]["pnl"] += income_amount
+                            pnl_by_date[date_str]["count"] += 1
+
+                    pnl_history = []
+                    cumulative = 0.0
+                    for date_str in sorted(pnl_by_date.keys()):
+                        daily_pnl = pnl_by_date[date_str]["pnl"]
+                        cumulative += daily_pnl
+                        pnl_history.append({
+                            "date": date_str,
+                            "daily_pnl": round(daily_pnl, 2),
+                            "cumulative_pnl": round(cumulative, 2),
+                            "trades_count": pnl_by_date[date_str]["count"]
+                        })
+
+                    result["success"] = True
+                    result["total_pnl"] = round(total_pnl, 2)
+                    result["pnl_by_symbol"] = {k: round(v, 2) for k, v in pnl_by_symbol.items()}
+                    result["pnl_history"] = pnl_history
+                    result["trades_list"] = trades_list
+                    result["wins"] = wins
+                    result["losses"] = losses
+
+                    logger.info(f"Fetched P&L from Binance: total={total_pnl:.2f}, trades={len(trades_list)}, wins={wins}, losses={losses}")
+                else:
+                    result["error"] = income_result.get("error", "Failed to fetch income")
+
+            finally:
+                await connector.close()
+        else:
+            result["error"] = f"Unsupported exchange: {exchange_type}"
+
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error(f"Error fetching P&L from exchange: {e}")
+
+    return result
 
 # Initialize trade tracker service
 trade_tracker = BotTradeTrackerService(transaction_db)
@@ -468,9 +712,13 @@ async def get_subscription_performance(
     Get performance metrics and P&L history for a subscription.
     Used for charts in the BotDetailsModal.
     ALL statistics are filtered by the date range (days parameter).
+
+    P&L Source Priority:
+    1. Try to fetch from exchange API (BingX/Binance) - most accurate
+    2. Fallback to database (bot_trades table) if exchange fails
     """
     try:
-        # Verify subscription exists and belongs to user
+        # Verify subscription exists and belongs to user - include exchange account info
         subscription = await transaction_db.fetchrow("""
             SELECT
                 bs.id,
@@ -483,9 +731,15 @@ async def get_subscription_performance(
                 bs.current_positions,
                 bs.max_concurrent_positions,
                 bs.created_at,
-                b.name as bot_name
+                b.name as bot_name,
+                ea.id as exchange_account_id,
+                ea.exchange as exchange_type,
+                ea.api_key,
+                ea.secret_key,
+                ea.testnet
             FROM bot_subscriptions bs
             INNER JOIN bots b ON b.id = bs.bot_id
+            INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
             WHERE bs.id = $1 AND bs.user_id = $2
         """, subscription_id, user_id)
 
@@ -495,14 +749,69 @@ async def get_subscription_performance(
         # Calculate date range
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
+        start_timestamp = int(start_date.timestamp() * 1000)
+        end_timestamp = int(end_date.timestamp() * 1000)
+
+        # =====================================================
+        # Get bot's traded symbols from bot_trades/executions
+        # =====================================================
+        bot_symbols = []
+        try:
+            symbols_result = await transaction_db.fetch("""
+                SELECT DISTINCT symbol FROM bot_trades
+                WHERE subscription_id = $1
+                UNION
+                SELECT DISTINCT bs_sig.ticker as symbol
+                FROM bot_signal_executions bse
+                INNER JOIN bot_signals bs_sig ON bs_sig.id = bse.signal_id
+                WHERE bse.subscription_id = $1
+            """, subscription_id)
+            bot_symbols = [
+                row["symbol"].replace("-", "").replace("USDT", "") + "USDT"
+                for row in symbols_result
+                if row["symbol"]
+            ]
+        except Exception as e:
+            logger.warning(f"Could not fetch bot symbols: {e}")
+
+        # =====================================================
+        # TRY EXCHANGE P&L FIRST (Primary Source)
+        # =====================================================
+        exchange_pnl_result = None
+        pnl_source = "database"  # Track where P&L came from
+
+        try:
+            exchange_type = subscription["exchange_type"].lower() if subscription["exchange_type"] else None
+            api_key = subscription["api_key"]
+            api_secret = subscription["secret_key"]
+            is_testnet = subscription["testnet"] or False
+
+            if exchange_type and api_key and api_secret:
+                logger.info(f"Fetching P&L from {exchange_type} for symbols: {bot_symbols}")
+
+                exchange_pnl_result = await fetch_pnl_from_exchange(
+                    exchange_type=exchange_type,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    is_testnet=is_testnet,
+                    symbols=bot_symbols,
+                    start_time=start_timestamp,
+                    end_time=end_timestamp
+                )
+
+                if exchange_pnl_result.get("success"):
+                    pnl_source = "exchange"
+                    logger.info(f"Successfully fetched P&L from exchange: {exchange_pnl_result['total_pnl']}")
+                else:
+                    logger.warning(f"Exchange P&L fetch failed, using database fallback: {exchange_pnl_result.get('error')}")
+        except Exception as e:
+            logger.warning(f"Error fetching P&L from exchange, using database fallback: {e}")
 
         # =====================================================
         # FILTERED STATISTICS - Based on date range (days)
         # =====================================================
 
         # Get filtered signals count from bot_signal_executions
-        # Signals = unique signals received for this subscription
-        # Trades = total executions (orders placed)
         filtered_signals = await transaction_db.fetchrow("""
             SELECT
                 COUNT(DISTINCT bse.signal_id) as signals_count,
@@ -514,7 +823,7 @@ async def get_subscription_performance(
                 AND bse.created_at >= $2
         """, subscription_id, start_date)
 
-        # Try to get from bot_trades first (if populated)
+        # Get from bot_trades (DATABASE FALLBACK source)
         filtered_trades = await transaction_db.fetchrow("""
             SELECT
                 COUNT(*) as total_trades,
@@ -538,129 +847,155 @@ async def get_subscription_performance(
                 AND entry_time >= $2
         """, subscription_id, start_date)
 
-        # FALLBACK: If bot_trades is empty, use bot_signal_executions as "trades"
-        # Each successful execution = 1 trade
-        bot_trades_count = all_trades_count["total_all_trades"] or 0 if all_trades_count else 0
-        use_executions_as_trades = bot_trades_count == 0
-
         # Calculate filtered statistics
         filtered_signals_count = filtered_signals["signals_count"] or 0 if filtered_signals else 0
         filtered_executed_count = filtered_signals["executed_count"] or 0 if filtered_signals else 0
         total_executions = filtered_signals["total_executions"] or 0 if filtered_signals else 0
 
+        # Use database trades data for win/loss counts
+        bot_trades_count = all_trades_count["total_all_trades"] or 0 if all_trades_count else 0
+        use_executions_as_trades = bot_trades_count == 0
+
         if use_executions_as_trades:
-            # FALLBACK MODE: bot_trades is empty, use executions as trades
-            # In this case, each successful execution = 1 trade (position opened)
-            # We don't have win/loss data yet because trades aren't being tracked to bot_trades
-            filtered_total_trades = filtered_executed_count  # Successful executions = trades
-            filtered_wins = subscription["win_count"] or 0  # Use subscription's stored values
+            filtered_total_trades = filtered_executed_count
+            filtered_wins = subscription["win_count"] or 0
             filtered_losses = subscription["loss_count"] or 0
             filtered_closed_trades = filtered_wins + filtered_losses
-            filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
-            filtered_pnl = float(subscription["total_pnl_usd"] or 0)  # Use subscription's stored P&L
-            open_trades_count = 0  # Can't determine from executions alone
-            logger.info(f"Using bot_signal_executions as trades source (bot_trades empty). Total trades: {filtered_total_trades}")
+            open_trades_count = 0
         else:
-            # NORMAL MODE: bot_trades has data
             filtered_wins = filtered_trades["wins"] or 0 if filtered_trades else 0
             filtered_losses = filtered_trades["losses"] or 0 if filtered_trades else 0
             filtered_closed_trades = filtered_wins + filtered_losses
-            filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
-            filtered_pnl = float(filtered_trades["total_pnl"] or 0) if filtered_trades else 0
             filtered_total_trades = all_trades_count["total_all_trades"] or 0 if all_trades_count else 0
             open_trades_count = all_trades_count["open_trades"] or 0 if all_trades_count else 0
 
-        # Try to get P&L history from bot_pnl_history table
+        # Win rate calculation
+        filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
+
+        # =====================================================
+        # P&L VALUE - Exchange (primary) or Database (fallback)
+        # =====================================================
+        trades_list = []  # Individual trades from exchange
+
+        if pnl_source == "exchange" and exchange_pnl_result:
+            filtered_pnl = exchange_pnl_result["total_pnl"]
+            pnl_by_symbol = exchange_pnl_result.get("pnl_by_symbol", {})
+            trades_list = exchange_pnl_result.get("trades_list", [])
+            # Override wins/losses with exchange data
+            filtered_wins = exchange_pnl_result.get("wins", filtered_wins)
+            filtered_losses = exchange_pnl_result.get("losses", filtered_losses)
+            filtered_total_trades = len(trades_list)
+            filtered_closed_trades = filtered_wins + filtered_losses
+            filtered_win_rate = (filtered_wins / filtered_closed_trades * 100) if filtered_closed_trades > 0 else 0
+            logger.info(f"Using EXCHANGE P&L: {filtered_pnl}, trades={len(trades_list)}, wins={filtered_wins}, losses={filtered_losses}")
+        else:
+            # Database fallback
+            if use_executions_as_trades:
+                filtered_pnl = float(subscription["total_pnl_usd"] or 0)
+            else:
+                filtered_pnl = float(filtered_trades["total_pnl"] or 0) if filtered_trades else 0
+            pnl_by_symbol = {}
+            logger.info(f"Using DATABASE P&L (fallback): {filtered_pnl}")
+
+        # =====================================================
+        # P&L HISTORY - Exchange (primary) or Database (fallback)
+        # =====================================================
         pnl_history = []
-        try:
-            history_records = await transaction_db.fetch("""
-                SELECT
-                    snapshot_date,
-                    daily_pnl_usd,
-                    cumulative_pnl_usd,
-                    daily_wins,
-                    daily_losses,
-                    cumulative_wins,
-                    cumulative_losses,
-                    win_rate_pct
-                FROM bot_pnl_history
-                WHERE subscription_id = $1
-                    AND snapshot_date >= $2
-                ORDER BY snapshot_date ASC
-            """, subscription_id, start_date.date())
 
-            pnl_history = [
-                {
-                    "date": str(record["snapshot_date"]),
-                    "daily_pnl": float(record["daily_pnl_usd"]),
-                    "cumulative_pnl": float(record["cumulative_pnl_usd"]),
-                    "daily_wins": record["daily_wins"],
-                    "daily_losses": record["daily_losses"],
-                    "cumulative_wins": record["cumulative_wins"],
-                    "cumulative_losses": record["cumulative_losses"],
-                    "win_rate": float(record["win_rate_pct"])
-                }
-                for record in history_records
-            ]
-        except Exception as e:
-            # Table may not exist yet, generate mock data for demo
-            logger.warning(f"Could not fetch P&L history: {e}")
-
-        # If no history data, build from actual bot_trades table
-        if not pnl_history:
+        # If exchange P&L was successful, use that history
+        if pnl_source == "exchange" and exchange_pnl_result and exchange_pnl_result.get("pnl_history"):
+            pnl_history = exchange_pnl_result["pnl_history"]
+            logger.info(f"Using EXCHANGE P&L history: {len(pnl_history)} days")
+        else:
+            # Fallback: Try to get P&L history from bot_pnl_history table
             try:
-                # Get closed trades grouped by date with REAL P&L values
-                trades_by_date = await transaction_db.fetch("""
+                history_records = await transaction_db.fetch("""
                     SELECT
-                        DATE(exit_time) as trade_date,
-                        SUM(pnl_usd) as daily_pnl,
-                        COUNT(*) as daily_trades,
-                        SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
-                        SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
-                    FROM bot_trades
+                        snapshot_date,
+                        daily_pnl_usd,
+                        cumulative_pnl_usd,
+                        daily_wins,
+                        daily_losses,
+                        cumulative_wins,
+                        cumulative_losses,
+                        win_rate_pct
+                    FROM bot_pnl_history
                     WHERE subscription_id = $1
-                        AND status = 'closed'
-                        AND exit_time >= $2
-                    GROUP BY DATE(exit_time)
-                    ORDER BY trade_date ASC
-                """, subscription_id, start_date)
+                        AND snapshot_date >= $2
+                    ORDER BY snapshot_date ASC
+                """, subscription_id, start_date.date())
 
-                cumulative_pnl = 0
-                cumulative_trades = 0
-                cumulative_wins = 0
-                cumulative_losses = 0
-
-                for trade_record in trades_by_date:
-                    daily_pnl = float(trade_record["daily_pnl"] or 0)
-                    daily_trades = trade_record["daily_trades"] or 0
-                    daily_wins = trade_record["daily_wins"] or 0
-                    daily_losses = trade_record["daily_losses"] or 0
-
-                    cumulative_pnl += daily_pnl
-                    cumulative_trades += daily_trades
-                    cumulative_wins += daily_wins
-                    cumulative_losses += daily_losses
-
-                    total_trades = cumulative_wins + cumulative_losses
-                    win_rate = (cumulative_wins / total_trades * 100) if total_trades > 0 else 0
-
-                    pnl_history.append({
-                        "date": str(trade_record["trade_date"]),
-                        "daily_pnl": round(daily_pnl, 2),
-                        "cumulative_pnl": round(cumulative_pnl, 2),
-                        "daily_trades": daily_trades,
-                        "cumulative_trades": cumulative_trades,
-                        "daily_wins": daily_wins,
-                        "daily_losses": daily_losses,
-                        "cumulative_wins": cumulative_wins,
-                        "cumulative_losses": cumulative_losses,
-                        "win_rate": round(win_rate, 2)
-                    })
-
-                logger.info(f"Built P&L history from {len(pnl_history)} days of bot_trades for subscription {subscription_id}")
-
+                pnl_history = [
+                    {
+                        "date": str(record["snapshot_date"]),
+                        "daily_pnl": float(record["daily_pnl_usd"]),
+                        "cumulative_pnl": float(record["cumulative_pnl_usd"]),
+                        "daily_wins": record["daily_wins"],
+                        "daily_losses": record["daily_losses"],
+                        "cumulative_wins": record["cumulative_wins"],
+                        "cumulative_losses": record["cumulative_losses"],
+                        "win_rate": float(record["win_rate_pct"])
+                    }
+                    for record in history_records
+                ]
             except Exception as e:
-                logger.warning(f"Could not build history from bot_trades: {e}")
+                logger.warning(f"Could not fetch P&L history from bot_pnl_history: {e}")
+
+            # If no history data, build from actual bot_trades table
+            if not pnl_history:
+                try:
+                    # Get closed trades grouped by date with REAL P&L values
+                    trades_by_date = await transaction_db.fetch("""
+                        SELECT
+                            DATE(exit_time) as trade_date,
+                            SUM(pnl_usd) as daily_pnl,
+                            COUNT(*) as daily_trades,
+                            SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
+                            SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
+                        FROM bot_trades
+                        WHERE subscription_id = $1
+                            AND status = 'closed'
+                            AND exit_time >= $2
+                        GROUP BY DATE(exit_time)
+                        ORDER BY trade_date ASC
+                    """, subscription_id, start_date)
+
+                    cumulative_pnl = 0
+                    cumulative_trades = 0
+                    cumulative_wins = 0
+                    cumulative_losses = 0
+
+                    for trade_record in trades_by_date:
+                        daily_pnl = float(trade_record["daily_pnl"] or 0)
+                        daily_trades = trade_record["daily_trades"] or 0
+                        daily_wins = trade_record["daily_wins"] or 0
+                        daily_losses = trade_record["daily_losses"] or 0
+
+                        cumulative_pnl += daily_pnl
+                        cumulative_trades += daily_trades
+                        cumulative_wins += daily_wins
+                        cumulative_losses += daily_losses
+
+                        total_trades = cumulative_wins + cumulative_losses
+                        win_rate = (cumulative_wins / total_trades * 100) if total_trades > 0 else 0
+
+                        pnl_history.append({
+                            "date": str(trade_record["trade_date"]),
+                            "daily_pnl": round(daily_pnl, 2),
+                            "cumulative_pnl": round(cumulative_pnl, 2),
+                            "daily_trades": daily_trades,
+                            "cumulative_trades": cumulative_trades,
+                            "daily_wins": daily_wins,
+                            "daily_losses": daily_losses,
+                            "cumulative_wins": cumulative_wins,
+                            "cumulative_losses": cumulative_losses,
+                            "win_rate": round(win_rate, 2)
+                        })
+
+                    logger.info(f"Built P&L history from {len(pnl_history)} days of bot_trades (database fallback)")
+
+                except Exception as e:
+                    logger.warning(f"Could not build history from bot_trades: {e}")
 
         # If still no data, generate empty chart data with 0 values
         if not pnl_history:
@@ -808,6 +1143,9 @@ async def get_subscription_performance(
                 "subscription_id": subscription_id,
                 "bot_name": subscription["bot_name"],
                 "days_filter": days,
+                # P&L data source info
+                "pnl_source": pnl_source,  # "exchange" or "database"
+                "pnl_by_symbol": pnl_by_symbol,  # P&L breakdown by symbol (if from exchange)
                 # FILTERED statistics based on date range (days parameter)
                 "filtered_summary": {
                     "total_pnl_usd": round(filtered_pnl, 2),
@@ -838,7 +1176,9 @@ async def get_subscription_performance(
                     "max_concurrent_positions": subscription["max_concurrent_positions"] or 3,
                     "positions_data": realtime_positions_data  # Detailed position info
                 },
-                "pnl_history": pnl_history
+                "pnl_history": pnl_history,
+                # Individual trades list from exchange (for history table)
+                "trades_list": trades_list
             }
         }
 

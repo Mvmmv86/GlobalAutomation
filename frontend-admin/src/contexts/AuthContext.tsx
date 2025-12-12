@@ -50,6 +50,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       try {
         const currentUser = await authService.getCurrentUser()
         setUser(currentUser)
+        // Save admin user ID for admin service
+        if (currentUser?.id) {
+          localStorage.setItem('admin_user_id', currentUser.id)
+        }
         clearTimeout(timeoutId)
       } catch (error) {
         clearTimeout(timeoutId)
@@ -93,6 +97,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const currentUser = await authService.getCurrentUser()
         console.log('👤 User profile received:', currentUser)
         setUser(currentUser)
+        // Save admin user ID for admin service
+        if (currentUser?.id) {
+          localStorage.setItem('admin_user_id', currentUser.id)
+        }
       } catch (userError) {
         console.error('❌ Failed to get user profile:', userError)
         // Fallback para user mock se getCurrentUser falhar
@@ -107,6 +115,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           updatedAt: new Date().toISOString(),
         }
         setUser(mockUser)
+        localStorage.setItem('admin_user_id', mockUser.id)
       }
       
       console.log('💾 Login completed successfully')
@@ -144,6 +153,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.removeItem('accessToken')
       localStorage.removeItem('refreshToken')
       localStorage.removeItem('demo_email')
+      localStorage.removeItem('admin_user_id')
     }
   }
 

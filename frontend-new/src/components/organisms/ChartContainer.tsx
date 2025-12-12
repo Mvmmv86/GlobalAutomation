@@ -39,6 +39,24 @@ interface ChartContainerProps {
   onPositionEdit?: (positionId: string) => void
 }
 
+// Helper function para fazer merge de indicadores salvos com defaults atuais
+// Isso garante que novos params adicionados ao código apareçam nos indicadores salvos
+const mergeIndicatorsWithDefaults = (savedIndicators: AnyIndicatorConfig[]): AnyIndicatorConfig[] => {
+  return savedIndicators.map(ind => {
+    const preset = INDICATOR_PRESETS[ind.type]
+    if (!preset) return ind
+
+    // Merge: defaults primeiro, depois params salvos (sobrescrevem)
+    return {
+      ...ind,
+      params: {
+        ...preset.params,  // Defaults atuais (incluindo novos params)
+        ...ind.params      // Params salvos (sobrescrevem os defaults)
+      }
+    }
+  })
+}
+
 const ChartContainer: React.FC<ChartContainerProps> = ({
   symbol,
   interval: propInterval = '1h',
@@ -82,14 +100,17 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   const [showIndicators, setShowIndicators] = useState(false)
 
   // ✅ Estado para controlar indicadores ativos - carrega do localStorage por símbolo
+  // 🔥 FIX: Faz merge com defaults atuais para garantir que novos params apareçam
   const [activeIndicators, setActiveIndicators] = useState<AnyIndicatorConfig[]>(() => {
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem(`indicators-${symbol}`)
         if (saved) {
           const parsed = JSON.parse(saved)
+          const merged = mergeIndicatorsWithDefaults(parsed)
           console.log(`📊 Carregando indicadores salvos para ${symbol}:`, parsed)
-          return parsed
+          console.log(`📊 Após merge com defaults:`, merged)
+          return merged
         }
       } catch (e) {
         console.warn('Erro ao carregar indicadores do localStorage:', e)
@@ -241,14 +262,17 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
   }, [activeIndicators, symbol])
 
   // ✅ NOVO: Carregar indicadores quando o símbolo muda
+  // 🔥 FIX: Faz merge com defaults atuais para garantir que novos params apareçam
   useEffect(() => {
     console.log(`🔄 Símbolo mudou para ${symbol}, carregando indicadores salvos...`)
     try {
       const saved = localStorage.getItem(`indicators-${symbol}`)
       if (saved) {
         const parsed = JSON.parse(saved)
+        const merged = mergeIndicatorsWithDefaults(parsed)
         console.log(`📊 Indicadores carregados para ${symbol}:`, parsed)
-        setActiveIndicators(parsed)
+        console.log(`📊 Após merge com defaults:`, merged)
+        setActiveIndicators(merged)
       } else {
         console.log(`📊 Nenhum indicador salvo para ${symbol}, limpando lista`)
         setActiveIndicators([])

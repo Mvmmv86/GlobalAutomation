@@ -695,7 +695,7 @@ async def cancel_position_sltp(
             AND symbol = $2
             AND side = $3
             AND reduce_only = true
-            AND status IN ('submitted', 'new', 'partially_filled')
+            AND status IN ('submitted', 'open', 'pending', 'partially_filled')
             ORDER BY created_at DESC
         """, position['exchange_account_id'], position['symbol'], order_side)
 
@@ -793,7 +793,7 @@ async def cancel_position_sltp(
         if cancelled_order_id:
             await transaction_db.execute("""
                 UPDATE orders
-                SET status = 'cancelled', updated_at = $1
+                SET status = 'canceled', updated_at = $1
                 WHERE external_id = $2
             """, datetime.utcnow(), cancelled_order_id)
 

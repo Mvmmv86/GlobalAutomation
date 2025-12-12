@@ -13,6 +13,9 @@ interface SharePnLModalProps {
   period: string
 }
 
+// Display mode options
+type DisplayMode = 'both' | 'value' | 'percent'
+
 export const SharePnLModal: React.FC<SharePnLModalProps> = ({
   isOpen,
   onClose,
@@ -26,12 +29,17 @@ export const SharePnLModal: React.FC<SharePnLModalProps> = ({
   const cardRef = useRef<HTMLDivElement>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('both')
 
   if (!isOpen) return null
 
   const isProfit = pnlUsd >= 0
   const formattedPnl = `${isProfit ? '+' : ''}$${Math.abs(pnlUsd).toFixed(2)}`
   const formattedPercent = pnlPercent !== undefined ? `${isProfit ? '+' : ''}${pnlPercent.toFixed(2)}%` : null
+
+  // Get display values based on mode
+  const shouldShowValue = displayMode === 'both' || displayMode === 'value'
+  const shouldShowPercent = (displayMode === 'both' || displayMode === 'percent') && formattedPercent
 
   // Generate image from card
   const generateImage = async (): Promise<string | null> => {
@@ -137,8 +145,46 @@ export const SharePnLModal: React.FC<SharePnLModalProps> = ({
           </button>
         </div>
 
+        {/* Display Mode Selector */}
+        <div className="px-3 pt-3 pb-1">
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-muted-foreground mr-1">Exibir:</span>
+            <button
+              onClick={() => setDisplayMode('both')}
+              className={`px-2 py-1 rounded transition-colors ${
+                displayMode === 'both'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Ambos
+            </button>
+            <button
+              onClick={() => setDisplayMode('value')}
+              className={`px-2 py-1 rounded transition-colors ${
+                displayMode === 'value'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Valor
+            </button>
+            <button
+              onClick={() => setDisplayMode('percent')}
+              disabled={!formattedPercent}
+              className={`px-2 py-1 rounded transition-colors ${
+                displayMode === 'percent'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground'
+              } ${!formattedPercent ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              %
+            </button>
+          </div>
+        </div>
+
         {/* P&L Card - This will be captured as image */}
-        <div className="p-3">
+        <div className="p-3 pt-2">
           <div
             ref={cardRef}
             className="rounded-lg overflow-hidden relative"
@@ -214,19 +260,34 @@ export const SharePnLModal: React.FC<SharePnLModalProps> = ({
                     }}
                   />
                 )}
-                <span
-                  className="text-3xl font-bold"
-                  style={{
-                    color: isProfit ? '#22c55e' : '#ef4444',
-                    textShadow: isProfit
-                      ? '0 0 20px rgba(34, 197, 94, 0.5), 0 0 40px rgba(34, 197, 94, 0.3)'
-                      : '0 0 20px rgba(239, 68, 68, 0.5), 0 0 40px rgba(239, 68, 68, 0.3)'
-                  }}
-                >
-                  {formattedPnl}
-                </span>
+                {shouldShowValue && (
+                  <span
+                    className="text-3xl font-bold"
+                    style={{
+                      color: isProfit ? '#22c55e' : '#ef4444',
+                      textShadow: isProfit
+                        ? '0 0 20px rgba(34, 197, 94, 0.5), 0 0 40px rgba(34, 197, 94, 0.3)'
+                        : '0 0 20px rgba(239, 68, 68, 0.5), 0 0 40px rgba(239, 68, 68, 0.3)'
+                    }}
+                  >
+                    {formattedPnl}
+                  </span>
+                )}
+                {!shouldShowValue && shouldShowPercent && (
+                  <span
+                    className="text-3xl font-bold"
+                    style={{
+                      color: isProfit ? '#22c55e' : '#ef4444',
+                      textShadow: isProfit
+                        ? '0 0 20px rgba(34, 197, 94, 0.5), 0 0 40px rgba(34, 197, 94, 0.3)'
+                        : '0 0 20px rgba(239, 68, 68, 0.5), 0 0 40px rgba(239, 68, 68, 0.3)'
+                    }}
+                  >
+                    {formattedPercent}
+                  </span>
+                )}
               </div>
-              {formattedPercent && (
+              {shouldShowValue && shouldShowPercent && (
                 <p
                   className="text-lg font-semibold"
                   style={{

@@ -632,11 +632,21 @@ def create_sync_router() -> APIRouter:
                         # Fallback para Binance (sem positionSide) - usar sinal do positionAmt
                         side = 'long' if size_amt > 0 else 'short'
 
+                    # 🔧 NORMALIZE: Ensure consistent data format to avoid duplicates
+                    # - Symbol: UPPERCASE, no dashes (AAVE-USDT → AAVEUSDT)
+                    # - Side: lowercase (LONG → long)
+                    normalized_symbol = position.get('symbol', '').replace('-', '').upper()
+                    normalized_side = side.lower()
+
                     # Check if position already exists (by symbol + side for Hedge Mode support)
+                    # 🔧 FIX: Use UPPER/LOWER in query to handle any case mismatches in DB
                     existing = await transaction_db.fetchrow("""
                         SELECT id FROM positions
-                        WHERE symbol = $1 AND exchange_account_id = $2 AND side = $3
-                    """, position.get('symbol', '').replace('-', ''), account_id, side)
+                        WHERE UPPER(symbol) = $1
+                          AND exchange_account_id = $2
+                          AND LOWER(side::text) = $3
+                          AND status = 'open'
+                    """, normalized_symbol, account_id, normalized_side)
 
                     if existing:
                         # Update existing position (set status='open' since API returned it)
@@ -648,12 +658,13 @@ def create_sync_router() -> APIRouter:
 
                         await transaction_db.execute("""
                             UPDATE positions SET
-                                side = $1, size = $2, entry_price = $3, mark_price = $4,
-                                unrealized_pnl = $5, leverage = $6, liquidation_price = $7,
-                                last_update_at = $8, updated_at = $9, status = 'open'
-                            WHERE id = $10
+                                symbol = $1, side = $2, size = $3, entry_price = $4, mark_price = $5,
+                                unrealized_pnl = $6, leverage = $7, liquidation_price = $8,
+                                last_update_at = $9, updated_at = $10, status = 'open'
+                            WHERE id = $11
                         """,
-                        side,
+                        normalized_symbol,  # 🔧 Use normalized symbol
+                        normalized_side,    # 🔧 Use normalized side
                         abs(size_amt),
                         entry_price,
                         mark_price,
@@ -664,39 +675,70 @@ def create_sync_router() -> APIRouter:
                         datetime.now(),  # updated_at
                         existing['id']
                         )
+                        logger.debug(f"✅ Updated position {normalized_symbol} ({normalized_side})")
                     else:
-                        # Insert new position (side already calculated at top of loop)
-                        await transaction_db.execute("""
-                            INSERT INTO positions (
-                                symbol, side, size, entry_price, mark_price,
-                                unrealized_pnl, realized_pnl, initial_margin, maintenance_margin,
-                                leverage, liquidation_price, bankruptcy_price, opened_at,
-                                last_update_at, total_fees, funding_fees, exchange_account_id,
-                                status, created_at, updated_at
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-                        """,
-                    position.get('symbol', '').replace('-', ''),
-                    side,
-                    abs(float(position.get('size', position.get('positionAmt', 0)))),
-                    float(position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice', 0)))) if position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice'))) else 0,
-                    float(position.get('markPrice', 0)) if position.get('markPrice') else None,
-                    _calculate_unrealized_pnl(position, side),
-                    0.0,  # realized_pnl
-                    0.0,  # initial_margin  
-                    0.0,  # maintenance_margin
-                    float(position.get('leverage', '1')),
-                    float(position.get('liquidationPrice', 0)) if position.get('liquidationPrice') else None,
-                    None,  # bankruptcy_price
-                    datetime.now(),  # opened_at
-                    datetime.now(),  # last_update_at 
-                    0.0,  # total_fees
-                    0.0,  # funding_fees
-                    account_id,
-                    'open',  # status
-                    datetime.now(),  # created_at
-                    datetime.now()   # updated_at
-                    )
-                    synced_count += 1
+                        # Insert new position (using normalized values)
+                        # 🔧 FIX: Use try/except to catch unique constraint violations
+                        try:
+                            await transaction_db.execute("""
+                                INSERT INTO positions (
+                                    symbol, side, size, entry_price, mark_price,
+                                    unrealized_pnl, realized_pnl, initial_margin, maintenance_margin,
+                                    leverage, liquidation_price, bankruptcy_price, opened_at,
+                                    last_update_at, total_fees, funding_fees, exchange_account_id,
+                                    status, created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                            """,
+                            normalized_symbol,  # 🔧 Use normalized symbol
+                            normalized_side,    # 🔧 Use normalized side
+                            abs(float(position.get('size', position.get('positionAmt', 0)))),
+                            float(position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice', 0)))) if position.get('entryPrice', position.get('avgPrice', position.get('averageOpenPrice'))) else 0,
+                            float(position.get('markPrice', 0)) if position.get('markPrice') else None,
+                            _calculate_unrealized_pnl(position, normalized_side),
+                            0.0,  # realized_pnl
+                            0.0,  # initial_margin
+                            0.0,  # maintenance_margin
+                            float(position.get('leverage', '1')),
+                            float(position.get('liquidationPrice', 0)) if position.get('liquidationPrice') else None,
+                            None,  # bankruptcy_price
+                            datetime.now(),  # opened_at
+                            datetime.now(),  # last_update_at
+                            0.0,  # total_fees
+                            0.0,  # funding_fees
+                            account_id,
+                            'open',  # status
+                            datetime.now(),  # created_at
+                            datetime.now()   # updated_at
+                            )
+                            synced_count += 1
+                            logger.info(f"➕ Created new position {normalized_symbol} ({normalized_side})")
+                        except Exception as insert_error:
+                            # 🔧 UNIQUE CONSTRAINT: If duplicate detected, update instead
+                            if 'unique' in str(insert_error).lower() or 'duplicate' in str(insert_error).lower():
+                                logger.warning(f"⚠️ Duplicate detected for {normalized_symbol}, updating instead...")
+                                entry_price = float(position.get('avgPrice', position.get('entryPrice', position.get('averageOpenPrice', 0))))
+                                mark_price = float(position.get('markPrice', 0)) if position.get('markPrice') else None
+                                unrealized_pnl = float(position.get('unrealizedProfit', position.get('unRealizedProfit', 0)))
+                                await transaction_db.execute("""
+                                    UPDATE positions SET
+                                        size = $3, entry_price = $4, mark_price = $5,
+                                        unrealized_pnl = $6, leverage = $7, liquidation_price = $8,
+                                        last_update_at = NOW(), updated_at = NOW(), status = 'open'
+                                    WHERE UPPER(symbol) = $1
+                                      AND exchange_account_id = $2
+                                      AND status = 'open'
+                                """,
+                                normalized_symbol,
+                                account_id,
+                                abs(float(position.get('size', position.get('positionAmt', 0)))),
+                                entry_price,
+                                mark_price,
+                                unrealized_pnl,
+                                float(position.get('leverage', '1')),
+                                float(position.get('liquidationPrice', 0)) if position.get('liquidationPrice') else None
+                                )
+                            else:
+                                raise insert_error
                 except Exception as e:
                     error_msg = f"Failed to sync position {position.get('symbol')}: {str(e)}"
                     errors.append(error_msg)

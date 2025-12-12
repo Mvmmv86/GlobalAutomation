@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
 import type { ChartPosition } from '@/hooks/useChartPositions'
-import { indicatorEngine, AnyIndicatorConfig, IndicatorResult, INDICATOR_PRESETS } from '@/utils/indicators'
+import { indicatorEngine, AnyIndicatorConfig, IndicatorResult, INDICATOR_PRESETS, TPORenderData, TPOBox, TPOHorizontalLine } from '@/utils/indicators'
 
 // Get API URL from environment variable
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
@@ -122,6 +122,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
   // 🆕 Refs para indicadores dinâmicos do IndicatorEngine
   const indicatorSeriesMapRef = useRef<Map<string, any[]>>(new Map())
+
+  // 📊 TPO Canvas Overlay
+  const tpoCanvasRef = useRef<HTMLCanvasElement>(null)
+  const tpoRenderDataRef = useRef<TPORenderData[] | null>(null)
+
+  // 🚀 TPO Performance: Debounce para evitar re-renders excessivos
+  const tpoRenderTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const tpoLastRenderRef = useRef<number>(0)
 
   // Mapear interval do frontend para Binance API
   const mapIntervalToBinance = (interval: string): string => {
@@ -281,6 +289,309 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, interval])
 
+  // 📊 TPO Canvas Render Function
+  // RÉPLICA do TradingView - Perfil à ESQUERDA de cada sessão (fora dos candles)
+  // Renderiza histograma horizontal mostrando distribuição de preços
+  const renderTPOCanvasInternal = useCallback(() => {
+    const canvas = tpoCanvasRef.current
+    const chart = chartRef.current
+    const series = candlestickSeriesRef.current
+    const allRenderData = tpoRenderDataRef.current
+    const timeScale = chart?.timeScale()
+
+    if (!canvas || !chart || !series || !timeScale || !allRenderData || allRenderData.length === 0) {
+      return
+    }
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const chartElement = chartContainerRef.current
+    if (!chartElement) return
+
+    const rect = chartElement.getBoundingClientRect()
+    canvas.width = rect.width
+    canvas.height = rect.height
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    // Cores do Pine Script original
+    const COLORS = {
+      open: '#FF9800',        // Laranja - abertura
+      poc: '#FF0000',         // Vermelho - POC
+      inValue: '#2196F3',     // Azul - Value Area
+      outOfValue: '#4CAF50',  // Verde - Fora do VA
+      background: 'rgba(0, 0, 0, 0.3)', // Fundo semi-transparente
+    }
+
+    const rightMargin = 65
+
+    // =========================================================================
+    // RENDERIZAR CADA SESSÃO COMO HISTOGRAMA
+    // IMPORTANTE: Usar profile.startTime e profile.endTime para posicionamento correto
+    // Os candles no renderData são apenas para referência, os times do profile são precisos
+    // =========================================================================
+    for (const renderData of allRenderData) {
+      const { profile, candles } = renderData
+      if (!candles || candles.length === 0) continue
+
+      // Obter coordenadas X da sessão usando os times do PROFILE (não dos candles)
+      // Isso garante posicionamento correto mesmo com sessões consecutivas
+      const firstCandleX = timeScale.timeToCoordinate(profile.startTime as any)
+      const lastCandleX = timeScale.timeToCoordinate(profile.endTime as any)
+
+      // Skip se a sessão inteira está fora da view
+      if (firstCandleX === null || lastCandleX === null) continue
+      if (lastCandleX < 0 || firstCandleX > canvas.width - rightMargin) continue
+
+      // =====================================================================
+      // CALCULAR DIMENSÕES DO HISTOGRAMA
+      // O histograma fica à ESQUERDA da sessão, crescendo para direita (sobrepõe candles)
+      // Como no TradingView - perfil fica como "background" atrás dos candles
+      // =====================================================================
+      const sessionWidth = Math.abs(lastCandleX - firstCandleX)
+      const histogramMaxWidth = Math.min(sessionWidth * 0.6, 200) // 60% da sessão ou max 200px
+      const histogramStartX = firstCandleX // Começa no primeiro candle da sessão
+
+      // Encontrar o maior TPO count para normalizar
+      const maxTPOCount = Math.max(...profile.levels.map(l => l.tpoCount))
+      if (maxTPOCount === 0) continue
+
+      // =====================================================================
+      // 1. RENDERIZAR BARRAS DO HISTOGRAMA (à direita da sessão)
+      // Barras crescem da esquerda para direita (como TradingView)
+      // =====================================================================
+      for (const level of profile.levels) {
+        if (level.tpoCount === 0) continue
+
+        // Coordenadas Y do nível
+        const yTop = series.priceToCoordinate(level.priceMax)
+        const yBottom = series.priceToCoordinate(level.priceMin)
+        if (yTop === null || yBottom === null) continue
+
+        // Largura da barra proporcional ao TPO count
+        const barWidth = (level.tpoCount / maxTPOCount) * histogramMaxWidth
+
+        // Cor da barra - mais transparente para não cobrir os candles
+        let barColor: string
+        let barAlpha = 0.4
+
+        if (level.isPOC) {
+          barColor = COLORS.poc
+          barAlpha = 0.6
+        } else if (level.isInValueArea) {
+          barColor = COLORS.inValue
+          barAlpha = 0.4
+        } else {
+          barColor = COLORS.outOfValue
+          barAlpha = 0.3
+        }
+
+        // Altura da barra
+        const barHeight = Math.abs(yBottom - yTop)
+        const barY = Math.min(yTop, yBottom)
+
+        // Verificar se o histograma cabe na tela (não ultrapassar rightMargin)
+        const maxBarEnd = canvas.width - rightMargin
+        const actualBarWidth = Math.min(barWidth, maxBarEnd - histogramStartX)
+        if (actualBarWidth <= 0) continue
+
+        // Desenhar barra do histograma (cresce da esquerda para direita)
+        ctx.globalAlpha = barAlpha
+        ctx.fillStyle = barColor
+        ctx.fillRect(
+          histogramStartX,
+          barY,
+          actualBarWidth,
+          Math.max(barHeight, 2) // Mínimo 2px de altura
+        )
+
+        // Borda mais clara para POC
+        if (level.isPOC) {
+          ctx.strokeStyle = '#FFFFFF'
+          ctx.lineWidth = 1
+          ctx.globalAlpha = 0.8
+          ctx.strokeRect(
+            histogramStartX,
+            barY,
+            actualBarWidth,
+            Math.max(barHeight, 2)
+          )
+        }
+      }
+
+      // =====================================================================
+      // 2. LABELS DE PREÇO NO HISTOGRAMA (opcional - à direita das barras)
+      // =====================================================================
+      ctx.font = 'bold 8px monospace'
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'middle'
+      ctx.globalAlpha = 0.9
+
+      // Mostrar apenas POC label
+      const pocLevel = profile.levels.find(l => l.isPOC)
+      if (pocLevel) {
+        const yCenter = series.priceToCoordinate(pocLevel.priceMid)
+        if (yCenter !== null) {
+          const barWidth = (pocLevel.tpoCount / maxTPOCount) * histogramMaxWidth
+          const maxBarEnd = canvas.width - rightMargin
+          const actualBarWidth = Math.min(barWidth, maxBarEnd - histogramStartX)
+          const textX = histogramStartX + actualBarWidth + 3
+
+          if (textX < canvas.width - rightMargin - 30) {
+            ctx.fillStyle = '#FFFFFF'
+            ctx.fillText(`${pocLevel.tpoCount}`, textX, yCenter)
+          }
+        }
+      }
+
+      // =====================================================================
+      // 3. RENDERIZAR LINHAS POC, VAH, VAL - Por toda a sessão
+      // =====================================================================
+      const lineStartX = Math.max(0, firstCandleX)
+      const lineEndX = Math.min(canvas.width - rightMargin, lastCandleX + 10)
+
+      // Linha POC (vermelho sólido, mais grossa)
+      if (profile.poc) {
+        const pocY = series.priceToCoordinate(profile.poc)
+        if (pocY !== null) {
+          ctx.strokeStyle = COLORS.poc
+          ctx.lineWidth = 2
+          ctx.setLineDash([])
+          ctx.globalAlpha = 0.8
+          ctx.beginPath()
+          ctx.moveTo(lineStartX, pocY)
+          ctx.lineTo(lineEndX, pocY)
+          ctx.stroke()
+
+          // Label POC à esquerda
+          ctx.fillStyle = COLORS.poc
+          ctx.font = 'bold 9px sans-serif'
+          ctx.textAlign = 'right'
+          ctx.fillText('POC', lineStartX - 3, pocY + 3)
+        }
+      }
+
+      // Linha VAH (azul tracejado)
+      if (profile.vah) {
+        const vahY = series.priceToCoordinate(profile.vah)
+        if (vahY !== null) {
+          ctx.strokeStyle = COLORS.inValue
+          ctx.lineWidth = 1
+          ctx.setLineDash([4, 4])
+          ctx.globalAlpha = 0.6
+          ctx.beginPath()
+          ctx.moveTo(lineStartX, vahY)
+          ctx.lineTo(lineEndX, vahY)
+          ctx.stroke()
+
+          // Label VAH à esquerda
+          ctx.fillStyle = COLORS.inValue
+          ctx.font = '8px sans-serif'
+          ctx.textAlign = 'right'
+          ctx.setLineDash([])
+          ctx.fillText('VAH', lineStartX - 3, vahY + 3)
+        }
+      }
+
+      // Linha VAL (azul tracejado)
+      if (profile.val) {
+        const valY = series.priceToCoordinate(profile.val)
+        if (valY !== null) {
+          ctx.strokeStyle = COLORS.inValue
+          ctx.lineWidth = 1
+          ctx.setLineDash([4, 4])
+          ctx.globalAlpha = 0.6
+          ctx.beginPath()
+          ctx.moveTo(lineStartX, valY)
+          ctx.lineTo(lineEndX, valY)
+          ctx.stroke()
+
+          // Label VAL à esquerda
+          ctx.fillStyle = COLORS.inValue
+          ctx.font = '8px sans-serif'
+          ctx.textAlign = 'right'
+          ctx.setLineDash([])
+          ctx.fillText('VAL', lineStartX - 3, valY + 3)
+        }
+      }
+
+      // =====================================================================
+      // 4. SEPARADOR DE SESSÃO (linha vertical no início da sessão)
+      // =====================================================================
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 8])
+      ctx.globalAlpha = 0.4
+      ctx.beginPath()
+      ctx.moveTo(firstCandleX, 0)
+      ctx.lineTo(firstCandleX, canvas.height)
+      ctx.stroke()
+    }
+
+    // =========================================================================
+    // 5. INFO BOX (última sessão) - Pine Script: table.cell()
+    // =========================================================================
+    const lastProfile = allRenderData[allRenderData.length - 1]?.profile
+    if (lastProfile) {
+      const infoBoxWidth = 130
+      const infoBoxHeight = 70
+      const infoBoxX = canvas.width - rightMargin - infoBoxWidth - 10
+      const infoBoxY = 10
+
+      ctx.globalAlpha = 0.9
+      ctx.fillStyle = '#1a1a2e'
+      ctx.setLineDash([])
+      ctx.fillRect(infoBoxX, infoBoxY, infoBoxWidth, infoBoxHeight)
+
+      ctx.strokeStyle = '#444'
+      ctx.lineWidth = 1
+      ctx.strokeRect(infoBoxX, infoBoxY, infoBoxWidth, infoBoxHeight)
+
+      ctx.globalAlpha = 1.0
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = '10px sans-serif'
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'top'
+
+      ctx.fillText(`Tick: $${lastProfile.tickSize.toFixed(2)}`, infoBoxX + 5, infoBoxY + 5)
+
+      const tpoCountColor = lastProfile.totalTPOs > 495 ? '#FF0000' : '#FFFFFF'
+      ctx.fillStyle = tpoCountColor
+      ctx.fillText(`TPOs: ${lastProfile.totalTPOs}`, infoBoxX + 5, infoBoxY + 20)
+
+      ctx.fillStyle = '#FFFFFF'
+      ctx.fillText(`Sessions: ${allRenderData.length}`, infoBoxX + 5, infoBoxY + 35)
+      ctx.fillText(`Letter: ${lastProfile.currentLetter}`, infoBoxX + 5, infoBoxY + 50)
+    }
+
+    // Reset
+    ctx.setLineDash([])
+    ctx.globalAlpha = 1.0
+  }, [])
+
+  // 🚀 PERFORMANCE: Wrapper com throttle para evitar re-renders excessivos
+  const renderTPOCanvas = useCallback(() => {
+    const now = Date.now()
+    const timeSinceLastRender = now - tpoLastRenderRef.current
+
+    // Se passou menos de 50ms desde o último render, agendar para depois
+    if (timeSinceLastRender < 50) {
+      if (tpoRenderTimeoutRef.current) {
+        clearTimeout(tpoRenderTimeoutRef.current)
+      }
+      tpoRenderTimeoutRef.current = setTimeout(() => {
+        tpoLastRenderRef.current = Date.now()
+        renderTPOCanvasInternal()
+      }, 50 - timeSinceLastRender)
+      return
+    }
+
+    // Render imediato
+    tpoLastRenderRef.current = now
+    renderTPOCanvasInternal()
+  }, [renderTPOCanvasInternal])
+
   // 🚀 PERFORMANCE: Memoize Bollinger Bands calculation to avoid recalculation
   const calculateBollingerBands = useCallback((data: CandleData[], period: number, stdDev: number) => {
     const sma = calculateSMA(data, period)
@@ -329,6 +640,25 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
         borderColor: theme === 'dark' ? '#2b2b43' : '#e1e3eb',
         timeVisible: true,
         secondsVisible: false,
+      },
+      localization: {
+        // 🔥 FIX: Ajustar timezone para horário local (BRT = UTC-3)
+        // O timestamp vem em UTC, precisamos converter para horário local
+        timeFormatter: (timestamp: number) => {
+          const date = new Date(timestamp * 1000)
+          return date.toLocaleTimeString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+          })
+        },
+        dateFormatter: (timestamp: number) => {
+          const date = new Date(timestamp * 1000)
+          return date.toLocaleDateString('pt-BR', {
+            day: '2-digit',
+            month: 'short'
+          })
+        },
       },
       crosshair: {
         mode: 0,
@@ -412,6 +742,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
     console.log('✅ CustomChart: Gráfico criado com sucesso')
 
     // 🔄 LAZY LOADING: Listener para detectar scroll para a esquerda (passado)
+    // 📊 TPO: Re-render canvas when chart view changes
     const timeScale = chart.timeScale()
     timeScale.subscribeVisibleLogicalRangeChange((logicalRange) => {
       if (!logicalRange || !candlesDataRef.current || candlesDataRef.current.length === 0) {
@@ -425,6 +756,11 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       if (logicalRange.from !== null && logicalRange.from < 10 && hasMoreDataRef.current && !isLoadingMoreRef.current) {
         console.log(`📍 [LazyLoad] Perto do início dos dados (from=${logicalRange.from}), carregando mais...`)
         loadMoreCandles()
+      }
+
+      // 📊 TPO: Re-render canvas when view changes
+      if (tpoRenderDataRef.current && tpoRenderDataRef.current.length > 0) {
+        renderTPOCanvas()
       }
     })
 
@@ -827,7 +1163,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
     // })
     setDraggableLines(newDraggableLines)
 
-  }, [positions])
+  }, [positions, symbol]) // Adiciona symbol para limpar linhas ao mudar de ativo
 
   // useEffect para monitorar estado de linhas draggable
   // 🚀 PERFORMANCE: useEffect commented out to reduce overhead
@@ -973,6 +1309,10 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
   // 🔥 FIX CRÍTICO: useEffect para reagir às mudanças de indicadores em tempo real
   // IMPORTANTE: Removido symbol e interval das dependências para evitar race condition
+  // 🔥 FIX: Ref para controlar retries de indicadores
+  const indicatorRetryCountRef = useRef(0)
+  const maxIndicatorRetries = 20  // 20 tentativas x 200ms = 4 segundos máximo
+
   useEffect(() => {
     if (!chartRef.current || !candlestickSeriesRef.current) return
 
@@ -980,18 +1320,24 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       try {
         // 🚀 RETRY LOGIC: Esperar dados estarem disponíveis
         if (!candlesDataRef.current || candlesDataRef.current.length === 0) {
-          console.log('⏳ Aguardando candles carregarem para aplicar indicadores...')
+          indicatorRetryCountRef.current++
 
-          // ✅ Retry após 100ms (dados podem estar carregando)
-          setTimeout(() => {
-            if (candlesDataRef.current && candlesDataRef.current.length > 0) {
-              console.log('✅ Candles carregados! Re-tentando aplicar indicadores...')
+          if (indicatorRetryCountRef.current <= maxIndicatorRetries) {
+            console.log(`⏳ Aguardando candles... (tentativa ${indicatorRetryCountRef.current}/${maxIndicatorRetries})`)
+
+            // ✅ Retry após 200ms (dados podem estar carregando)
+            setTimeout(() => {
               updateIndicators()  // Tentar novamente
-            }
-          }, 100)
+            }, 200)
+          } else {
+            console.log('❌ Timeout esperando candles para indicadores')
+          }
 
           return
         }
+
+        // Reset contador quando sucesso
+        indicatorRetryCountRef.current = 0
 
         const candleData = candlesDataRef.current
         console.log('📊 Aplicando indicadores INSTANTANEAMENTE com', candleData.length, 'candles')
@@ -1033,8 +1379,33 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
               })
               indicatorSeriesMapRef.current.delete(id)
               console.log(`❌ Indicador ${id} removido`)
+
+              // 📊 TPO: Limpar canvas se TPO foi removido
+              if (id.toLowerCase().includes('tpo')) {
+                tpoRenderDataRef.current = null
+                const canvas = tpoCanvasRef.current
+                if (canvas) {
+                  const ctx = canvas.getContext('2d')
+                  if (ctx) {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height)
+                  }
+                }
+              }
             }
           })
+
+          // 📊 TPO: Verificar se TPO ainda está ativo, senão limpar canvas
+          const hasTPO = indicatorConfigs.some(c => c.type === 'TPO' && c.enabled)
+          if (!hasTPO && tpoRenderDataRef.current) {
+            tpoRenderDataRef.current = null
+            const canvas = tpoCanvasRef.current
+            if (canvas) {
+              const ctx = canvas.getContext('2d')
+              if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height)
+              }
+            }
+          }
 
           // Processar cada indicador
           for (const config of indicatorConfigs) {
@@ -1057,15 +1428,35 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
               // Criar novas séries
               seriesArray = []
 
+              // 📊 TPO: Usa apenas canvas, não criar séries de linha
+              if (config.type === 'TPO') {
+                // TPO não cria LineSeries - usa apenas canvas overlay
+                // Apenas registrar no map para controle de lifecycle
+                indicatorSeriesMapRef.current.set(config.id, seriesArray)
+                console.log(`📊 TPO: Usando apenas canvas para renderização`)
+
+                // Processar dados TPO e renderizar
+                if ((result as any).tpoRenderData) {
+                  tpoRenderDataRef.current = (result as any).tpoRenderData
+                  setTimeout(() => renderTPOCanvas(), 100)
+                }
+                continue // Pular criação de LineSeries
+              }
+
               // Série principal
               if (isOverlay) {
                 // Indicadores overlay usam LineSeries
+                // Para NW Envelope, esconder labels da lateral
+                const hideLabels = config.type === 'NWENVELOPE'
+
+                const mainColor = config.color || INDICATOR_PRESETS[config.type]?.color || '#FFFFFF'
+
                 const mainSeries = chartRef.current!.addLineSeries({
-                  color: config.color || INDICATOR_PRESETS[config.type]?.color || '#FFFFFF',
+                  color: mainColor,
                   lineWidth: config.lineWidth || 2,
-                  title: config.type,
+                  title: hideLabels ? '' : config.type,
                   priceLineVisible: false,
-                  lastValueVisible: true,
+                  lastValueVisible: !hideLabels,
                 })
                 seriesArray.push(mainSeries)
               } else {
@@ -1092,10 +1483,18 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
               // Séries adicionais (signal, upper, lower, etc.)
               if (result.additionalLines) {
+                // Cores especiais para Nadaraya-Watson Envelope (LuxAlgo style)
+                const isNWEnvelope = config.type === 'NWENVELOPE'
+                // Cores especiais para TPO / Market Profile
+                const isTPO = config.type === 'TPO'
+
                 const additionalColors: Record<string, string> = {
                   signal: '#FF6D00',
-                  upper: '#9E9E9E',
-                  lower: '#9E9E9E',
+                  upper: isNWEnvelope ? 'rgba(239, 83, 80, 0.8)' : '#9E9E9E',  // Red for NW
+                  lower: isNWEnvelope ? 'rgba(38, 166, 154, 0.8)' : '#9E9E9E', // Teal for NW
+                  // TPO specific colors (Pine Script original: VAH/VAL = azul)
+                  vah: isTPO ? '#2196F3' : '#9E9E9E',   // Azul para VAH
+                  val: isTPO ? '#2196F3' : '#9E9E9E',   // Azul para VAL
                   d: '#FF6D00',
                   pdi: '#10B981',
                   mdi: '#EF4444',
@@ -1107,11 +1506,20 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
                 }
 
                 Object.keys(result.additionalLines).forEach(lineKey => {
+                  // Determinar estilo da linha baseado no tipo
+                  let lineStyle = 0 // Sólido
+                  if (lineKey === 'upper' || lineKey === 'lower') lineStyle = 2 // Pontilhado
+                  if (isTPO && lineKey === 'vah') lineStyle = 2 // VAH pontilhado
+
+                  // Determinar largura da linha
+                  let lineWidthForKey = 1
+                  if (isTPO && lineKey === 'val') lineWidthForKey = 2 // VAL mais grossa
+
                   const additionalSeries = chartRef.current!.addLineSeries({
                     color: additionalColors[lineKey] || '#888888',
-                    lineWidth: 1,
-                    lineStyle: (lineKey === 'upper' || lineKey === 'lower') ? 2 : 0,
-                    title: `${config.type} ${lineKey}`,
+                    lineWidth: lineWidthForKey,
+                    lineStyle: lineStyle,
+                    title: (isNWEnvelope || isTPO) ? '' : `${config.type} ${lineKey}`,  // Hide labels for NW and TPO
                     priceLineVisible: false,
                     lastValueVisible: false,
                     priceScaleId: isOverlay ? undefined : `indicator-${config.id}`,
@@ -1124,7 +1532,17 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
               console.log(`✅ Indicador ${config.type} criado com ${seriesArray.length} séries`)
             }
 
-            // Atualizar dados da série principal
+            // 📊 TPO: Apenas atualizar canvas, não séries
+            if (config.type === 'TPO') {
+              if ((result as any).tpoRenderData) {
+                console.log('📊 TPO: Atualizando canvas com novos dados')
+                tpoRenderDataRef.current = (result as any).tpoRenderData
+                setTimeout(() => renderTPOCanvas(), 100)
+              }
+              continue // TPO não usa LineSeries
+            }
+
+            // Atualizar dados da série principal (para outros indicadores)
             const mainSeriesData = result.values
               .map((value, idx) => ({
                 time: candleData[idx].time,
@@ -1147,6 +1565,27 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
 
                 seriesArray![idx + 1]?.setData(additionalData)
               })
+            }
+
+            // Renderizar sinais de compra/venda (para NW Envelope e outros indicadores)
+            console.log(`🔍 DEBUG ${config.type}: signals =`, result.signals, 'length =', result.signals?.length || 0)
+            if (result.signals && result.signals.length > 0 && candlestickSeriesRef.current) {
+              const markers = result.signals.map(signal => ({
+                time: signal.time as import('lightweight-charts').Time,
+                position: signal.type === 'buy' ? 'belowBar' as const : 'aboveBar' as const,
+                color: signal.type === 'buy' ? '#26A69A' : '#EF5350',  // Teal for buy, Red for sell
+                shape: signal.type === 'buy' ? 'arrowUp' as const : 'arrowDown' as const,
+                text: signal.type === 'buy' ? 'BUY' : 'SELL',
+                size: 2
+              }))
+
+              console.log(`📍 DEBUG: Creating ${markers.length} markers:`, markers.slice(0, 5))
+
+              // Substituir todos os markers (não acumular)
+              candlestickSeriesRef.current.setMarkers(markers)
+              console.log(`📍 ${markers.length} sinais de ${config.type} adicionados ao gráfico`)
+            } else {
+              console.log(`⚠️ DEBUG: No signals to render for ${config.type}. candlestickSeriesRef exists: ${!!candlestickSeriesRef.current}`)
             }
 
             console.log(`✅ Indicador ${config.type} atualizado`)
@@ -1401,42 +1840,15 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
       {/* Chart Container */}
       <div ref={chartContainerRef} className="w-full h-full" />
 
-      {/* Position Action Buttons Overlay */}
-      {positions && positions.length > 0 && chartRef.current && (onPositionEdit || onPositionClose) && (
-        <div className="absolute top-2 right-2 space-y-1 z-20">
-          {positions.map((position, idx) => {
-            if (!position?.id || !position?.symbol) return null
-            return (
-              <div
-                key={position.id || idx}
-                className="flex items-center space-x-1 bg-background/90 backdrop-blur-sm border rounded-md px-2 py-1 shadow-md"
-              >
-                <span className="text-xs font-mono">
-                  {position.symbol} {position.side}
-                </span>
-                {onPositionEdit && (
-                  <button
-                    onClick={() => onPositionEdit(position.id || '')}
-                    className="p-1 hover:bg-accent rounded transition-colors"
-                    title="Editar SL/TP"
-                  >
-                    <span className="text-xs">✏️</span>
-                  </button>
-                )}
-                {onPositionClose && (
-                  <button
-                    onClick={() => onPositionClose(position.id || '')}
-                    className="p-1 hover:bg-destructive/20 rounded transition-colors"
-                    title="Fechar Posição"
-                  >
-                    <span className="text-xs">❌</span>
-                  </button>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
+      {/* TPO Canvas Overlay */}
+      <canvas
+        ref={tpoCanvasRef}
+        className="absolute inset-0 pointer-events-none"
+        style={{ zIndex: 5 }}
+      />
+
+      {/* Position Action Buttons Overlay - REMOVIDO conforme solicitação do usuário */}
+      {/* Os botões de ação ficam apenas na tabela de posições abaixo do gráfico */}
 
       {/* Draggable SL/TP Lines Overlay */}
       {draggableLines.map((line) => {
@@ -1516,7 +1928,7 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
               }}
             />
 
-            {/* Label de preço - mostra quando arrastando ou hover */}
+            {/* Label de preço - aparece no hover */}
             <div
               className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono px-2 py-0.5 rounded transition-opacity flex items-center gap-1 ${
                 isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -1540,13 +1952,14 @@ const CustomChartComponent: React.FC<CustomChartProps> = ({
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
+                    console.log('🗑️ Clicou no X para cancelar:', line.type, 'positionId:', line.positionId)
                     onCancelOrder(line.positionId, line.type as 'stopLoss' | 'takeProfit')
                   }}
                   onMouseDown={(e) => e.stopPropagation()}
-                  className="ml-1 w-4 h-4 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/40 transition-colors"
+                  className="ml-2 w-5 h-5 flex items-center justify-center rounded-full bg-red-500/80 hover:bg-red-600 transition-colors cursor-pointer"
                   title={`Cancelar ${line.type === 'stopLoss' ? 'Stop Loss' : 'Take Profit'}`}
                 >
-                  <span className="text-[10px] font-bold">×</span>
+                  <span className="text-[11px] font-bold text-white">×</span>
                 </button>
               )}
             </div>

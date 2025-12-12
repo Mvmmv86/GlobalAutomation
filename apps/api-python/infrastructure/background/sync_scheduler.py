@@ -1,6 +1,7 @@
 """
 Background Scheduler for Data Synchronization
 Executa sincronização automática a cada 30 segundos (60s para BingX)
+Includes SL/TP monitoring for bot trades
 """
 
 import asyncio
@@ -19,6 +20,7 @@ from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.pricing.binance_price_service import BinancePriceService
+from infrastructure.services.bot_sltp_monitor_service import get_bot_sltp_monitor
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +65,10 @@ class SyncScheduler:
         while self.is_running:
             try:
                 await self._sync_all_accounts()
+
+                # Monitor SL/TP orders for bot subscriptions
+                await self._monitor_bot_sltp_orders()
+
                 await asyncio.sleep(30)  # Aguarda 30 segundos (otimizado para 100-500 clientes)
             except asyncio.CancelledError:
                 break
@@ -202,6 +208,35 @@ class SyncScheduler:
         except Exception as e:
             logger.error(f"❌ Error syncing positions for account {account_id}: {e}")
 
+    async def _monitor_bot_sltp_orders(self):
+        """
+        Monitor SL/TP orders for bot subscriptions.
+        Checks if any Stop Loss or Take Profit orders have been filled
+        and updates trade records and P&L accordingly.
+        """
+        try:
+            # Get or create the SL/TP monitor service
+            sltp_monitor = get_bot_sltp_monitor(transaction_db)
+
+            # Run the monitoring cycle
+            result = await sltp_monitor.monitor_all_subscriptions()
+
+            if result.get("success"):
+                checked = result.get("checked", 0)
+                closed = result.get("closed", 0)
+                if closed > 0:
+                    logger.info(
+                        f"🤖 Bot SL/TP Monitor: {closed} trades closed out of {checked} checked",
+                        duration_ms=result.get("duration_ms")
+                    )
+                elif checked > 0:
+                    logger.debug(f"🤖 Bot SL/TP Monitor: Checked {checked} open trades, none closed")
+            else:
+                if result.get("reason") != "already_running":
+                    logger.warning(f"⚠️ Bot SL/TP Monitor failed: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in bot SL/TP monitoring: {e}")
 
 
 # Instância global do scheduler

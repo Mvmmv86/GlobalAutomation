@@ -2488,6 +2488,145 @@ class BingXConnector:
             logger.error(f"Error getting spot holdings: {e}")
             return {"success": False, "error": str(e), "positions": []}
 
+    async def get_futures_order_status(
+        self,
+        symbol: str,
+        order_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get status of a specific FUTURES order (SL/TP orders).
+
+        Uses a two-step approach:
+        1. Check openOrders - if found, order is still pending (status=NEW)
+        2. Check allOrders - to find filled/canceled orders
+
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT' or 'BTC-USDT')
+            order_id: The order ID to query
+
+        Returns:
+            Dict with order status info including:
+            - status: NEW, FILLED, CANCELED, etc.
+            - avgPrice: Average fill price
+            - executedQty: Filled quantity
+        """
+        try:
+            symbol_bingx = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
+            order_id_str = str(order_id)
+
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "order": {
+                        "orderId": order_id,
+                        "symbol": symbol_bingx,
+                        "status": "NEW",
+                        "side": "SELL",
+                        "type": "STOP_MARKET",
+                        "origQty": "0.001",
+                        "executedQty": "0",
+                        "avgPrice": "0"
+                    }
+                }
+
+            logger.debug(f"Checking FUTURES order status - Symbol: {symbol_bingx}, OrderID: {order_id_str}")
+
+            # Step 1: Check if order is still open/pending
+            open_orders_result = await self.get_open_orders(symbol=symbol_bingx)
+
+            if open_orders_result.get("success"):
+                open_orders = open_orders_result.get("orders", [])
+                for order in open_orders:
+                    if str(order.get("orderId")) == order_id_str:
+                        logger.debug(f"Order {order_id_str} found in openOrders - status: NEW")
+                        return {
+                            "success": True,
+                            "demo": False,
+                            "order": order,
+                            "status": "NEW",
+                            "avgPrice": order.get("avgPrice", "0"),
+                            "executedQty": order.get("executedQty", "0"),
+                            "stopPrice": order.get("stopPrice")
+                        }
+
+            # Step 2: Order not in openOrders, check allOrders for historical status
+            # Get orders from last 7 days to find the closed order
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (7 * 24 * 60 * 60 * 1000)  # 7 days ago
+
+            all_orders_result = await self.get_futures_orders(
+                symbol=symbol_bingx,
+                start_time=start_time,
+                end_time=end_time,
+                limit=500
+            )
+
+            if all_orders_result.get("success"):
+                all_orders = all_orders_result.get("orders", [])
+                for order in all_orders:
+                    if str(order.get("orderId")) == order_id_str:
+                        status = order.get("status", "UNKNOWN")
+                        logger.debug(f"Order {order_id_str} found in allOrders - status: {status}")
+                        return {
+                            "success": True,
+                            "demo": False,
+                            "order": order,
+                            "status": status,
+                            "avgPrice": order.get("avgPrice", "0"),
+                            "executedQty": order.get("executedQty", "0"),
+                            "stopPrice": order.get("stopPrice")
+                        }
+
+            # Order not found in either list
+            logger.warning(f"Order {order_id_str} not found in openOrders or allOrders for {symbol_bingx}")
+            return {
+                "success": False,
+                "error": f"Order {order_id_str} not found",
+                "code": -1
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting FUTURES order status: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_income_history(
+        self,
+        symbol: Optional[str] = None,
+        income_type: str = "REALIZED_PNL",
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Get income history for P&L tracking.
+        This is an alias for get_futures_income_history with simpler parameters.
+
+        Args:
+            symbol: Trading pair filter (optional)
+            income_type: Type of income (REALIZED_PNL, COMMISSION, FUNDING_FEE)
+            limit: Number of records
+
+        Returns:
+            Dict with incomes list containing realized P&L records
+        """
+        try:
+            result = await self.get_futures_income_history(
+                income_type=income_type,
+                symbol=symbol,
+                limit=limit
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "incomes": result.get("income_history", [])
+                }
+            else:
+                return result
+
+        except Exception as e:
+            logger.error(f"Error getting income history: {e}")
+            return {"success": False, "error": str(e), "incomes": []}
+
     async def close(self):
         """Close aiohttp session"""
         if self.session:

@@ -38,10 +38,14 @@ export type IndicatorType =
   | 'WILLR'     // Williams %R
   | 'STOCHRSI'  // Stochastic RSI
 
-  // VOLATILITY INDICATORS (3)
+  // VOLATILITY INDICATORS (4)
   | 'BB'        // Bollinger Bands
   | 'ATR'       // Average True Range
   | 'KC'        // Keltner Channels
+  | 'NWENVELOPE' // Nadaraya-Watson Envelope (LuxAlgo)
+
+  // MARKET PROFILE (1)
+  | 'TPO'       // Time Price Opportunity / Market Profile
 
   // VOLUME INDICATORS (6)
   | 'VWAP'      // Volume Weighted Average Price
@@ -216,6 +220,57 @@ export interface KCConfig extends IndicatorConfig {
   }
 }
 
+export interface NWEnvelopeConfig extends BaseIndicatorConfig {
+  type: 'NWENVELOPE'
+  params: {
+    windowSize: number      // Number of candles (default: 250)
+    bandwidth: number       // Gaussian kernel width (default: 8)
+    multiplier: number      // MAE multiplier for bands (default: 3)
+    source: 'close' | 'hlc3' | 'ohlc4' | 'hl2'
+    repaint: boolean        // If true, uses full data. If false, endpoint method
+  }
+}
+
+// ============================================
+// MARKET PROFILE CONFIGS
+// ============================================
+
+export interface TPOConfig extends BaseIndicatorConfig {
+  type: 'TPO'
+  params: {
+    // Session Settings
+    sessionBars?: number          // Number of bars per session (default: 48)
+
+    // Auto Tick Size
+    autoTickSize?: boolean
+    tickBarsBack?: number
+    targetSessionHeight?: number
+    manualTickSize?: number
+
+    // Value Area
+    valueAreaPercent?: number     // Default: 68.26 (1 std dev)
+
+    // Visual Options
+    showTPOLetters?: boolean
+    showPOCLine?: boolean
+    showValueAreaLines?: boolean
+    showValueAreaBoxes?: boolean
+    showInfoBox?: boolean
+
+    // Legacy params (for backwards compatibility)
+    profilePeriod?: 'session' | 'daily' | 'weekly' | 'custom'
+    customPeriodBars?: number
+    blockSizeMinutes?: 30 | 60 | 120 | 240
+    ticksPerRow?: number | 'auto'
+    ibPeriods?: number
+    showLetters?: boolean
+    showPOC?: boolean
+    showValueArea?: boolean
+    showInitialBalance?: boolean
+    extendPOC?: boolean
+  }
+}
+
 // ============================================
 // VOLUME INDICATORS CONFIGS
 // ============================================
@@ -311,6 +366,9 @@ export type AnyIndicatorConfig =
   | BBConfig
   | ATRConfig
   | KCConfig
+  | NWEnvelopeConfig
+  // Market Profile
+  | TPOConfig
   // Volume
   | VWAPConfig
   | OBVConfig
@@ -329,6 +387,12 @@ export type AnyIndicatorConfig =
 // RESULT TYPE
 // ============================================
 
+export interface IndicatorSignal {
+  time: number
+  type: 'buy' | 'sell'
+  price: number
+}
+
 export interface IndicatorResult {
   id: string
   type: string
@@ -336,6 +400,7 @@ export interface IndicatorResult {
   additionalLines?: {
     [key: string]: number[]
   }
+  signals?: IndicatorSignal[]  // Buy/Sell signals for indicators like NW Envelope
 }
 
 // ============================================
@@ -444,6 +509,31 @@ export const INDICATOR_PRESETS: Record<IndicatorType, Partial<IndicatorConfig>> 
     lineWidth: 1,
     params: { period: 20, atrPeriod: 10, multiplier: 2 }
   },
+  NWENVELOPE: {
+    displayType: 'overlay',
+    color: '#2962FF',  // Blue for smooth line
+    lineWidth: 2,
+    params: { windowSize: 250, bandwidth: 8, multiplier: 3, source: 'close', repaint: true }
+  },
+
+  // MARKET PROFILE
+  // Cores: POC=vermelho, Value Area=azul, fora VA=verde (conforme Pine Script original)
+  TPO: {
+    displayType: 'overlay',
+    color: '#FF0000',  // POC vermelho (linha)
+    lineWidth: 2,
+    params: {
+      // NOVO: Sessão 24h baseada em horário (como TradingView)
+      use24hSession: true,        // ATIVADO por padrão
+      sessionStartHour: 0,        // 00:00 UTC (= 21:00 BRT dia anterior)
+      sessionBars: 48,            // Fallback se use24hSession = false
+      autoTickSize: true,
+      tickBarsBack: 48,
+      targetSessionHeight: 42,    // 🔥 ~42 níveis = tick ~$75 como TradingView (menos níveis = tick maior)
+      manualTickSize: 100,
+      valueAreaPercent: 68.26
+    }
+  },
 
   // VOLUME INDICATORS
   VWAP: {
@@ -519,7 +609,8 @@ export const INDICATOR_PRESETS: Record<IndicatorType, Partial<IndicatorConfig>> 
 export const INDICATOR_CATEGORIES = {
   TREND: ['SMA', 'EMA', 'WMA', 'WEMA', 'TRIX', 'MACD', 'ICHIMOKU'] as IndicatorType[],
   MOMENTUM: ['RSI', 'ROC', 'KST', 'PSAR', 'WILLR', 'STOCHRSI'] as IndicatorType[],
-  VOLATILITY: ['BB', 'ATR', 'KC'] as IndicatorType[],
+  VOLATILITY: ['BB', 'ATR', 'KC', 'NWENVELOPE'] as IndicatorType[],
+  MARKET_PROFILE: ['TPO'] as IndicatorType[],
   VOLUME: ['VWAP', 'OBV', 'ADL', 'FI', 'MFI', 'VP'] as IndicatorType[],
   OSCILLATORS: ['STOCH', 'CCI', 'AO'] as IndicatorType[],
   DIRECTIONAL: ['ADX'] as IndicatorType[]
@@ -545,6 +636,9 @@ export const INDICATOR_NAMES: Record<IndicatorType, string> = {
   BB: 'Bollinger Bands',
   ATR: 'Average True Range',
   KC: 'Keltner Channels',
+  NWENVELOPE: 'Nadaraya-Watson Envelope',
+  // Market Profile
+  TPO: 'TPO / Market Profile',
   // Volume
   VWAP: 'VWAP',
   OBV: 'On Balance Volume',

@@ -172,7 +172,10 @@ const DashboardPage: React.FC = () => {
 
   // Real data from exchange
   const recentOrdersData = recentOrdersExchange || []
-  const activePositionsData = activePositionsExchange || []
+  // Filter to show only FUTURES positions (not SPOT)
+  const activePositionsData = (activePositionsExchange || []).filter(
+    (pos: any) => pos.market_type?.toUpperCase() === 'FUTURES'
+  )
 
   const getOrderStatusBadge = (status: string) => {
     switch (status) {

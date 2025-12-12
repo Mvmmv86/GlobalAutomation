@@ -1213,7 +1213,41 @@ def create_dashboard_router() -> APIRouter:
 
                 normalized_orders = []
 
-                # Try to get futures orders from exchange API
+                # =====================================================
+                # STEP 1: Fetch P&L from income history (REALIZED_PNL)
+                # This is the authoritative source for P&L values
+                # =====================================================
+                pnl_by_symbol_time = {}  # key: (symbol, timestamp_minute) -> pnl
+                try:
+                    income_result = await connector.get_futures_income_history(
+                        income_type="REALIZED_PNL",
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        limit=500
+                    )
+                    if income_result.get('success'):
+                        for record in income_result.get('income_history', []):
+                            symbol_raw = record.get('symbol', '')
+                            # Normalize symbol (BingX uses AAVE-USDT, we want AAVEUSDT)
+                            symbol_normalized = symbol_raw.replace('-', '')
+                            income_amount = float(record.get('income', 0))
+                            timestamp_ms = record.get('time', 0)
+                            # Round to minute for matching with orders
+                            timestamp_minute = (timestamp_ms // 60000) * 60000
+
+                            # Store P&L by symbol and time window
+                            key = (symbol_normalized, timestamp_minute)
+                            if key not in pnl_by_symbol_time:
+                                pnl_by_symbol_time[key] = 0
+                            pnl_by_symbol_time[key] += income_amount
+
+                        logger.info(f"📊 Fetched {len(income_result.get('income_history', []))} P&L records from income history")
+                except Exception as e:
+                    logger.warning(f"Could not fetch income history for P&L: {e}")
+
+                # =====================================================
+                # STEP 2: Get futures orders from exchange API
+                # =====================================================
                 try:
                     orders_result = await connector.get_futures_orders(
                         start_time=start_time_ms,
@@ -1235,7 +1269,10 @@ def create_dashboard_router() -> APIRouter:
                                 quantity = float(order.get('executedQty', order.get('origQty', 0)))
                                 price = float(order.get('avgPrice', order.get('price', 0)))
                                 timestamp = int(order.get('time', 0))
-                                pnl = float(order.get('profit', 0))
+                                # Try to get P&L from income history first
+                                timestamp_minute = (timestamp // 60000) * 60000
+                                pnl_key = (symbol, timestamp_minute)
+                                pnl = pnl_by_symbol_time.get(pnl_key, float(order.get('profit', 0)))
                             else:
                                 symbol = order.get('symbol', '')
                                 side = order.get('side', 'UNKNOWN')

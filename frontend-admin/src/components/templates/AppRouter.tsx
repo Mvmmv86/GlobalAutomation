@@ -7,6 +7,8 @@ import { RegisterPage } from '../pages/RegisterPage'
 import { AdminDashboard } from '../pages/AdminDashboard'
 import { UsersPage } from '../pages/UsersPage'
 import { BotsPage } from '../pages/BotsPage'
+import { AdminExchangesPage } from '../pages/AdminExchangesPage'
+import { AdminWebhooksPage } from '../pages/AdminWebhooksPage'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 
 interface ProtectedRouteProps {
@@ -106,6 +108,26 @@ export const AppRouter: React.FC = () => {
           <ProtectedRoute>
             <AdminLayout>
               <BotsPage />
+            </AdminLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/exchanges"
+        element={
+          <ProtectedRoute>
+            <AdminLayout>
+              <AdminExchangesPage />
+            </AdminLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/webhooks"
+        element={
+          <ProtectedRoute>
+            <AdminLayout>
+              <AdminWebhooksPage />
             </AdminLayout>
           </ProtectedRoute>
         }

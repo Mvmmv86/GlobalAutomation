@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from decimal import Decimal
 import structlog
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from infrastructure.database.connection_transaction_mode import transaction_db
@@ -1386,9 +1386,102 @@ def create_orders_router() -> APIRouter:
 
             orders = await transaction_db.fetch(query, *params)
 
-            # Format response
+            # =====================================================
+            # STEP 1: Fetch P&L from income history (REALIZED_PNL)
+            # This is the authoritative source for P&L values
+            # =====================================================
+            pnl_by_symbol_time = {}  # key: (symbol_normalized, timestamp_minute) -> pnl
+
+            if exchange_account_id:
+                try:
+                    # Buscar dados da conta para criar connector
+                    account_for_pnl = await transaction_db.fetchrow("""
+                        SELECT id, exchange, api_key, secret_key, testnet, name
+                        FROM exchange_accounts
+                        WHERE id = $1 AND is_active = true
+                    """, exchange_account_id)
+
+                    if account_for_pnl:
+                        exchange_type = account_for_pnl['exchange'].lower()
+
+                        if exchange_type == 'bingx':
+                            from infrastructure.exchanges.bingx_connector import BingXConnector
+                            pnl_connector = BingXConnector(
+                                api_key=account_for_pnl['api_key'],
+                                api_secret=account_for_pnl['secret_key'],
+                                testnet=account_for_pnl['testnet']
+                            )
+
+                            # Calcular range de tempo baseado nos filtros
+                            if date_from:
+                                start_dt = datetime.strptime(date_from, "%Y-%m-%d")
+                            else:
+                                start_dt = datetime.now() - timedelta(days=90)  # Default: 90 dias
+
+                            if date_to:
+                                end_dt = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                            else:
+                                end_dt = datetime.now()
+
+                            start_time_ms = int(start_dt.timestamp() * 1000)
+                            end_time_ms = int(end_dt.timestamp() * 1000)
+
+                            income_result = await pnl_connector.get_futures_income_history(
+                                income_type="REALIZED_PNL",
+                                start_time=start_time_ms,
+                                end_time=end_time_ms,
+                                limit=1000
+                            )
+
+                            if income_result.get('success'):
+                                for record in income_result.get('income_history', []):
+                                    symbol_raw = record.get('symbol', '')
+                                    # Normalize symbol (BingX uses AAVE-USDT, we want AAVEUSDT)
+                                    symbol_normalized = symbol_raw.replace('-', '').upper()
+                                    income_amount = float(record.get('income', 0))
+                                    timestamp_ms = record.get('time', 0)
+                                    # Round to minute for matching with orders
+                                    timestamp_minute = (timestamp_ms // 60000) * 60000
+
+                                    # Store P&L by symbol and time window
+                                    key = (symbol_normalized, timestamp_minute)
+                                    if key not in pnl_by_symbol_time:
+                                        pnl_by_symbol_time[key] = 0
+                                    pnl_by_symbol_time[key] += income_amount
+
+                                logger.info(f"📊 Orders endpoint: Fetched {len(income_result.get('income_history', []))} P&L records from income history")
+
+                            await pnl_connector.close()
+
+                except Exception as e:
+                    logger.warning(f"Could not fetch income history for P&L enrichment: {e}")
+
+            # =====================================================
+            # STEP 2: Format response and enrich with P&L
+            # =====================================================
             orders_list = []
             for order in orders:
+                # Try to match P&L from income history
+                order_symbol = (order["symbol"] or "").replace('-', '').upper()
+                order_timestamp = order["created_at"]
+                profit_loss = 0.0
+
+                if order_timestamp and pnl_by_symbol_time:
+                    order_timestamp_ms = int(order_timestamp.timestamp() * 1000)
+                    order_timestamp_minute = (order_timestamp_ms // 60000) * 60000
+
+                    # Try exact minute match first
+                    pnl_key = (order_symbol, order_timestamp_minute)
+                    if pnl_key in pnl_by_symbol_time:
+                        profit_loss = pnl_by_symbol_time[pnl_key]
+                    else:
+                        # Try nearby minutes (±2 minutes window)
+                        for delta in [-120000, -60000, 60000, 120000]:
+                            nearby_key = (order_symbol, order_timestamp_minute + delta)
+                            if nearby_key in pnl_by_symbol_time:
+                                profit_loss = pnl_by_symbol_time[nearby_key]
+                                break
+
                 orders_list.append({
                     "id": order["id"],
                     "client_order_id": order["client_order_id"],
@@ -1411,7 +1504,9 @@ def create_orders_router() -> APIRouter:
                     "exchange_account_id": order["exchange_account_id"],
                     "exchange_account_name": order["exchange_account_name"],
                     "exchange": order["exchange"],
-                    "operation_type": "futures"  # HARDCODED for now - add column later
+                    "operation_type": "futures",  # HARDCODED for now - add column later
+                    "profit_loss": profit_loss,  # P&L from exchange income history
+                    "margin_usdt": float(order["quantity"]) * float(order["price"]) if order["quantity"] and order["price"] else 0
                 })
 
             # CRITICAL FIX: Buscar ordens PENDENTES da API (SL/TP para gráfico)

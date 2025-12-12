@@ -1,10 +1,19 @@
 import React, { useEffect, useState } from 'react'
-import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info } from 'lucide-react'
+import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info, ChevronDown, ChevronUp, CheckCircle, XCircle, Download, FileSpreadsheet } from 'lucide-react'
 import { BotSubscription, botsService, SubscriptionPerformance } from '@/services/botsService'
 import { BotPnLChart } from './BotPnLChart'
 import { BotWinRateChart } from './BotWinRateChart'
 import { SharePnLModal } from './SharePnLModal'
 import { useAuth } from '@/contexts/AuthContext'
+
+// Trade item from exchange
+interface TradeItem {
+  index: number
+  datetime: string
+  symbol: string
+  pnl: number
+  status: 'WIN' | 'LOSS' | 'BREAK-EVEN'
+}
 
 // Tooltip component for info icons
 interface InfoTooltipProps {
@@ -15,7 +24,7 @@ const InfoTooltip: React.FC<InfoTooltipProps> = ({ text }) => {
   const [isVisible, setIsVisible] = useState(false)
 
   return (
-    <div className="relative inline-block ml-1">
+    <div className="relative inline-flex items-center flex-shrink-0">
       <button
         onMouseEnter={() => setIsVisible(true)}
         onMouseLeave={() => setIsVisible(false)}
@@ -23,15 +32,15 @@ const InfoTooltip: React.FC<InfoTooltipProps> = ({ text }) => {
           e.stopPropagation()
           setIsVisible(!isVisible)
         }}
-        className="text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        className="text-muted-foreground/60 hover:text-muted-foreground transition-colors p-0.5"
       >
-        <Info className="w-3.5 h-3.5" />
+        <Info className="w-3 h-3" />
       </button>
       {isVisible && (
-        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-popover border border-border rounded-lg shadow-lg text-xs text-popover-foreground">
+        <div className="absolute z-50 bottom-full right-0 mb-2 w-48 p-2 bg-popover border border-border rounded-lg shadow-lg text-xs text-popover-foreground whitespace-normal">
           <div className="relative">
             {text}
-            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-border" />
+            <div className="absolute top-full right-2 border-4 border-transparent border-t-border" />
           </div>
         </div>
       )}
@@ -64,6 +73,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   const [isLoading, setIsLoading] = useState(false)
   const [selectedDays, setSelectedDays] = useState(30)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
 
   // Fetch performance data when modal opens
   useEffect(() => {
@@ -132,6 +142,11 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
     return filteredStats?.open_trades ?? 0
   }
 
+  // Get trades list from performance data
+  const getTradesList = (): TradeItem[] => {
+    return (performance as any)?.trades_list ?? []
+  }
+
   const getCurrentPositions = () => {
     return currentState?.current_positions ?? subscription.current_positions
   }
@@ -163,6 +178,68 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
     if (totalInvested === 0) return undefined
 
     return (pnl / totalInvested) * 100
+  }
+
+  // Export trades to CSV
+  const exportToCSV = () => {
+    const trades = getTradesList()
+    if (trades.length === 0) return
+
+    const headers = ['#', 'Data/Hora', 'Par', 'P&L (USD)', 'Status']
+    const rows = trades.map(t => [t.index, t.datetime, t.symbol, t.pnl.toFixed(2), t.status])
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${subscription.bot_name}_trades_${new Date().toISOString().split('T')[0]}.csv`
+    link.click()
+  }
+
+  // Export trades to Excel (XLSX format as CSV with .xlsx extension for compatibility)
+  const exportToExcel = () => {
+    const trades = getTradesList()
+    if (trades.length === 0) return
+
+    // Create Excel-compatible XML (SpreadsheetML)
+    const xmlHeader = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet ss:Name="Trades">
+<Table>`
+
+    const xmlFooter = `</Table>
+</Worksheet>
+</Workbook>`
+
+    const headerRow = `<Row>
+  <Cell><Data ss:Type="String">#</Data></Cell>
+  <Cell><Data ss:Type="String">Data/Hora</Data></Cell>
+  <Cell><Data ss:Type="String">Par</Data></Cell>
+  <Cell><Data ss:Type="String">P&amp;L (USD)</Data></Cell>
+  <Cell><Data ss:Type="String">Status</Data></Cell>
+</Row>`
+
+    const dataRows = trades.map(t => `<Row>
+  <Cell><Data ss:Type="Number">${t.index}</Data></Cell>
+  <Cell><Data ss:Type="String">${t.datetime}</Data></Cell>
+  <Cell><Data ss:Type="String">${t.symbol}</Data></Cell>
+  <Cell><Data ss:Type="Number">${t.pnl.toFixed(2)}</Data></Cell>
+  <Cell><Data ss:Type="String">${t.status}</Data></Cell>
+</Row>`).join('\n')
+
+    const xmlContent = xmlHeader + headerRow + dataRows + xmlFooter
+
+    const blob = new Blob([xmlContent], { type: 'application/vnd.ms-excel' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${subscription.bot_name}_trades_${new Date().toISOString().split('T')[0]}.xls`
+    link.click()
   }
 
   return (
@@ -248,17 +325,20 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               </p>
             </div>
 
-            <div className="bg-secondary/50 p-4 rounded-lg border border-border">
-              <div className="flex items-center gap-2 mb-2">
-                <Activity className="w-5 h-5 text-primary" />
-                <p className="text-sm text-muted-foreground">Sinais</p>
-                <InfoTooltip text="Total de sinais recebidos do bot. Executadas = sinais que abriram posicoes na exchange." />
+            <div className="bg-secondary/50 p-4 rounded-lg border border-border relative overflow-visible">
+              <div className="flex items-center gap-1.5 mb-2">
+                <CheckCircle className="w-4 h-4 text-success flex-shrink-0" />
+                <XCircle className="w-4 h-4 text-danger flex-shrink-0" />
+                <p className="text-sm text-muted-foreground">W/L</p>
+                <InfoTooltip text="Quantidade de trades ganhos (WIN) e perdidos (LOSS) no periodo selecionado." />
               </div>
-              <p className="text-2xl font-bold text-foreground">
-                {getSignals()}
-              </p>
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-bold text-success">{getWinCount()}W</span>
+                <span className="text-muted-foreground">/</span>
+                <span className="text-xl font-bold text-danger">{getLossCount()}L</span>
+              </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {getExecuted()} executadas
+                {getSignals()} sinais
               </p>
             </div>
 
@@ -305,6 +385,107 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
             ) : (
               <div className="h-[250px] flex items-center justify-center text-muted-foreground">
                 Sem dados de performance neste periodo
+              </div>
+            )}
+          </div>
+
+          {/* Trade History - Collapsible Card */}
+          <div className="bg-secondary/30 rounded-lg border border-border overflow-hidden">
+            <button
+              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              className="w-full flex items-center justify-between p-5 hover:bg-secondary/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Activity className="w-5 h-5 text-primary" />
+                <h3 className="text-lg font-semibold text-foreground">
+                  Histórico de Operações
+                </h3>
+                <span className="text-sm text-muted-foreground">
+                  ({getTradesList().length} trades)
+                </span>
+              </div>
+              {isHistoryOpen ? (
+                <ChevronUp className="w-5 h-5 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-muted-foreground" />
+              )}
+            </button>
+
+            {isHistoryOpen && (
+              <div className="border-t border-border">
+                {isLoading ? (
+                  <div className="p-5 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                  </div>
+                ) : getTradesList().length > 0 ? (
+                  <>
+                    <div className="max-h-[300px] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-secondary/50 sticky top-0">
+                          <tr>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">#</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Data/Hora</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Par</th>
+                            <th className="text-right py-3 px-4 font-medium text-muted-foreground">P&L</th>
+                            <th className="text-center py-3 px-4 font-medium text-muted-foreground">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {getTradesList().map((trade, idx) => (
+                            <tr
+                              key={idx}
+                              className="border-t border-border/50 hover:bg-secondary/30 transition-colors"
+                            >
+                              <td className="py-3 px-4 text-muted-foreground">{trade.index}</td>
+                              <td className="py-3 px-4 text-foreground font-mono text-xs">{trade.datetime}</td>
+                              <td className="py-3 px-4 text-foreground font-medium">{trade.symbol}</td>
+                              <td className={`py-3 px-4 text-right font-semibold ${trade.pnl >= 0 ? 'text-success' : 'text-danger'}`}>
+                                {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                {trade.status === 'WIN' ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-success/20 text-success text-xs font-medium">
+                                    <CheckCircle className="w-3 h-3" /> WIN
+                                  </span>
+                                ) : trade.status === 'LOSS' ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-danger/20 text-danger text-xs font-medium">
+                                    <XCircle className="w-3 h-3" /> LOSS
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-xs font-medium">
+                                    BREAK-EVEN
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Export Buttons Footer */}
+                    <div className="flex items-center justify-end gap-2 p-3 border-t border-border bg-secondary/30">
+                      <span className="text-xs text-muted-foreground mr-2">Exportar:</span>
+                      <button
+                        onClick={exportToCSV}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-secondary hover:bg-secondary/80 text-foreground rounded border border-border transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        CSV
+                      </button>
+                      <button
+                        onClick={exportToExcel}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-green-600/20 hover:bg-green-600/30 text-green-500 rounded border border-green-600/30 transition-colors"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        Excel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-5 text-center text-muted-foreground">
+                    Sem trades no periodo selecionado
+                  </div>
+                )}
               </div>
             )}
           </div>

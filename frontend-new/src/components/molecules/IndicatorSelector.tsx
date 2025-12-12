@@ -21,6 +21,7 @@ const CATEGORY_LABELS: Record<keyof typeof INDICATOR_CATEGORIES, string> = {
   TREND: 'Trend',
   MOMENTUM: 'Momentum',
   VOLATILITY: 'Volatility',
+  MARKET_PROFILE: 'Market Profile',
   VOLUME: 'Volume',
   OSCILLATORS: 'Oscillators',
   DIRECTIONAL: 'Directional'
@@ -30,6 +31,7 @@ const CATEGORY_ICONS: Record<keyof typeof INDICATOR_CATEGORIES, string> = {
   TREND: '📈',
   MOMENTUM: '⚡',
   VOLATILITY: '📊',
+  MARKET_PROFILE: '🏛️',
   VOLUME: '📦',
   OSCILLATORS: '🔄',
   DIRECTIONAL: '🧭'

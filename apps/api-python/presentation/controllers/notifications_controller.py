@@ -8,12 +8,13 @@ import jwt
 import uuid as uuid_module
 from pydantic import BaseModel
 
+import os
 from infrastructure.database.connection_transaction_mode import transaction_db
 
 logger = structlog.get_logger(__name__)
 
-# JWT Secret Key (should be in environment variable in production)
-JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+# JWT Secret Key from environment variable
+JWT_SECRET_KEY = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
 
 
 # =====================================================

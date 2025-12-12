@@ -146,6 +146,72 @@ export interface BotSignal {
   created_at: string
 }
 
+export interface BotMetricsResult {
+  message: string
+  bots: BotMetricsSummary[]
+}
+
+export interface BotMetricsSummary {
+  bot_id: string
+  name: string
+  active_subscribers: number
+  total_wins: number
+  total_losses: number
+  total_trades: number
+  win_rate: number | null
+  avg_pnl_pct: number | null
+  total_pnl_usd: number
+}
+
+export interface BotDetailedMetrics {
+  bot: {
+    id: string
+    name: string
+    status: string
+    stored_win_rate: number | null
+    stored_pnl_pct: number | null
+  }
+  aggregate_metrics: {
+    total_subscriptions: number
+    active_subscriptions: number
+    total_wins: number
+    total_losses: number
+    total_trades: number
+    win_rate: number
+    total_pnl_usd: number
+    total_signals: number
+    total_orders_executed: number
+    total_orders_failed: number
+  }
+  trade_stats: {
+    total_closed_trades: number
+    winning_trades: number
+    losing_trades: number
+    avg_pnl_usd: number
+    avg_pnl_pct: number
+    best_trade: number
+    worst_trade: number
+    total_fees: number
+  }
+  top_subscribers: Array<{
+    subscription_id: string
+    user_name: string
+    user_email: string
+    win_count: number
+    loss_count: number
+    win_rate: number
+    total_pnl_usd: number
+    total_orders: number
+    status: string
+  }>
+  daily_pnl_trend: Array<{
+    date: string
+    pnl: number
+    wins: number
+    losses: number
+  }>
+}
+
 // ============================================================================
 // Admin Service Class
 // ============================================================================
@@ -301,6 +367,142 @@ class AdminService {
 
     throw new Error('Failed to fetch bot stats')
   }
+
+  /**
+   * Permanently delete a bot (hard delete)
+   */
+  async permanentlyDeleteBot(botId: string): Promise<void> {
+    await apiClient.instance.delete(`/admin/bots/${botId}/permanent`, {
+      params: { admin_user_id: this.getAdminUserId() }
+    })
+  }
+
+  /**
+   * Calculate and update bot metrics (Win Rate, P&L)
+   */
+  async calculateBotMetrics(): Promise<BotMetricsResult> {
+    const response = await apiClient.instance.get('/admin/bots/metrics/calculate', {
+      params: { admin_user_id: this.getAdminUserId() }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return {
+        message: response.data.message,
+        bots: response.data.data
+      }
+    }
+
+    throw new Error('Failed to calculate bot metrics')
+  }
+
+  /**
+   * Get detailed metrics for a specific bot
+   */
+  async getBotDetailedMetrics(botId: string): Promise<BotDetailedMetrics> {
+    const response = await apiClient.instance.get(`/admin/bots/${botId}/metrics`, {
+      params: { admin_user_id: this.getAdminUserId() }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    throw new Error('Failed to fetch bot detailed metrics')
+  }
+
+  /**
+   * Get all exchanges for admin
+   */
+  async getAllExchanges(): Promise<ExchangesAdminData> {
+    const response = await apiClient.instance.get('/admin/exchanges', {
+      params: { admin_user_id: this.getAdminUserId() }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    return { stats: {}, breakdown: [], exchanges: [] }
+  }
+
+  /**
+   * Get all webhooks for admin
+   */
+  async getAllWebhooks(): Promise<WebhooksAdminData> {
+    const response = await apiClient.instance.get('/admin/webhooks', {
+      params: { admin_user_id: this.getAdminUserId() }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    return { stats: {}, breakdown: [], webhooks: [] }
+  }
+}
+
+// Admin data types for Exchanges
+export interface ExchangesAdminData {
+  stats: {
+    total?: number
+    active?: number
+    inactive?: number
+    unique_exchanges?: number
+    users_with_exchanges?: number
+  }
+  breakdown: Array<{
+    exchange: string
+    count: number
+    active_count: number
+  }>
+  exchanges: Array<{
+    id: string
+    account_name: string
+    exchange: string
+    is_active: boolean
+    testnet: boolean
+    created_at: string
+    updated_at: string
+    user_id: string
+    user_name: string
+    user_email: string
+  }>
+}
+
+// Admin data types for Webhooks
+export interface WebhooksAdminData {
+  stats: {
+    total?: number
+    active?: number
+    paused?: number
+    inactive?: number
+    users_with_webhooks?: number
+    total_deliveries?: number
+    successful_deliveries?: number
+    failed_deliveries?: number
+  }
+  breakdown: Array<{
+    market_type: string
+    count: number
+    active_count: number
+  }>
+  webhooks: Array<{
+    id: string
+    name: string
+    url_path: string
+    status: string
+    market_type: string
+    is_public: boolean
+    total_deliveries: number
+    successful_deliveries: number
+    failed_deliveries: number
+    last_delivery_at: string | null
+    created_at: string
+    updated_at: string
+    user_id: string
+    user_name: string
+    user_email: string
+  }>
 }
 
 export const adminService = new AdminService()

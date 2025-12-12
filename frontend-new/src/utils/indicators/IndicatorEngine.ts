@@ -63,6 +63,8 @@ import {
   BBConfig,
   ATRConfig,
   KCConfig,
+  NWEnvelopeConfig,
+  TPOConfig,
   VWAPConfig,
   OBVConfig,
   ADLConfig,
@@ -74,6 +76,9 @@ import {
   AOConfig,
   ADXConfig
 } from './types'
+
+import { calculateNadarayaWatsonEnvelope, NW_COLORS } from './nadarayaWatson'
+import { calculateTPO, generateRenderData, TPOResult, TPORenderData, DEFAULT_TPO_CONFIG, TPOConfig as TPOCalcConfig } from './tpo'
 
 export class IndicatorEngine {
   /**
@@ -143,6 +148,12 @@ export class IndicatorEngine {
           return this.calculateATR(config as ATRConfig, candles)
         case 'KC':
           return this.calculateKC(config as KCConfig, candles)
+        case 'NWENVELOPE':
+          return this.calculateNWEnvelope(config as NWEnvelopeConfig, candles)
+
+        // MARKET PROFILE
+        case 'TPO':
+          return this.calculateTPOIndicator(config as TPOConfig, candles)
 
         // VOLUME INDICATORS
         case 'VWAP':
@@ -488,6 +499,122 @@ export class IndicatorEngine {
         upper: this.padArray(upper, candles.length),
         lower: this.padArray(lower, candles.length)
       }
+    }
+  }
+
+  /**
+   * TPO (Time Price Opportunity) / Market Profile
+   * Réplica exata do Pine Script "TPO (Replica)" by Criptooasis
+   * Returns POC, VAH, VAL levels AND full TPO data for canvas rendering with letters
+   */
+  private calculateTPOIndicator(config: TPOConfig, candles: Candle[]): IndicatorResult {
+    // 🔍 DEBUG: Log dos params recebidos
+    console.log('🔧 IndicatorEngine.calculateTPOIndicator - config.params:', config.params)
+
+    // Convert candles to lightweight-charts format with proper Time type
+    const lwCandles = candles.map(c => ({
+      time: c.time as any, // Cast to Time type
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close
+    }))
+
+    // Build TPO config from params
+    const tpoConfig: Partial<TPOCalcConfig> = {
+      // NOVO: Configurações de sessão 24h
+      use24hSession: config.params.use24hSession ?? DEFAULT_TPO_CONFIG.use24hSession,
+      sessionStartHour: config.params.sessionStartHour ?? DEFAULT_TPO_CONFIG.sessionStartHour,
+      sessionBars: config.params.sessionBars ?? DEFAULT_TPO_CONFIG.sessionBars,
+      autoTickSize: config.params.autoTickSize ?? DEFAULT_TPO_CONFIG.autoTickSize,
+      tickBarsBack: config.params.tickBarsBack ?? DEFAULT_TPO_CONFIG.tickBarsBack,
+      targetSessionHeight: config.params.targetSessionHeight ?? DEFAULT_TPO_CONFIG.targetSessionHeight,
+      manualTickSize: config.params.manualTickSize ?? DEFAULT_TPO_CONFIG.manualTickSize,
+      valueAreaPercent: config.params.valueAreaPercent ?? DEFAULT_TPO_CONFIG.valueAreaPercent,
+      showTPOLetters: config.params.showTPOLetters ?? DEFAULT_TPO_CONFIG.showTPOLetters,
+      showPOCLine: config.params.showPOCLine ?? DEFAULT_TPO_CONFIG.showPOCLine,
+      showValueAreaLines: config.params.showValueAreaLines ?? DEFAULT_TPO_CONFIG.showValueAreaLines,
+      showValueAreaBoxes: config.params.showValueAreaBoxes ?? DEFAULT_TPO_CONFIG.showValueAreaBoxes,
+      showInfoBox: config.params.showInfoBox ?? DEFAULT_TPO_CONFIG.showInfoBox,
+    }
+
+    // 🔍 DEBUG: Log do config final que vai pro cálculo
+    console.log('🔧 IndicatorEngine - tpoConfig FINAL:', tpoConfig)
+
+    const result = calculateTPO(lwCandles as any, tpoConfig)
+
+    // Extract POC values for each candle (for line display)
+    const pocValues = new Array(candles.length).fill(NaN)
+    const vahValues = new Array(candles.length).fill(NaN)
+    const valValues = new Array(candles.length).fill(NaN)
+
+    // Map profile values to candle indices
+    for (const profile of result.profiles) {
+      for (let i = profile.startBarIndex; i <= profile.endBarIndex; i++) {
+        pocValues[i] = profile.poc
+        vahValues[i] = profile.vah
+        valValues[i] = profile.val
+      }
+    }
+
+    // Generate render data for canvas - includes candles for positioning
+    const renderDataList: TPORenderData[] = []
+    for (const profile of result.profiles) {
+      const profileCandles = lwCandles.slice(profile.startBarIndex, profile.endBarIndex + 1)
+      const renderData = generateRenderData(profile, profileCandles as any, result.config)
+      renderDataList.push(renderData)
+    }
+
+    return {
+      id: config.id,
+      type: 'TPO',
+      values: pocValues,
+      additionalLines: {
+        vah: vahValues,
+        val: valValues
+      },
+      // Store full TPO result for canvas rendering
+      tpoData: result,
+      // Store pre-generated render data for each profile
+      tpoRenderData: renderDataList,
+      // Store candles for positioning letters
+      tpoCandles: lwCandles
+    } as IndicatorResult & { tpoData: TPOResult; tpoRenderData: TPORenderData[]; tpoCandles: any[] }
+  }
+
+  /**
+   * Nadaraya-Watson Envelope (LuxAlgo)
+   * Uses Gaussian kernel regression to create smooth price envelopes
+   * Includes buy/sell signals based on price crossing the envelope bands
+   */
+  private calculateNWEnvelope(config: NWEnvelopeConfig, candles: Candle[]): IndicatorResult {
+    const result = calculateNadarayaWatsonEnvelope(candles, {
+      windowSize: config.params.windowSize,
+      bandwidth: config.params.bandwidth,
+      multiplier: config.params.multiplier,
+      source: config.params.source,
+      repaint: config.params.repaint
+    })
+
+    // Extract values for the smooth line
+    const smoothLine = result.points.map(p => p.smoothLine)
+    const upperBand = result.points.map(p => p.upperBand)
+    const lowerBand = result.points.map(p => p.lowerBand)
+
+    return {
+      id: config.id,
+      type: 'NWENVELOPE',
+      values: this.padArray(smoothLine, candles.length),
+      additionalLines: {
+        upper: this.padArray(upperBand, candles.length),
+        lower: this.padArray(lowerBand, candles.length)
+      },
+      // Include buy/sell signals from the NW calculation
+      signals: result.signals.map(s => ({
+        time: s.time,
+        type: s.type,
+        price: s.price
+      }))
     }
   }
 

@@ -70,29 +70,72 @@ class BotTradeTrackerService:
                 position_value = entry_price * quantity
                 pnl_pct = (pnl_usd / position_value) * 100
 
-            # 1. Insert trade record into bot_trades (using schema from migration)
-            trade_id = await self.db.fetchval("""
-                INSERT INTO bot_trades (
-                    subscription_id, user_id, signal_execution_id,
-                    symbol, side, direction,
-                    entry_price, entry_quantity, entry_time,
-                    exit_price, exit_quantity, exit_time, exit_reason,
-                    pnl_usd, pnl_pct, is_winner, status
-                ) VALUES (
-                    $1, $2, $3,
-                    $4, $5, $6,
-                    $7, $8, NOW(),
-                    $9, $10, NOW(), $11,
-                    $12, $13, $14, 'closed'
+            # 1. Check if there's an existing open trade record for this execution
+            existing_trade = await self.db.fetchrow("""
+                SELECT id, entry_price, entry_quantity, entry_time
+                FROM bot_trades
+                WHERE signal_execution_id = $1 AND status = 'open'
+            """, signal_execution_id)
+
+            if existing_trade:
+                # UPDATE existing trade record (opened by bot_broadcast_service)
+                trade_id = existing_trade["id"]
+                # Use stored entry values if available
+                stored_entry_price = float(existing_trade["entry_price"]) if existing_trade["entry_price"] else entry_price
+                stored_entry_qty = float(existing_trade["entry_quantity"]) if existing_trade["entry_quantity"] else quantity
+
+                # Recalculate P&L with stored values if different
+                if stored_entry_price != entry_price:
+                    if direction == "long":
+                        pnl_usd = (exit_price - stored_entry_price) * stored_entry_qty
+                    else:
+                        pnl_usd = (stored_entry_price - exit_price) * stored_entry_qty
+                    is_win = pnl_usd >= 0
+                    if stored_entry_price > 0 and stored_entry_qty > 0:
+                        pnl_pct = (pnl_usd / (stored_entry_price * stored_entry_qty)) * 100
+
+                await self.db.execute("""
+                    UPDATE bot_trades
+                    SET exit_price = $1,
+                        exit_quantity = $2,
+                        exit_time = NOW(),
+                        exit_reason = $3,
+                        pnl_usd = $4,
+                        pnl_pct = $5,
+                        is_winner = $6,
+                        status = 'closed',
+                        updated_at = NOW()
+                    WHERE id = $7
+                """,
+                    exit_price, quantity, close_reason,
+                    pnl_usd, pnl_pct, is_win, trade_id
                 )
-                RETURNING id
-            """,
-                subscription_id, user_id, signal_execution_id,
-                ticker, side, direction,
-                entry_price, quantity,
-                exit_price, quantity, close_reason,
-                pnl_usd, pnl_pct, is_win
-            )
+                logger.info(f"Updated existing trade {trade_id} to closed status")
+            else:
+                # INSERT new trade record (fallback if open record doesn't exist)
+                trade_id = await self.db.fetchval("""
+                    INSERT INTO bot_trades (
+                        subscription_id, user_id, signal_execution_id,
+                        symbol, side, direction,
+                        entry_price, entry_quantity, entry_time,
+                        exit_price, exit_quantity, exit_time, exit_reason,
+                        pnl_usd, pnl_pct, is_winner, status
+                    ) VALUES (
+                        $1, $2, $3,
+                        $4, $5, $6,
+                        $7, $8, NOW(),
+                        $9, $10, NOW(), $11,
+                        $12, $13, $14, 'closed'
+                    )
+                    RETURNING id
+                """,
+                    subscription_id, user_id, signal_execution_id,
+                    ticker, side, direction,
+                    entry_price, quantity,
+                    exit_price, quantity, close_reason,
+                    pnl_usd, pnl_pct, is_win
+                )
+                logger.info(f"Inserted new closed trade {trade_id}")
 
             # 2. Update subscription metrics
             if is_win:

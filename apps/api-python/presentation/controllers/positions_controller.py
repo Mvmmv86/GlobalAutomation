@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import List, Optional
 import structlog
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 
@@ -98,14 +98,89 @@ def create_positions_router() -> APIRouter:
             """
             
             positions = await transaction_db.fetch(query, *params)
-            
+
+            # =====================================================
+            # STEP 1: Fetch P&L from income history (REALIZED_PNL)
+            # This enriches positions with accurate P&L from exchange
+            # =====================================================
+            pnl_by_symbol = {}  # key: symbol_normalized -> total_realized_pnl
+
+            if exchange_account_id:
+                try:
+                    account_for_pnl = await transaction_db.fetchrow("""
+                        SELECT id, exchange, api_key, secret_key, testnet, name
+                        FROM exchange_accounts
+                        WHERE id = $1 AND is_active = true
+                    """, exchange_account_id)
+
+                    if account_for_pnl:
+                        exchange_type = account_for_pnl['exchange'].lower()
+
+                        if exchange_type == 'bingx':
+                            from infrastructure.exchanges.bingx_connector import BingXConnector
+                            pnl_connector = BingXConnector(
+                                api_key=account_for_pnl['api_key'],
+                                api_secret=account_for_pnl['secret_key'],
+                                testnet=account_for_pnl['testnet']
+                            )
+
+                            # Calcular range de tempo baseado nos filtros
+                            if date_from:
+                                start_dt = datetime.strptime(date_from, "%Y-%m-%d")
+                            else:
+                                start_dt = datetime.now() - timedelta(days=90)
+
+                            if date_to:
+                                end_dt = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                            else:
+                                end_dt = datetime.now()
+
+                            start_time_ms = int(start_dt.timestamp() * 1000)
+                            end_time_ms = int(end_dt.timestamp() * 1000)
+
+                            income_result = await pnl_connector.get_futures_income_history(
+                                income_type="REALIZED_PNL",
+                                start_time=start_time_ms,
+                                end_time=end_time_ms,
+                                limit=1000
+                            )
+
+                            if income_result.get('success'):
+                                for record in income_result.get('income_history', []):
+                                    symbol_raw = record.get('symbol', '')
+                                    symbol_normalized = symbol_raw.replace('-', '').upper()
+                                    income_amount = float(record.get('income', 0))
+
+                                    if symbol_normalized not in pnl_by_symbol:
+                                        pnl_by_symbol[symbol_normalized] = 0
+                                    pnl_by_symbol[symbol_normalized] += income_amount
+
+                                logger.info(f"📊 Positions endpoint: Fetched P&L for {len(pnl_by_symbol)} symbols from income history")
+
+                            await pnl_connector.close()
+
+                except Exception as e:
+                    logger.warning(f"Could not fetch income history for positions P&L: {e}")
+
+            # =====================================================
+            # STEP 2: Format positions and enrich with exchange P&L
+            # =====================================================
             positions_list = []
             for position in positions:
                 # Calcular P&L %
                 size = float(position["size"]) if position["size"] else 0
                 entry_price = float(position["entry_price"]) if position["entry_price"] else 0
                 unrealized_pnl = float(position["unrealized_pnl"]) if position["unrealized_pnl"] else 0
+                realized_pnl_db = float(position["realized_pnl"]) if position["realized_pnl"] else 0
                 leverage = float(position["leverage"]) if position["leverage"] else 1
+
+                # Try to get P&L from exchange income history for closed positions
+                position_symbol = (position["symbol"] or "").replace('-', '').upper()
+                realized_pnl = realized_pnl_db
+                if position["status"] == 'closed' and position_symbol in pnl_by_symbol:
+                    # Use exchange P&L for closed positions
+                    realized_pnl = pnl_by_symbol[position_symbol]
+                    logger.debug(f"Enriched position {position_symbol} with exchange P&L: {realized_pnl}")
 
                 # Valor inicial da posição (sem alavancagem)
                 position_value = size * entry_price
@@ -127,7 +202,7 @@ def create_positions_router() -> APIRouter:
                     "exit_price": None,  # Campo não disponível na tabela atual
                     "unrealized_pnl": unrealized_pnl,
                     "unrealized_pnl_percentage": round(pnl_percentage, 2),  # Novo campo P&L %
-                    "realized_pnl": float(position["realized_pnl"]) if position["realized_pnl"] else 0,
+                    "realized_pnl": realized_pnl,  # P&L enriched from exchange
                     "initial_margin": float(position["initial_margin"]) if position["initial_margin"] else 0,
                     "maintenance_margin": float(position["maintenance_margin"]) if position["maintenance_margin"] else 0,
                     "leverage": leverage,

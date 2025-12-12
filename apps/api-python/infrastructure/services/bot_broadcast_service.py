@@ -248,6 +248,7 @@ class BotBroadcastService:
                 ea.api_key,
                 ea.secret_key as api_secret,
                 COALESCE(ea.position_mode, 'hedge') as position_mode,
+                b.name as bot_name,
                 b.default_leverage,
                 b.default_margin_usd,
                 b.default_stop_loss_pct,
@@ -453,6 +454,38 @@ class BotBroadcastService:
 
             # 10. Update subscription statistics
             await self._update_subscription_stats(subscription_id, True)
+
+            # 11. Create bot_trade record for open trade (for P&L tracking)
+            if action.lower() in ["buy", "sell"]:
+                await self._create_open_trade_record(
+                    subscription_id=subscription_id,
+                    user_id=user_id,
+                    signal_id=signal_id,
+                    ticker=ticker,
+                    action=action.lower(),
+                    entry_price=float(executed_price or current_price),
+                    quantity=float(executed_qty or quantity),
+                    sl_order_id=sl_order_id,
+                    tp_order_id=tp_order_id,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    leverage=config.get("leverage", 10),
+                    margin_usd=config.get("margin_usd", 20)
+                )
+
+            # 12. Create notification for trade opened
+            await self._create_trade_opened_notification(
+                user_id=user_id,
+                bot_name=subscription.get("bot_name", "Bot"),
+                ticker=ticker,
+                action=action.lower(),
+                entry_price=float(executed_price or current_price),
+                quantity=float(executed_qty or quantity),
+                sl_price=sl_price,
+                tp_price=tp_price,
+                leverage=config.get("leverage", 10),
+                margin_usd=config.get("margin_usd", 20)
+            )
 
             logger.info(
                 "Order executed successfully",
@@ -746,6 +779,155 @@ class BotBroadcastService:
                     updated_at = NOW()
                 WHERE id = $1
             """, subscription_id)
+
+    async def _create_open_trade_record(
+        self,
+        subscription_id: UUID,
+        user_id: UUID,
+        signal_id: UUID,
+        ticker: str,
+        action: str,
+        entry_price: float,
+        quantity: float,
+        sl_order_id: Optional[str],
+        tp_order_id: Optional[str],
+        sl_price: Optional[float],
+        tp_price: Optional[float],
+        leverage: int = 10,
+        margin_usd: float = 20.0
+    ):
+        """
+        Create a bot_trade record when a trade is opened.
+        This allows tracking of open trades and proper P&L calculation when closed.
+        """
+        try:
+            direction = "long" if action == "buy" else "short"
+
+            # Get signal_execution_id
+            execution = await self.db.fetchrow("""
+                SELECT id FROM bot_signal_executions
+                WHERE signal_id = $1 AND subscription_id = $2
+                ORDER BY created_at DESC LIMIT 1
+            """, signal_id, subscription_id)
+
+            signal_execution_id = execution["id"] if execution else None
+
+            # Insert open trade record
+            await self.db.execute("""
+                INSERT INTO bot_trades (
+                    subscription_id, user_id, signal_execution_id,
+                    ticker, side, direction,
+                    entry_price, entry_quantity, entry_time,
+                    sl_order_id, tp_order_id,
+                    status, is_winner,
+                    created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3,
+                    $4, $5, $6,
+                    $7, $8, NOW(),
+                    $9, $10,
+                    'open', false,
+                    NOW(), NOW()
+                )
+            """,
+                subscription_id, user_id, signal_execution_id,
+                ticker.replace("-", ""), action, direction,
+                entry_price, quantity,
+                sl_order_id, tp_order_id
+            )
+
+            # Update subscription current_positions count
+            await self.db.execute("""
+                UPDATE bot_subscriptions
+                SET current_positions = current_positions + 1,
+                    updated_at = NOW()
+                WHERE id = $1
+            """, subscription_id)
+
+            logger.info(
+                "Open trade record created",
+                subscription_id=str(subscription_id),
+                ticker=ticker,
+                direction=direction,
+                entry_price=entry_price
+            )
+
+        except Exception as e:
+            logger.error(
+                "Failed to create open trade record",
+                error=str(e),
+                subscription_id=str(subscription_id),
+                ticker=ticker
+            )
+
+    async def _create_trade_opened_notification(
+        self,
+        user_id: UUID,
+        bot_name: str,
+        ticker: str,
+        action: str,
+        entry_price: float,
+        quantity: float,
+        sl_price: Optional[float],
+        tp_price: Optional[float],
+        leverage: int = 10,
+        margin_usd: float = 20.0
+    ):
+        """
+        Create notification when bot opens a trade.
+        """
+        try:
+            direction = "LONG" if action == "buy" else "SHORT"
+
+            # Calculate SL/TP percentages
+            sl_pct = abs((sl_price - entry_price) / entry_price * 100) if sl_price else 0
+            tp_pct = abs((tp_price - entry_price) / entry_price * 100) if tp_price else 0
+
+            title = f"Trade Aberto: {ticker}"
+            message = (
+                f"Bot: {bot_name}\n"
+                f"{direction} | Margem: ${margin_usd:.0f} | {leverage}x\n"
+                f"Entrada: ${entry_price:.2f}\n"
+                f"SL: ${sl_price:.2f} ({sl_pct:.1f}%) | TP: ${tp_price:.2f} ({tp_pct:.1f}%)"
+            )
+
+            metadata_json = json.dumps({
+                "bot_name": bot_name,
+                "ticker": ticker,
+                "direction": direction,
+                "entry_price": entry_price,
+                "quantity": quantity,
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "leverage": leverage,
+                "margin_usd": margin_usd
+            })
+
+            await self.db.execute("""
+                INSERT INTO notifications (
+                    type, category, title, message, user_id,
+                    metadata, created_at, updated_at
+                ) VALUES ('info', 'bot', $1, $2, $3, $4::jsonb, NOW(), NOW())
+            """,
+                title,
+                message,
+                user_id,
+                metadata_json
+            )
+
+            logger.info(
+                "Trade opened notification created",
+                user_id=str(user_id),
+                ticker=ticker,
+                direction=direction
+            )
+
+        except Exception as e:
+            logger.error(
+                "Failed to create trade opened notification",
+                error=str(e),
+                user_id=str(user_id)
+            )
 
     async def _complete_signal(
         self,

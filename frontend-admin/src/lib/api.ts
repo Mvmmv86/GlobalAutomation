@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosResponse } from 'axios'
 import { ApiResponse } from '@/types/api'
 
 class ApiClient {
-  private instance: AxiosInstance
+  public instance: AxiosInstance
 
   constructor() {
     this.instance = axios.create({

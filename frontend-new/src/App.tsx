@@ -4,6 +4,8 @@ import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { AppRouter } from './components/templates/AppRouter'
 import { Toaster } from './components/atoms/Toaster'
+import { Toaster as SonnerToaster } from 'sonner'
+import { AlertToastContainer } from './components/molecules/AlertToastPopup'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +28,8 @@ function App() {
           <AuthProvider>
             <AppRouter />
             <Toaster />
+            <SonnerToaster position="top-right" richColors theme="dark" />
+            <AlertToastContainer />
           </AuthProvider>
         </ThemeProvider>
       </BrowserRouter>

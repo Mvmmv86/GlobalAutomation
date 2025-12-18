@@ -27,15 +27,20 @@ export interface Bot {
   updated_at: string
 }
 
-export interface BotSubscription {
-  id: string
+// Exchange-specific subscription data (for multi-exchange support)
+export interface ExchangeSubscription {
+  subscription_id: string
+  exchange_account_id: string
+  exchange: string
+  account_name: string
   status: 'active' | 'paused' | 'cancelled'
+  config_group_id: string | null
   custom_leverage: number | null
   custom_margin_usd: number | null
   custom_stop_loss_pct: number | null
   custom_take_profit_pct: number | null
-  max_daily_loss_usd: number
-  max_concurrent_positions: number
+  max_daily_loss_usd: number | null
+  max_concurrent_positions: number | null
   current_daily_loss_usd: number
   current_positions: number
   total_signals_received: number
@@ -44,18 +49,40 @@ export interface BotSubscription {
   total_pnl_usd: number
   win_count: number
   loss_count: number
-  created_at: string
+  created_at: string | null
   last_signal_at: string | null
+}
+
+// Bot subscription with multi-exchange support
+export interface BotSubscription {
+  // Bot info
   bot_id: string
   bot_name: string
   bot_description: string
   market_type: 'spot' | 'futures'
   default_leverage: number
-  default_margin_usd: number
-  default_stop_loss_pct: number
-  default_take_profit_pct: number
-  exchange: string
-  account_name: string
+  default_margin_usd: number | null
+  default_stop_loss_pct: number | null
+  default_take_profit_pct: number | null
+  // Multi-exchange data
+  exchanges: ExchangeSubscription[]
+  exchanges_count: number
+  // Aggregated totals
+  status: 'active' | 'paused' | 'cancelled'
+  total_pnl_usd: number
+  total_win_count: number
+  total_loss_count: number
+  total_signals_received: number
+  total_orders_executed: number
+  // Backwards compatibility (for single exchange)
+  id?: string  // subscription_id of first exchange
+  exchange?: string
+  account_name?: string
+  // Additional fields used in UI
+  last_signal_at?: string | null
+  created_at?: string | null
+  win_count?: number  // deprecated, use total_win_count
+  loss_count?: number  // deprecated, use total_loss_count
 }
 
 export interface BotSignalExecution {
@@ -80,6 +107,33 @@ export interface CreateSubscriptionData {
   custom_take_profit_pct?: number
   max_daily_loss_usd: number
   max_concurrent_positions: number
+}
+
+// Config per exchange (for multi-exchange with individual configs)
+export interface ExchangeConfig {
+  exchange_account_id: string
+  custom_leverage?: number
+  custom_margin_usd?: number
+  custom_stop_loss_pct?: number
+  custom_take_profit_pct?: number
+  max_daily_loss_usd: number
+  max_concurrent_positions: number
+}
+
+// Multi-exchange subscription data (up to 3 exchanges)
+export interface CreateMultiExchangeSubscriptionData {
+  bot_id: string
+  exchange_account_ids: string[]  // max 3
+  use_same_config: boolean
+  // Shared config (when use_same_config=true)
+  custom_leverage?: number
+  custom_margin_usd?: number
+  custom_stop_loss_pct?: number
+  custom_take_profit_pct?: number
+  max_daily_loss_usd: number
+  max_concurrent_positions: number
+  // Individual configs (when use_same_config=false)
+  individual_configs?: ExchangeConfig[]
 }
 
 export interface UpdateSubscriptionData {
@@ -139,6 +193,8 @@ export interface SubscriptionPerformance {
     current_positions: number
     max_concurrent_positions: number
     positions_data?: PositionData[]  // Detailed position info
+    today_loss_usd?: number  // Today's loss from exchange (real-time)
+    max_daily_loss_usd?: number  // Max daily loss limit
   }
   pnl_history: PnLHistoryPoint[]
 }
@@ -223,7 +279,7 @@ class BotsService {
   }
 
   /**
-   * Subscribe to a bot
+   * Subscribe to a bot (single exchange)
    */
   async subscribeToBot(userId: string, data: CreateSubscriptionData): Promise<{ subscription_id: string }> {
     const response = await apiClient.getAxiosInstance().post('/bot-subscriptions', data, {
@@ -235,6 +291,24 @@ class BotsService {
     }
 
     throw new Error(response.data?.message || 'Failed to subscribe to bot')
+  }
+
+  /**
+   * Subscribe to a bot with multiple exchanges (max 3)
+   */
+  async subscribeToBotMultiExchange(
+    userId: string,
+    data: CreateMultiExchangeSubscriptionData
+  ): Promise<{ subscription_ids: string[]; config_group_id: string; exchanges_count: number }> {
+    const response = await apiClient.getAxiosInstance().post('/bot-subscriptions/multi', data, {
+      params: { user_id: userId }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    throw new Error(response.data?.message || 'Failed to subscribe to bot with multiple exchanges')
   }
 
   /**

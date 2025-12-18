@@ -1,61 +1,95 @@
 """
-Script to run database migrations
+Script to run migration on Supabase
 """
 import asyncio
-import os
+import asyncpg
 import sys
-sys.path.insert(0, '/home/globalauto/global/apps/api-python')
 
-from infrastructure.database.connection_transaction_mode import transaction_db
+# DEV Database URL
+DEV_DATABASE_URL = "postgresql://postgres.zmdqmrugotfftxvrwdsd:Wzg0kBvtrSbclQ9V@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
 
-async def run_admin_migration():
-    """Execute admin system migration"""
+# PROD Database URL (US-West-2) - Use port 5432 for direct connection (not pooler)
+PROD_DATABASE_URL = "postgresql://postgres.wqmqsanuegvzbmjtxzac:ePBYqQKSYK.4y4r@aws-0-us-west-2.pooler.supabase.com:5432/postgres"
+
+MIGRATION_SQL = """
+ALTER TABLE bot_signal_executions
+ADD COLUMN IF NOT EXISTS sl_order_status VARCHAR(20) DEFAULT 'pending',
+ADD COLUMN IF NOT EXISTS tp_order_status VARCHAR(20) DEFAULT 'pending',
+ADD COLUMN IF NOT EXISTS sl_filled_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS tp_filled_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(18,8),
+ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+"""
+
+
+async def run_migration(database_url: str, env_name: str):
+    print(f"Running migration on {env_name}...")
+
     try:
-        with open('migrations/create_admin_system.sql', 'r') as f:
-            sql = f.read()
+        # Set statement_cache_size=0 for pgbouncer compatibility
+        conn = await asyncpg.connect(database_url, ssl='require', statement_cache_size=0)
 
-        print("🔄 Running admin system migration...")
+        # Run main migration
+        print("Adding columns to bot_signal_executions...")
+        await conn.execute(MIGRATION_SQL)
+        print("Done: bot_signal_executions")
 
-        # Split by semicolon but keep DO blocks together
-        statements = []
-        current = []
-        in_do_block = False
+        # Check and add bot_trades columns
+        print("Checking bot_trades columns...")
+        
+        columns_to_add = [
+            ("status", "VARCHAR(20) DEFAULT 'closed'"),
+            ("exit_reason", "VARCHAR(20)"),
+            ("sl_order_id", "VARCHAR(100)"),
+            ("tp_order_id", "VARCHAR(100)"),
+            ("pnl_pct", "DECIMAL(10,4)")
+        ]
+        
+        for col_name, col_type in columns_to_add:
+            exists = await conn.fetchval(f"""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'bot_trades' AND column_name = '{col_name}'
+                )
+            """)
+            if not exists:
+                await conn.execute(f"ALTER TABLE bot_trades ADD COLUMN {col_name} {col_type}")
+                print(f"  Added: {col_name}")
+            else:
+                print(f"  Exists: {col_name}")
 
-        for line in sql.split('\n'):
-            if 'DO $$' in line or 'DO$' in line:
-                in_do_block = True
-            
-            current.append(line)
-            
-            if in_do_block and '$$;' in line:
-                in_do_block = False
-                statements.append('\n'.join(current))
-                current = []
-            elif not in_do_block and ';' in line and line.strip() and not line.strip().startswith('--'):
-                statements.append('\n'.join(current))
-                current = []
+        # Create indexes
+        print("Creating indexes...")
+        try:
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_trades_status ON bot_trades(status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_trades_subscription_status ON bot_trades(subscription_id, status)")
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_bot_signal_executions_sltp_status
+                ON bot_signal_executions(sl_order_status, tp_order_status)
+                WHERE sl_order_status = 'pending' OR tp_order_status = 'pending'
+            """)
+            print("  Indexes created")
+        except Exception as e:
+            print(f"  Index warning: {e}")
 
-        # Execute each statement
-        for i, statement in enumerate(statements, 1):
-            statement = statement.strip()
-            if statement and not statement.startswith('--'):
-                try:
-                    await transaction_db.execute(statement)
-                    print(f"✅ Statement {i}/{len(statements)} executed")
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if 'already exists' in error_msg or 'duplicate' in error_msg:
-                        print(f"⚠️  Statement {i} skipped (already exists)")
-                    else:
-                        print(f"❌ Error in statement {i}: {e}")
-
-        print("\n✅ Admin system migration completed!")
-        print("👤 Default super admin: demo@tradingplatform.com")
+        await conn.close()
+        print(f"Migration completed on {env_name}!")
+        return True
 
     except Exception as e:
-        print(f"❌ Migration failed: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Migration failed: {e}")
+        return False
+
+
+async def main():
+    env = sys.argv[1] if len(sys.argv) > 1 else "dev"
+    if env == "dev":
+        await run_migration(DEV_DATABASE_URL, "DEV")
+    elif env == "prod":
+        await run_migration(PROD_DATABASE_URL, "PROD")
+    else:
+        print("Usage: python run_migration.py [dev|prod]")
+
 
 if __name__ == "__main__":
-    asyncio.run(run_admin_migration())
+    asyncio.run(main())

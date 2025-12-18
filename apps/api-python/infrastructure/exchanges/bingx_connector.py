@@ -1396,6 +1396,161 @@ class BingXConnector:
         )
 
     # ============================================================================
+    # UNIFIED ORDER WITH SL/TP - STRATEGY PATTERN
+    # ============================================================================
+    async def execute_order_with_sl_tp(
+        self,
+        symbol: str,
+        side: str,  # "BUY" or "SELL"
+        quantity: float,
+        leverage: int = 10,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        position_side: Optional[str] = None,  # OBRIGATÓRIO para BingX Hedge Mode
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Execute futures order with Stop Loss and Take Profit in SEPARATE operations.
+
+        BINGX STRATEGY:
+        1. Criar ordem principal (MARKET)
+        2. Aguardar 2 segundos para posição registrar
+        3. Criar ordem SL separada
+        4. Criar ordem TP separada
+
+        Args:
+            symbol: Trading pair (e.g., "ETHUSDT")
+            side: "BUY" or "SELL"
+            quantity: Order quantity
+            leverage: Leverage multiplier (default 10)
+            stop_loss_price: Stop loss price (optional)
+            take_profit_price: Take profit price (optional)
+            position_side: "LONG" or "SHORT" (OBRIGATÓRIO para Hedge Mode)
+            **kwargs: Additional params
+
+        Returns:
+            Dict with:
+                - success: bool
+                - orderId: main order ID
+                - stop_loss_order_id: SL order ID (if created)
+                - take_profit_order_id: TP order ID (if created)
+                - avgPrice: executed price
+                - executedQty: executed quantity
+        """
+        try:
+            logger.info(
+                f"🟠 BINGX execute_order_with_sl_tp: {symbol} {side} qty={quantity} "
+                f"leverage={leverage}x SL={stop_loss_price} TP={take_profit_price} "
+                f"position_side={position_side}"
+            )
+
+            # Se position_side não fornecido, calcular baseado no side
+            if position_side is None:
+                position_side = "LONG" if side.upper() == "BUY" else "SHORT"
+
+            # 1. CRIAR ORDEM PRINCIPAL (MARKET)
+            # BingX requer leverage antes da ordem
+            if leverage and leverage > 1:
+                await self.set_leverage(symbol, leverage, position_side)
+
+            order_result = await self.create_futures_order(
+                symbol=symbol,
+                side=side.upper(),
+                order_type="MARKET",
+                quantity=quantity,
+                position_side=position_side
+            )
+
+            if not order_result.get("success"):
+                logger.error(f"❌ BINGX: Falha na ordem principal: {order_result.get('error')}")
+                return order_result
+
+            # Extrair dados da ordem principal
+            main_order_id = order_result.get("order_id") or order_result.get("orderId")
+            avg_price = order_result.get("avgPrice") or order_result.get("average_price")
+
+            # FIX: Garantir que executed_qty seja um float válido > 0
+            # BingX pode retornar "0" como string em ordens MARKET recém-criadas
+            raw_qty = order_result.get("executedQty") or order_result.get("filled_quantity")
+            try:
+                executed_qty = float(raw_qty) if raw_qty else 0.0
+            except (ValueError, TypeError):
+                executed_qty = 0.0
+
+            # Se executed_qty for 0, usar a quantity original da ordem
+            if executed_qty <= 0:
+                executed_qty = quantity
+                logger.info(f"📊 BINGX: Usando quantity original {quantity} (filled_quantity era 0)")
+
+            logger.info(f"✅ BINGX: Ordem principal criada: {main_order_id} | Qty para SL/TP: {executed_qty}")
+
+            # 2. AGUARDAR POSIÇÃO REGISTRAR NA EXCHANGE
+            # BingX requer que a posição exista antes de criar ordens SL/TP
+            await asyncio.sleep(2)
+
+            # 3. CRIAR ORDENS SL/TP SEPARADAS
+            sl_order_id = None
+            tp_order_id = None
+
+            # Determinar side de saída (oposto da entrada)
+            exit_side = "SELL" if side.upper() == "BUY" else "BUY"
+
+            # Criar Stop Loss
+            if stop_loss_price:
+                try:
+                    logger.info(f"🛑 BINGX: Criando Stop Loss em {stop_loss_price}")
+                    sl_result = await self.create_stop_loss_order(
+                        symbol=symbol,
+                        side=exit_side,
+                        quantity=float(executed_qty),
+                        stop_price=stop_loss_price,
+                        position_side=position_side
+                    )
+                    if sl_result.get("success"):
+                        sl_order_id = sl_result.get("order_id") or sl_result.get("orderId")
+                        logger.info(f"✅ BINGX: Stop Loss criado: {sl_order_id}")
+                    else:
+                        logger.warning(f"⚠️ BINGX: Falha ao criar SL: {sl_result.get('error')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ BINGX: Erro ao criar SL: {e}")
+
+            # Criar Take Profit
+            if take_profit_price:
+                try:
+                    logger.info(f"🎯 BINGX: Criando Take Profit em {take_profit_price}")
+                    tp_result = await self.create_take_profit_order(
+                        symbol=symbol,
+                        side=exit_side,
+                        quantity=float(executed_qty),
+                        stop_price=take_profit_price,
+                        position_side=position_side
+                    )
+                    if tp_result.get("success"):
+                        tp_order_id = tp_result.get("order_id") or tp_result.get("orderId")
+                        logger.info(f"✅ BINGX: Take Profit criado: {tp_order_id}")
+                    else:
+                        logger.warning(f"⚠️ BINGX: Falha ao criar TP: {tp_result.get('error')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ BINGX: Erro ao criar TP: {e}")
+
+            # Retornar resultado padronizado
+            return {
+                "success": True,
+                "orderId": main_order_id,
+                "order_id": main_order_id,
+                "stop_loss_order_id": sl_order_id,
+                "take_profit_order_id": tp_order_id,
+                "avgPrice": avg_price,
+                "executedQty": executed_qty,
+                "data": order_result.get("data"),
+                "demo": order_result.get("demo", False)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ BINGX execute_order_with_sl_tp error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ============================================================================
     # SPOT ADVANCED TRADING METHODS
     # ============================================================================
 
@@ -1992,8 +2147,12 @@ class BingXConnector:
                 step_size = float(lot_size_filter.get("stepSize", 0.00001))
                 min_qty = float(lot_size_filter.get("minQty", 0.00001))
 
-            # Normalize: floor to nearest step_size
-            normalized = math.floor(quantity / step_size) * step_size
+            # Normalize: ceil to nearest step_size (ensures margin >= configured)
+            normalized = math.ceil(quantity / step_size) * step_size
+
+            # Round to avoid floating point issues
+            decimals = len(str(step_size).split('.')[-1]) if '.' in str(step_size) else 0
+            normalized = round(normalized, decimals)
 
             # Validate minimum
             if normalized < min_qty:

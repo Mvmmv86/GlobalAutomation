@@ -3,6 +3,11 @@ import { ApiResponse } from '@/types/api'
 
 class ApiClient {
   private instance: AxiosInstance
+  private isRefreshing = false
+  private failedQueue: Array<{
+    resolve: (value?: unknown) => void
+    reject: (reason?: any) => void
+  }> = []
 
   constructor() {
     // Em produção, usar VITE_API_URL. Em dev, usar proxy do Vite
@@ -21,6 +26,17 @@ class ApiClient {
     this.setupInterceptors()
   }
 
+  private processQueue(error: any, token: string | null = null) {
+    this.failedQueue.forEach((prom) => {
+      if (error) {
+        prom.reject(error)
+      } else {
+        prom.resolve(token)
+      }
+    })
+    this.failedQueue = []
+  }
+
   private setupInterceptors() {
     // Request interceptor - add auth token
     this.instance.interceptors.request.use(
@@ -34,22 +50,54 @@ class ApiClient {
       (error) => Promise.reject(error)
     )
 
-    // Response interceptor - handle auth errors
+    // Response interceptor - handle auth errors with improved mutex
     this.instance.interceptors.response.use(
       (response: AxiosResponse<ApiResponse>) => response,
       async (error) => {
-        if (error.response?.status === 401) {
-          // Try to refresh token
+        const originalRequest = error.config
+
+        // Evitar loop infinito - se já tentou refresh, não tenta de novo
+        if (error.response?.status === 401 && !originalRequest._retry) {
+          // Se já está fazendo refresh, adiciona à fila e aguarda
+          if (this.isRefreshing) {
+            return new Promise((resolve, reject) => {
+              this.failedQueue.push({ resolve, reject })
+            })
+              .then((token) => {
+                originalRequest.headers.Authorization = `Bearer ${token}`
+                return this.instance.request(originalRequest)
+              })
+              .catch((err) => Promise.reject(err))
+          }
+
+          originalRequest._retry = true
+          this.isRefreshing = true
+
           try {
-            await this.refreshToken()
-            // Retry original request
-            return this.instance.request(error.config)
+            await this.doRefreshToken()
+            const newToken = localStorage.getItem('accessToken')
+
+            // Processar fila de requisições que estavam esperando
+            this.processQueue(null, newToken)
+
+            // Atualizar o header Authorization com o novo token
+            if (newToken) {
+              originalRequest.headers.Authorization = `Bearer ${newToken}`
+            }
+
+            // Retry original request with new token
+            return this.instance.request(originalRequest)
           } catch (refreshError) {
+            // Processar fila com erro
+            this.processQueue(refreshError, null)
+
             // Redirect to login
             localStorage.removeItem('accessToken')
             localStorage.removeItem('refreshToken')
             window.location.href = '/login'
             return Promise.reject(refreshError)
+          } finally {
+            this.isRefreshing = false
           }
         }
         return Promise.reject(error)
@@ -57,20 +105,37 @@ class ApiClient {
     )
   }
 
-  private async refreshToken(): Promise<void> {
-    const refreshToken = localStorage.getItem('refreshToken')
-    if (!refreshToken) {
-      throw new Error('No refresh token')
+  private async doRefreshToken(): Promise<void> {
+    try {
+      const refreshToken = localStorage.getItem('refreshToken')
+      if (!refreshToken) {
+        throw new Error('No refresh token')
+      }
+
+      const response = await axios.post(
+        `${this.instance.defaults.baseURL}/auth/refresh`,
+        { refresh_token: refreshToken }  // Backend espera snake_case
+      )
+
+      // Backend retorna snake_case (access_token), mas também aceita camelCase
+      const accessToken = response.data.access_token || response.data.accessToken
+      const newRefreshToken = response.data.refresh_token || response.data.refreshToken
+
+      if (accessToken) {
+        localStorage.setItem('accessToken', accessToken)
+        console.log('[API] Token refreshed successfully')
+      } else {
+        console.error('[API] Refresh response missing access_token:', response.data)
+        throw new Error('No access token in refresh response')
+      }
+      if (newRefreshToken) {
+        localStorage.setItem('refreshToken', newRefreshToken)
+      }
+    } finally {
+      // Reset mutex after refresh completes (success or failure)
+      this.isRefreshing = false
+      this.refreshPromise = null
     }
-
-    const response = await axios.post(
-      `${this.instance.defaults.baseURL}/auth/refresh`,
-      { refreshToken }
-    )
-
-    const { accessToken, refreshToken: newRefreshToken } = response.data
-    localStorage.setItem('accessToken', accessToken)
-    localStorage.setItem('refreshToken', newRefreshToken)
   }
 
   async get<T>(url: string): Promise<T> {

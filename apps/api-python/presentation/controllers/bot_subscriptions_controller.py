@@ -5,7 +5,7 @@ Handles client subscriptions to managed bots
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 
 import structlog
@@ -269,6 +269,17 @@ router = APIRouter(prefix="/api/v1/bot-subscriptions", tags=["bot-subscriptions"
 # Pydantic Models
 # ============================================================================
 
+class ExchangeConfig(BaseModel):
+    """Configuration per exchange (used when use_same_config=False)"""
+    exchange_account_id: str = Field(..., description="UUID of exchange account")
+    custom_leverage: Optional[int] = Field(None, ge=1, le=125)
+    custom_margin_usd: Optional[float] = Field(None, ge=5.00)
+    custom_stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
+    custom_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
+    max_daily_loss_usd: float = Field(default=200.00, ge=10.00)
+    max_concurrent_positions: int = Field(default=3, ge=1, le=10)
+
+
 class SubscriptionCreate(BaseModel):
     """Model for creating a bot subscription"""
     bot_id: str = Field(..., description="UUID of the bot to subscribe to")
@@ -279,6 +290,22 @@ class SubscriptionCreate(BaseModel):
     custom_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
     max_daily_loss_usd: float = Field(default=200.00, ge=10.00)
     max_concurrent_positions: int = Field(default=3, ge=1, le=10)
+
+
+class MultiExchangeSubscriptionCreate(BaseModel):
+    """Model for creating bot subscriptions with multiple exchanges (max 3)"""
+    bot_id: str = Field(..., description="UUID of the bot to subscribe to")
+    exchange_account_ids: List[str] = Field(..., min_length=1, max_length=3, description="List of exchange account UUIDs (max 3)")
+    use_same_config: bool = Field(default=True, description="If True, same config for all exchanges")
+    # Shared config (when use_same_config=True)
+    custom_leverage: Optional[int] = Field(None, ge=1, le=125)
+    custom_margin_usd: Optional[float] = Field(None, ge=5.00)
+    custom_stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
+    custom_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
+    max_daily_loss_usd: float = Field(default=200.00, ge=10.00)
+    max_concurrent_positions: int = Field(default=3, ge=1, le=10)
+    # Individual configs (when use_same_config=False)
+    individual_configs: Optional[List[ExchangeConfig]] = Field(None, description="Individual config per exchange")
 
 
 class SubscriptionUpdate(BaseModel):
@@ -335,11 +362,13 @@ async def get_available_bots():
 
 @router.get("/my-subscriptions")
 async def get_my_subscriptions(user_id: str):
-    """Get all bot subscriptions for current user"""
+    """Get all bot subscriptions for current user (includes multi-exchange support)"""
     try:
         subscriptions = await transaction_db.fetch("""
             SELECT
                 bs.id,
+                bs.exchange_account_id,
+                bs.config_group_id,
                 bs.status,
                 bs.custom_leverage,
                 bs.custom_margin_usd,
@@ -370,13 +399,85 @@ async def get_my_subscriptions(user_id: str):
             FROM bot_subscriptions bs
             INNER JOIN bots b ON b.id = bs.bot_id
             INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
-            WHERE bs.user_id = $1
-            ORDER BY bs.created_at DESC
+            WHERE bs.user_id = $1 AND bs.status != 'cancelled'
+            ORDER BY b.name, bs.created_at DESC
         """, user_id)
+
+        # Group subscriptions by bot_id for multi-exchange support
+        # This allows the frontend to see all exchanges for each bot
+        bots_map = {}
+        for sub in subscriptions:
+            sub_dict = dict(sub)
+            bot_id = str(sub_dict["bot_id"])
+
+            if bot_id not in bots_map:
+                bots_map[bot_id] = {
+                    "bot_id": bot_id,
+                    "bot_name": sub_dict["bot_name"],
+                    "bot_description": sub_dict["bot_description"],
+                    "market_type": sub_dict["market_type"],
+                    "default_leverage": sub_dict["default_leverage"],
+                    "default_margin_usd": float(sub_dict["default_margin_usd"]) if sub_dict["default_margin_usd"] else None,
+                    "default_stop_loss_pct": float(sub_dict["default_stop_loss_pct"]) if sub_dict["default_stop_loss_pct"] else None,
+                    "default_take_profit_pct": float(sub_dict["default_take_profit_pct"]) if sub_dict["default_take_profit_pct"] else None,
+                    "exchanges": [],
+                    "total_pnl_usd": 0.0,
+                    "total_win_count": 0,
+                    "total_loss_count": 0,
+                    "total_signals_received": 0,
+                    "total_orders_executed": 0
+                }
+
+            # Add exchange-specific subscription data
+            bots_map[bot_id]["exchanges"].append({
+                "subscription_id": str(sub_dict["id"]),
+                "exchange_account_id": str(sub_dict["exchange_account_id"]),
+                "exchange": sub_dict["exchange"],
+                "account_name": sub_dict["account_name"],
+                "status": sub_dict["status"],
+                "config_group_id": str(sub_dict["config_group_id"]) if sub_dict["config_group_id"] else None,
+                "custom_leverage": sub_dict["custom_leverage"],
+                "custom_margin_usd": float(sub_dict["custom_margin_usd"]) if sub_dict["custom_margin_usd"] else None,
+                "custom_stop_loss_pct": float(sub_dict["custom_stop_loss_pct"]) if sub_dict["custom_stop_loss_pct"] else None,
+                "custom_take_profit_pct": float(sub_dict["custom_take_profit_pct"]) if sub_dict["custom_take_profit_pct"] else None,
+                "max_daily_loss_usd": float(sub_dict["max_daily_loss_usd"]) if sub_dict["max_daily_loss_usd"] else None,
+                "max_concurrent_positions": sub_dict["max_concurrent_positions"],
+                "current_daily_loss_usd": float(sub_dict["current_daily_loss_usd"]) if sub_dict["current_daily_loss_usd"] else 0,
+                "current_positions": sub_dict["current_positions"] or 0,
+                "total_signals_received": sub_dict["total_signals_received"] or 0,
+                "total_orders_executed": sub_dict["total_orders_executed"] or 0,
+                "total_orders_failed": sub_dict["total_orders_failed"] or 0,
+                "total_pnl_usd": float(sub_dict["total_pnl_usd"]) if sub_dict["total_pnl_usd"] else 0,
+                "win_count": sub_dict["win_count"] or 0,
+                "loss_count": sub_dict["loss_count"] or 0,
+                "created_at": sub_dict["created_at"].isoformat() if sub_dict["created_at"] else None,
+                "last_signal_at": sub_dict["last_signal_at"].isoformat() if sub_dict["last_signal_at"] else None
+            })
+
+            # Aggregate totals
+            bots_map[bot_id]["total_pnl_usd"] += float(sub_dict["total_pnl_usd"]) if sub_dict["total_pnl_usd"] else 0
+            bots_map[bot_id]["total_win_count"] += sub_dict["win_count"] or 0
+            bots_map[bot_id]["total_loss_count"] += sub_dict["loss_count"] or 0
+            bots_map[bot_id]["total_signals_received"] += sub_dict["total_signals_received"] or 0
+            bots_map[bot_id]["total_orders_executed"] += sub_dict["total_orders_executed"] or 0
+
+        # Convert to list and add computed fields
+        grouped_data = []
+        for bot_data in bots_map.values():
+            bot_data["exchanges_count"] = len(bot_data["exchanges"])
+            # Use first subscription's status as "overall" status (active if any active)
+            bot_data["status"] = "active" if any(e["status"] == "active" for e in bot_data["exchanges"]) else "paused"
+            # For backwards compatibility, use first subscription's id if only one exchange
+            if len(bot_data["exchanges"]) == 1:
+                bot_data["id"] = bot_data["exchanges"][0]["subscription_id"]
+                bot_data["exchange"] = bot_data["exchanges"][0]["exchange"]
+                bot_data["account_name"] = bot_data["exchanges"][0]["account_name"]
+            grouped_data.append(bot_data)
 
         return {
             "success": True,
-            "data": [dict(sub) for sub in subscriptions]
+            "data": grouped_data,
+            "raw_subscriptions": [dict(sub) for sub in subscriptions]  # Keep raw data for backwards compat
         }
 
     except Exception as e:
@@ -429,17 +530,30 @@ async def subscribe_to_bot(
                 detail="Exchange account is not active"
             )
 
-        # Check if subscription already exists
+        # Check if subscription already exists FOR THIS EXCHANGE (multi-exchange support)
         existing = await transaction_db.fetchval("""
             SELECT id
             FROM bot_subscriptions
-            WHERE user_id = $1 AND bot_id = $2
-        """, user_id, subscription_data.bot_id)
+            WHERE user_id = $1 AND bot_id = $2 AND exchange_account_id = $3
+        """, user_id, subscription_data.bot_id, subscription_data.exchange_account_id)
 
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail="You are already subscribed to this bot"
+                detail="You are already subscribed to this bot with this exchange account"
+            )
+
+        # Check max 3 exchanges per bot limit
+        exchange_count = await transaction_db.fetchval("""
+            SELECT COUNT(*)
+            FROM bot_subscriptions
+            WHERE user_id = $1 AND bot_id = $2
+        """, user_id, subscription_data.bot_id)
+
+        if exchange_count >= 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum 3 exchange accounts per bot allowed"
             )
 
         # Create subscription
@@ -488,6 +602,258 @@ async def subscribe_to_bot(
         raise
     except Exception as e:
         logger.error("Error creating subscription", user_id=user_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/multi")
+async def subscribe_to_bot_multi_exchange(
+    subscription_data: MultiExchangeSubscriptionCreate,
+    user_id: str = Query(..., description="User ID subscribing to the bot")
+):
+    """
+    Subscribe to a bot with multiple exchange accounts (max 3)
+    Creates subscriptions for each exchange, linked by config_group_id
+    """
+    try:
+        # Verify bot exists and is active
+        bot = await transaction_db.fetchrow("""
+            SELECT id, name, status
+            FROM bots
+            WHERE id = $1
+        """, subscription_data.bot_id)
+
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        if bot["status"] != "active":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Bot is {bot['status']}, cannot subscribe"
+            )
+
+        # Validate individual_configs if use_same_config=False
+        if not subscription_data.use_same_config:
+            if not subscription_data.individual_configs:
+                raise HTTPException(
+                    status_code=400,
+                    detail="individual_configs required when use_same_config=False"
+                )
+            config_exchange_ids = {c.exchange_account_id for c in subscription_data.individual_configs}
+            if config_exchange_ids != set(subscription_data.exchange_account_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail="individual_configs must match exchange_account_ids"
+                )
+
+        # Count existing ACTIVE/PAUSED subscriptions for this bot
+        existing_active_count = await transaction_db.fetchval("""
+            SELECT COUNT(*)
+            FROM bot_subscriptions
+            WHERE user_id = $1 AND bot_id = $2
+            AND status IN ('active', 'paused')
+        """, user_id, subscription_data.bot_id)
+
+        # Count how many of the requested exchanges already have active/paused subscriptions
+        already_active = await transaction_db.fetchval("""
+            SELECT COUNT(*)
+            FROM bot_subscriptions
+            WHERE user_id = $1 AND bot_id = $2 AND status IN ('active', 'paused')
+            AND exchange_account_id = ANY($3::uuid[])
+        """, user_id, subscription_data.bot_id, subscription_data.exchange_account_ids)
+
+        # Count how many cancelled subscriptions can be reactivated
+        cancelled_to_reactivate = await transaction_db.fetchval("""
+            SELECT COUNT(*)
+            FROM bot_subscriptions
+            WHERE user_id = $1 AND bot_id = $2 AND status = 'cancelled'
+            AND exchange_account_id = ANY($3::uuid[])
+        """, user_id, subscription_data.bot_id, subscription_data.exchange_account_ids)
+
+        # Truly new subscriptions = requested - already_active - cancelled_to_reactivate
+        new_subscriptions_needed = len(subscription_data.exchange_account_ids) - already_active - cancelled_to_reactivate
+
+        # Final count = existing + new
+        final_count = existing_active_count + new_subscriptions_needed
+
+        if final_count > 3:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Maximum 3 exchange accounts per bot. Final count would be {final_count}"
+            )
+
+        # Verify all exchange accounts exist and belong to user
+        for exchange_id in subscription_data.exchange_account_ids:
+            exchange_account = await transaction_db.fetchrow("""
+                SELECT id, exchange, is_active
+                FROM exchange_accounts
+                WHERE id = $1 AND user_id = $2
+            """, exchange_id, user_id)
+
+            if not exchange_account:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Exchange account {exchange_id} not found or doesn't belong to you"
+                )
+
+            if not exchange_account["is_active"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Exchange account {exchange_id} is not active"
+                )
+
+            # NOTE: If already subscribed with this exchange (active/paused),
+            # we will update its config_group_id to join this multi-exchange group
+
+        # Generate config_group_id to link all subscriptions
+        config_group_id = str(uuid4())
+
+        # Create or reactivate subscriptions for each exchange
+        created_ids = []
+        for exchange_id in subscription_data.exchange_account_ids:
+            # Get config for this exchange
+            if subscription_data.use_same_config:
+                leverage = subscription_data.custom_leverage
+                margin = subscription_data.custom_margin_usd
+                stop_loss = subscription_data.custom_stop_loss_pct
+                take_profit = subscription_data.custom_take_profit_pct
+                max_loss = subscription_data.max_daily_loss_usd
+                max_positions = subscription_data.max_concurrent_positions
+            else:
+                config = next(c for c in subscription_data.individual_configs if c.exchange_account_id == exchange_id)
+                leverage = config.custom_leverage
+                margin = config.custom_margin_usd
+                stop_loss = config.custom_stop_loss_pct
+                take_profit = config.custom_take_profit_pct
+                max_loss = config.max_daily_loss_usd
+                max_positions = config.max_concurrent_positions
+
+            # Check if there's already an active/paused subscription
+            existing_active = await transaction_db.fetchrow("""
+                SELECT id FROM bot_subscriptions
+                WHERE user_id = $1 AND bot_id = $2 AND exchange_account_id = $3
+                AND status IN ('active', 'paused')
+            """, user_id, subscription_data.bot_id, exchange_id)
+
+            if existing_active:
+                # Update existing subscription to join this multi-exchange group
+                subscription_id = await transaction_db.fetchval("""
+                    UPDATE bot_subscriptions
+                    SET config_group_id = $1,
+                        custom_leverage = COALESCE($2, custom_leverage),
+                        custom_margin_usd = COALESCE($3, custom_margin_usd),
+                        custom_stop_loss_pct = COALESCE($4, custom_stop_loss_pct),
+                        custom_take_profit_pct = COALESCE($5, custom_take_profit_pct),
+                        max_daily_loss_usd = $6,
+                        max_concurrent_positions = $7,
+                        updated_at = NOW()
+                    WHERE id = $8
+                    RETURNING id
+                """,
+                    config_group_id,
+                    leverage,
+                    margin,
+                    stop_loss,
+                    take_profit,
+                    max_loss,
+                    max_positions,
+                    existing_active["id"]
+                )
+                logger.info(f"Updated existing subscription {subscription_id} to join group {config_group_id}")
+                created_ids.append(str(subscription_id))
+                continue
+
+            # Check if there's a cancelled subscription to reactivate
+            existing_cancelled = await transaction_db.fetchrow("""
+                SELECT id FROM bot_subscriptions
+                WHERE user_id = $1 AND bot_id = $2 AND exchange_account_id = $3
+                AND status = 'cancelled'
+            """, user_id, subscription_data.bot_id, exchange_id)
+
+            if existing_cancelled:
+                # Reactivate the cancelled subscription with new config
+                subscription_id = await transaction_db.fetchval("""
+                    UPDATE bot_subscriptions
+                    SET status = 'active',
+                        custom_leverage = $1,
+                        custom_margin_usd = $2,
+                        custom_stop_loss_pct = $3,
+                        custom_take_profit_pct = $4,
+                        max_daily_loss_usd = $5,
+                        max_concurrent_positions = $6,
+                        config_group_id = $7,
+                        updated_at = NOW()
+                    WHERE id = $8
+                    RETURNING id
+                """,
+                    leverage,
+                    margin,
+                    stop_loss,
+                    take_profit,
+                    max_loss,
+                    max_positions,
+                    config_group_id,
+                    existing_cancelled["id"]
+                )
+                logger.info(f"Reactivated cancelled subscription {subscription_id}")
+            else:
+                # Create new subscription
+                subscription_id = await transaction_db.fetchval("""
+                    INSERT INTO bot_subscriptions (
+                        user_id, bot_id, exchange_account_id, status,
+                        custom_leverage, custom_margin_usd,
+                        custom_stop_loss_pct, custom_take_profit_pct,
+                        max_daily_loss_usd, max_concurrent_positions,
+                        config_group_id
+                    ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id
+                """,
+                    user_id,
+                    subscription_data.bot_id,
+                    exchange_id,
+                    leverage,
+                    margin,
+                    stop_loss,
+                    take_profit,
+                    max_loss,
+                    max_positions,
+                    config_group_id
+                )
+            created_ids.append(str(subscription_id))
+
+        # Update bot subscriber count (count unique users, not subscriptions)
+        await transaction_db.execute("""
+            UPDATE bots
+            SET total_subscribers = (
+                SELECT COUNT(DISTINCT user_id)
+                FROM bot_subscriptions
+                WHERE bot_id = $1 AND status != 'cancelled'
+            ),
+            updated_at = NOW()
+            WHERE id = $1
+        """, subscription_data.bot_id)
+
+        logger.info(
+            "Multi-exchange bot subscriptions created",
+            user_id=user_id,
+            bot_id=subscription_data.bot_id,
+            subscription_ids=created_ids,
+            config_group_id=config_group_id
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "subscription_ids": created_ids,
+                "config_group_id": config_group_id,
+                "exchanges_count": len(created_ids)
+            },
+            "message": f"Successfully subscribed to {bot['name']} with {len(created_ids)} exchange(s)"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error creating multi-exchange subscription", user_id=user_id, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -730,8 +1096,10 @@ async def get_subscription_performance(
                 bs.total_orders_executed,
                 bs.current_positions,
                 bs.max_concurrent_positions,
+                bs.max_daily_loss_usd,
                 bs.created_at,
                 b.name as bot_name,
+                b.trading_symbol as bot_trading_symbol,
                 ea.id as exchange_account_id,
                 ea.exchange as exchange_type,
                 ea.api_key,
@@ -753,26 +1121,27 @@ async def get_subscription_performance(
         end_timestamp = int(end_date.timestamp() * 1000)
 
         # =====================================================
-        # Get bot's traded symbols from bot_trades/executions
+        # Get bot's traded symbol - FROM DATABASE or FALLBACK TO NAME
+        # Priority: 1) b.trading_symbol from DB, 2) Extract from bot name
         # =====================================================
         bot_symbols = []
-        try:
-            symbols_result = await transaction_db.fetch("""
-                SELECT DISTINCT symbol FROM bot_trades
-                WHERE subscription_id = $1
-                UNION
-                SELECT DISTINCT bs_sig.ticker as symbol
-                FROM bot_signal_executions bse
-                INNER JOIN bot_signals bs_sig ON bs_sig.id = bse.signal_id
-                WHERE bse.subscription_id = $1
-            """, subscription_id)
-            bot_symbols = [
-                row["symbol"].replace("-", "").replace("USDT", "") + "USDT"
-                for row in symbols_result
-                if row["symbol"]
-            ]
-        except Exception as e:
-            logger.warning(f"Could not fetch bot symbols: {e}")
+        bot_name = subscription["bot_name"]
+        trading_symbol = subscription.get("bot_trading_symbol")
+
+        if trading_symbol:
+            # Use symbol from database (configured in admin)
+            bot_symbols = [trading_symbol.upper()]
+            logger.info(f"Using trading_symbol '{trading_symbol}' from bot config for '{bot_name}'")
+        else:
+            # Fallback: Extract from bot name (legacy support)
+            import re as regex_module
+            match = regex_module.search(r'TPO[_\s]+([A-Z]{2,10})(?:[_\s]|$)', bot_name.upper())
+            if match:
+                symbol_base = match.group(1)
+                bot_symbols = [f"{symbol_base}USDT"]
+                logger.info(f"Extracted symbol '{symbol_base}USDT' from bot name '{bot_name}' (no trading_symbol configured)")
+            else:
+                logger.warning(f"No trading_symbol configured and couldn't extract from bot name '{bot_name}' - P&L will be unfiltered!")
 
         # =====================================================
         # TRY EXCHANGE P&L FIRST (Primary Source)
@@ -824,28 +1193,56 @@ async def get_subscription_performance(
         """, subscription_id, start_date)
 
         # Get from bot_trades (DATABASE FALLBACK source)
-        filtered_trades = await transaction_db.fetchrow("""
-            SELECT
-                COUNT(*) as total_trades,
-                COUNT(*) FILTER (WHERE is_winner = true) as wins,
-                COUNT(*) FILTER (WHERE is_winner = false) as losses,
-                COALESCE(SUM(pnl_usd), 0) as total_pnl
-            FROM bot_trades
-            WHERE subscription_id = $1
-                AND status = 'closed'
-                AND exit_time >= $2
-        """, subscription_id, start_date)
+        # Apply symbol filter if bot_symbols is set
+        if bot_symbols:
+            filtered_trades = await transaction_db.fetchrow("""
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(*) FILTER (WHERE is_winner = true) as wins,
+                    COUNT(*) FILTER (WHERE is_winner = false) as losses,
+                    COALESCE(SUM(pnl_usd), 0) as total_pnl
+                FROM bot_trades
+                WHERE subscription_id = $1
+                    AND status = 'closed'
+                    AND exit_time >= $2
+                    AND (symbol = ANY($3) OR REPLACE(REPLACE(symbol, '-', ''), 'USDT', '') || 'USDT' = ANY($3))
+            """, subscription_id, start_date, bot_symbols)
+        else:
+            filtered_trades = await transaction_db.fetchrow("""
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(*) FILTER (WHERE is_winner = true) as wins,
+                    COUNT(*) FILTER (WHERE is_winner = false) as losses,
+                    COALESCE(SUM(pnl_usd), 0) as total_pnl
+                FROM bot_trades
+                WHERE subscription_id = $1
+                    AND status = 'closed'
+                    AND exit_time >= $2
+            """, subscription_id, start_date)
 
         # Get ALL trades count from bot_trades (open + closed)
-        all_trades_count = await transaction_db.fetchrow("""
-            SELECT
-                COUNT(*) as total_all_trades,
-                COUNT(*) FILTER (WHERE status = 'open') as open_trades,
-                COUNT(*) FILTER (WHERE status = 'closed') as closed_trades
-            FROM bot_trades
-            WHERE subscription_id = $1
-                AND entry_time >= $2
-        """, subscription_id, start_date)
+        # Apply symbol filter if bot_symbols is set
+        if bot_symbols:
+            all_trades_count = await transaction_db.fetchrow("""
+                SELECT
+                    COUNT(*) as total_all_trades,
+                    COUNT(*) FILTER (WHERE status = 'open') as open_trades,
+                    COUNT(*) FILTER (WHERE status = 'closed') as closed_trades
+                FROM bot_trades
+                WHERE subscription_id = $1
+                    AND entry_time >= $2
+                    AND (symbol = ANY($3) OR REPLACE(REPLACE(symbol, '-', ''), 'USDT', '') || 'USDT' = ANY($3))
+            """, subscription_id, start_date, bot_symbols)
+        else:
+            all_trades_count = await transaction_db.fetchrow("""
+                SELECT
+                    COUNT(*) as total_all_trades,
+                    COUNT(*) FILTER (WHERE status = 'open') as open_trades,
+                    COUNT(*) FILTER (WHERE status = 'closed') as closed_trades
+                FROM bot_trades
+                WHERE subscription_id = $1
+                    AND entry_time >= $2
+            """, subscription_id, start_date)
 
         # Calculate filtered statistics
         filtered_signals_count = filtered_signals["signals_count"] or 0 if filtered_signals else 0
@@ -945,20 +1342,38 @@ async def get_subscription_performance(
             if not pnl_history:
                 try:
                     # Get closed trades grouped by date with REAL P&L values
-                    trades_by_date = await transaction_db.fetch("""
-                        SELECT
-                            DATE(exit_time) as trade_date,
-                            SUM(pnl_usd) as daily_pnl,
-                            COUNT(*) as daily_trades,
-                            SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
-                            SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
-                        FROM bot_trades
-                        WHERE subscription_id = $1
-                            AND status = 'closed'
-                            AND exit_time >= $2
-                        GROUP BY DATE(exit_time)
-                        ORDER BY trade_date ASC
-                    """, subscription_id, start_date)
+                    # Apply symbol filter if bot_symbols is set
+                    if bot_symbols:
+                        trades_by_date = await transaction_db.fetch("""
+                            SELECT
+                                DATE(exit_time) as trade_date,
+                                SUM(pnl_usd) as daily_pnl,
+                                COUNT(*) as daily_trades,
+                                SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
+                                SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
+                            FROM bot_trades
+                            WHERE subscription_id = $1
+                                AND status = 'closed'
+                                AND exit_time >= $2
+                                AND (symbol = ANY($3) OR REPLACE(REPLACE(symbol, '-', ''), 'USDT', '') || 'USDT' = ANY($3))
+                            GROUP BY DATE(exit_time)
+                            ORDER BY trade_date ASC
+                        """, subscription_id, start_date, bot_symbols)
+                    else:
+                        trades_by_date = await transaction_db.fetch("""
+                            SELECT
+                                DATE(exit_time) as trade_date,
+                                SUM(pnl_usd) as daily_pnl,
+                                COUNT(*) as daily_trades,
+                                SUM(CASE WHEN is_winner = true THEN 1 ELSE 0 END) as daily_wins,
+                                SUM(CASE WHEN is_winner = false THEN 1 ELSE 0 END) as daily_losses
+                            FROM bot_trades
+                            WHERE subscription_id = $1
+                                AND status = 'closed'
+                                AND exit_time >= $2
+                            GROUP BY DATE(exit_time)
+                            ORDER BY trade_date ASC
+                        """, subscription_id, start_date)
 
                     cumulative_pnl = 0
                     cumulative_trades = 0
@@ -1137,6 +1552,22 @@ async def get_subscription_performance(
             logger.warning(f"Could not fetch bot positions: {e}")
             realtime_positions = subscription["current_positions"] or 0
 
+        # =====================================================
+        # CALCULATE TODAY'S LOSS from pnl_history (exchange data)
+        # Force reload: v2
+        # =====================================================
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_loss_usd = 0.0
+
+        # Find today's P&L from the history
+        for day_record in pnl_history:
+            if day_record.get("date") == today_str:
+                daily_pnl = day_record.get("daily_pnl", 0)
+                # today_loss_usd will be positive if there was a loss (negative P&L)
+                if daily_pnl < 0:
+                    today_loss_usd = abs(daily_pnl)
+                break
+
         return {
             "success": True,
             "data": {
@@ -1174,7 +1605,9 @@ async def get_subscription_performance(
                 "current_state": {
                     "current_positions": realtime_positions,
                     "max_concurrent_positions": subscription["max_concurrent_positions"] or 3,
-                    "positions_data": realtime_positions_data  # Detailed position info
+                    "positions_data": realtime_positions_data,  # Detailed position info
+                    "today_loss_usd": round(today_loss_usd, 2),  # Today's loss from exchange
+                    "max_daily_loss_usd": float(subscription.get("max_daily_loss_usd") or 200)  # Max daily loss limit
                 },
                 "pnl_history": pnl_history,
                 # Individual trades list from exchange (for history table)

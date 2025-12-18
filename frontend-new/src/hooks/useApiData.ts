@@ -344,12 +344,13 @@ export const useAccountBalance = (accountId?: string) => {
       return null
     },
     enabled: !!accountId,
-    // 🚀 PERFORMANCE OPTIMIZATION: Aligned with backend 30s cache TTL
-    // Backend cache: 30s TTL, balance data doesn't change that rapidly
-    staleTime: 25 * 1000, // 25 seconds
-    gcTime: 60 * 1000, // 60 seconds
-    refetchInterval: 30 * 1000, // Refetch every 30 seconds (aligned with backend TTL)
+    // FIX: Quando troca de conta, precisa buscar imediatamente
+    // staleTime: 0 garante que ao trocar de accountId, faz fetch imediato
+    staleTime: 0, // Sempre considera stale para buscar ao trocar conta
+    gcTime: 60 * 1000, // 60 seconds - mantém cache para não perder dados
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds
     refetchIntervalInBackground: true,
+    refetchOnMount: true, // Sempre refetch ao montar
   })
 }
 

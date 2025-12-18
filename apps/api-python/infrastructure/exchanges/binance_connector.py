@@ -5,6 +5,7 @@ Conecta com a API da Binance para executar ordens reais
 
 import asyncio
 import os
+import time
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 from decimal import Decimal
@@ -37,10 +38,58 @@ class BinanceConnector:
         self.testnet = testnet
 
         # Configurar client com credenciais reais
+        # IMPORTANTE: Usar requests_params para aumentar recvWindow (janela de tolerância de timestamp)
         self.client = Client(
-            api_key=api_key, api_secret=api_secret, testnet=testnet
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=testnet,
+            requests_params={'timeout': 30}
         )
-        logger.info("✅ Binance connector initialized", testnet=testnet)
+
+        # Sincronizar timestamp com servidor Binance para evitar erro -1021
+        # "Timestamp for this request was Xms ahead of the server's time"
+        self._sync_time_with_server()
+
+        logger.info("Binance connector initialized with time sync", testnet=testnet)
+
+    def _sync_time_with_server(self):
+        """
+        Sincroniza o relogio local com o servidor da Binance.
+        Resolve erro -1021 (Timestamp ahead/behind server time).
+        """
+        try:
+            # Obter tempo do servidor Binance
+            server_time = self.client.get_server_time()
+            server_timestamp = server_time['serverTime']
+
+            # Calcular offset entre tempo local e servidor
+            local_timestamp = int(time.time() * 1000)
+            self.time_offset = server_timestamp - local_timestamp
+
+            # Aplicar offset no client da Binance
+            # A biblioteca python-binance usa timestamp_offset internamente
+            self.client.timestamp_offset = self.time_offset
+
+            logger.info(
+                "Binance time sync completed",
+                time_offset_ms=self.time_offset,
+                server_time=server_timestamp,
+                local_time=local_timestamp
+            )
+
+            # Se offset for muito grande (>10 segundos), alertar
+            if abs(self.time_offset) > 10000:
+                logger.warning(
+                    f"Large time offset detected: {self.time_offset}ms. "
+                    "Consider syncing your system clock."
+                )
+
+        except Exception as e:
+            self.time_offset = 0
+            logger.warning(
+                f"Could not sync time with Binance server: {e}. "
+                "Using local time (may cause timestamp errors)."
+            )
 
     def is_demo_mode(self) -> bool:
         """Legacy method - always returns False (demo mode removed)"""
@@ -101,8 +150,13 @@ class BinanceConnector:
             # ✅ CORRIGIDO: Converter quantity para float antes de calcular
             quantity_float = float(quantity)
 
-            # Normalizar para stepSize (arredondar para baixo)
-            normalized = math.floor(quantity_float / step_size) * step_size
+            # Normalizar para stepSize (arredondar para CIMA para garantir margem mínima)
+            # Usar ceil garante que a margem efetiva seja >= margem configurada
+            normalized = math.ceil(quantity_float / step_size) * step_size
+
+            # Arredondar para evitar problemas de ponto flutuante
+            decimals = len(str(step_size).split('.')[-1]) if '.' in str(step_size) else 0
+            normalized = round(normalized, decimals)
 
             # Verificar quantidade mínima
             if normalized < min_qty:
@@ -113,7 +167,7 @@ class BinanceConnector:
 
             logger.info(
                 f"📊 Quantidade normalizada: {symbol} {quantity} → {normalized} "
-                f"(stepSize={step_size}, minQty={min_qty})"
+                f"(stepSize={step_size}, minQty={min_qty}, ceil=True)"
             )
 
             return normalized
@@ -122,6 +176,76 @@ class BinanceConnector:
             logger.error(f"Erro ao normalizar quantidade para {symbol}: {e}")
             # Fallback seguro
             return round(quantity, 3)
+
+    async def normalize_price(self, symbol: str, price: float, is_futures: bool = True) -> float:
+        """
+        Normaliza preço baseado no tickSize do símbolo (filtro PRICE_FILTER)
+
+        Args:
+            symbol: Par de negociação (ex: BTCUSDT, ETHUSDT)
+            price: Preço original
+            is_futures: Se é futures (usa futures_exchange_info)
+
+        Returns:
+            Preço normalizado segundo tickSize da Binance
+
+        Exemplos:
+            BTCUSDT: tickSize=0.10 (1 decimal) → 45123.456 → 45123.40
+            ETHUSDT: tickSize=0.01 (2 decimais) → 3850.123 → 3850.12
+        """
+        try:
+            import math
+
+            # Buscar exchange info
+            if is_futures:
+                exchange_info = await asyncio.to_thread(
+                    self.client.futures_exchange_info
+                )
+            else:
+                exchange_info = await asyncio.to_thread(
+                    self.client.get_exchange_info
+                )
+
+            # Encontrar símbolo
+            symbol_info = next(
+                (s for s in exchange_info['symbols'] if s['symbol'] == symbol.upper()),
+                None
+            )
+
+            if not symbol_info:
+                logger.warning(f"Símbolo {symbol} não encontrado, usando 2 decimais como fallback")
+                return round(price, 2)
+
+            # Buscar filtro PRICE_FILTER
+            price_filter = next(
+                (f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'),
+                None
+            )
+
+            if not price_filter:
+                logger.warning(f"PRICE_FILTER não encontrado para {symbol}, usando 2 decimais como fallback")
+                return round(price, 2)
+
+            tick_size = float(price_filter['tickSize'])
+
+            # Normalizar para tickSize (arredondar para baixo para não ultrapassar)
+            normalized = math.floor(price / tick_size) * tick_size
+
+            # Arredondar para evitar problemas de ponto flutuante
+            decimals = len(str(tick_size).split('.')[-1]) if '.' in str(tick_size) else 0
+            normalized = round(normalized, decimals)
+
+            logger.info(
+                f"💰 Preço normalizado: {symbol} {price} → {normalized} "
+                f"(tickSize={tick_size})"
+            )
+
+            return normalized
+
+        except Exception as e:
+            logger.error(f"Erro ao normalizar preço para {symbol}: {e}")
+            # Fallback seguro
+            return round(price, 2)
 
     async def test_connection(self) -> Dict[str, Any]:
         """Test connection to Binance"""
@@ -1036,46 +1160,50 @@ class BinanceConnector:
             tp_order_id = None
 
             # 4. Add Stop Loss if provided
+            # IMPORTANT: Since Dec 9, 2025, must use Algo Order API for STOP_MARKET orders
             if stop_loss:
                 sl_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
-                sl_params = {
-                    'symbol': symbol.upper(),
-                    'side': sl_side,
-                    'type': 'STOP_MARKET',
-                    'stopPrice': stop_loss,
-                    'closePosition': 'true'  # Close entire position
-                }
 
-                logger.info(f"🛑 Creating Stop Loss: {sl_params}")
+                logger.info(f"🛑 Creating Stop Loss via Algo Order API: {symbol} {sl_side} @ {stop_loss}")
 
-                sl_result = await asyncio.to_thread(
-                    self.client.futures_create_order,
-                    **sl_params
-                )
-
-                sl_order_id = str(sl_result.get('orderId'))
-                logger.info(f"✅ Stop Loss created: {sl_order_id}")
+                try:
+                    sl_result = await self._create_algo_conditional_order(
+                        symbol=symbol.upper(),
+                        side=sl_side,
+                        order_type='STOP_MARKET',
+                        trigger_price=stop_loss,
+                        close_position=True  # Auto-cancels when position closes!
+                    )
+                    if sl_result.get('success'):
+                        sl_order_id = str(sl_result.get('algoId'))
+                        logger.info(f"✅ Stop Loss created: {sl_order_id}")
+                    else:
+                        logger.warning(f"⚠️ Failed to create Stop Loss: {sl_result.get('error')}")
+                except Exception as sl_error:
+                    logger.warning(f"⚠️ Failed to create Stop Loss: {sl_error}")
 
             # 5. Add Take Profit if provided
+            # IMPORTANT: Since Dec 9, 2025, must use Algo Order API for TAKE_PROFIT_MARKET orders
             if take_profit:
                 tp_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
-                tp_params = {
-                    'symbol': symbol.upper(),
-                    'side': tp_side,
-                    'type': 'TAKE_PROFIT_MARKET',
-                    'stopPrice': take_profit,
-                    'closePosition': 'true'  # Close entire position
-                }
 
-                logger.info(f"🎯 Creating Take Profit: {tp_params}")
+                logger.info(f"🎯 Creating Take Profit via Algo Order API: {symbol} {tp_side} @ {take_profit}")
 
-                tp_result = await asyncio.to_thread(
-                    self.client.futures_create_order,
-                    **tp_params
-                )
-
-                tp_order_id = str(tp_result.get('orderId'))
-                logger.info(f"✅ Take Profit created: {tp_order_id}")
+                try:
+                    tp_result = await self._create_algo_conditional_order(
+                        symbol=symbol.upper(),
+                        side=tp_side,
+                        order_type='TAKE_PROFIT_MARKET',
+                        trigger_price=take_profit,
+                        close_position=True  # Auto-cancels when position closes!
+                    )
+                    if tp_result.get('success'):
+                        tp_order_id = str(tp_result.get('algoId'))
+                        logger.info(f"✅ Take Profit created: {tp_order_id}")
+                    else:
+                        logger.warning(f"⚠️ Failed to create Take Profit: {tp_result.get('error')}")
+                except Exception as tp_error:
+                    logger.warning(f"⚠️ Failed to create Take Profit: {tp_error}")
 
             # Retornar IDs de todas as ordens
             return {
@@ -1254,6 +1382,217 @@ class BinanceConnector:
             return {"success": False, "error": f"Binance error: {e.message}"}
         except Exception as e:
             logger.error(f"❌ Error setting leverage: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ============================================================================
+    # UNIFIED ORDER WITH SL/TP - STRATEGY PATTERN
+    # ============================================================================
+    async def execute_order_with_sl_tp(
+        self,
+        symbol: str,
+        side: str,  # "BUY" or "SELL"
+        quantity: float,
+        leverage: int = 10,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        **kwargs  # Extra params (position_side ignored for Binance)
+    ) -> Dict[str, Any]:
+        """
+        Execute futures order with Stop Loss and Take Profit in a SINGLE operation.
+
+        BINANCE STRATEGY: Order + SL/TP são criados juntos na mesma chamada.
+        O create_futures_order já suporta os parâmetros stop_loss e take_profit.
+
+        Args:
+            symbol: Trading pair (e.g., "ETHUSDT")
+            side: "BUY" or "SELL"
+            quantity: Order quantity
+            leverage: Leverage multiplier (default 10)
+            stop_loss_price: Stop loss price (optional)
+            take_profit_price: Take profit price (optional)
+            **kwargs: Additional params (position_side is ignored for Binance)
+
+        Returns:
+            Dict with:
+                - success: bool
+                - order_id: main order ID
+                - stop_loss_order_id: SL order ID (if created)
+                - take_profit_order_id: TP order ID (if created)
+                - avgPrice: executed price
+                - executedQty: executed quantity
+        """
+        try:
+            logger.info(
+                f"🔵 BINANCE execute_order_with_sl_tp: {symbol} {side} qty={quantity} "
+                f"leverage={leverage}x SL={stop_loss_price} TP={take_profit_price}"
+            )
+
+            # Normalizar preços de SL/TP para evitar erro de precisão (-1111)
+            normalized_sl = None
+            normalized_tp = None
+
+            if stop_loss_price:
+                normalized_sl = await self.normalize_price(symbol, stop_loss_price, is_futures=True)
+                logger.info(f"   SL normalizado: {stop_loss_price} → {normalized_sl}")
+
+            if take_profit_price:
+                normalized_tp = await self.normalize_price(symbol, take_profit_price, is_futures=True)
+                logger.info(f"   TP normalizado: {take_profit_price} → {normalized_tp}")
+
+            # BINANCE: Usar create_futures_order que JÁ suporta SL/TP integrado
+            result = await self.create_futures_order(
+                symbol=symbol,
+                side=side.upper(),
+                order_type="MARKET",
+                quantity=quantity,
+                leverage=leverage,
+                stop_loss=normalized_sl,
+                take_profit=normalized_tp
+            )
+
+            if result.get("success"):
+                logger.info(
+                    f"✅ BINANCE Order + SL/TP criados com sucesso: "
+                    f"order_id={result.get('order_id')}, "
+                    f"sl_id={result.get('stop_loss_order_id')}, "
+                    f"tp_id={result.get('take_profit_order_id')}"
+                )
+
+                # Retornar no formato padronizado para o bot_broadcast_service
+                return {
+                    "success": True,
+                    "orderId": result.get("order_id"),
+                    "order_id": result.get("order_id"),
+                    "stop_loss_order_id": result.get("stop_loss_order_id"),
+                    "take_profit_order_id": result.get("take_profit_order_id"),
+                    "avgPrice": result.get("data", {}).get("avgPrice"),
+                    "executedQty": result.get("data", {}).get("executedQty"),
+                    "data": result.get("data"),
+                    "demo": result.get("demo", False)
+                }
+            else:
+                logger.error(f"❌ BINANCE execute_order_with_sl_tp failed: {result.get('error')}")
+                return result
+
+        except Exception as e:
+            logger.error(f"❌ BINANCE execute_order_with_sl_tp error: {e}")
+            return {"success": False, "error": str(e)}
+
+
+    # ============================================================================
+    # BINANCE ALGO ORDER API (NEW - December 2025)
+    # Required for STOP_MARKET, TAKE_PROFIT_MARKET orders after API migration
+    # ============================================================================
+    async def _create_algo_conditional_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,  # STOP_MARKET or TAKE_PROFIT_MARKET
+        trigger_price: float,
+        close_position: bool = True,  # Use closePosition instead of quantity
+        working_type: str = "CONTRACT_PRICE"
+    ) -> Dict[str, Any]:
+        """
+        Create conditional order via Binance NEW Algo Order API.
+
+        Since Dec 9, 2025, conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET, etc.)
+        must be created via POST /fapi/v1/algoOrder with algoType=CONDITIONAL.
+
+        IMPORTANT: Using closePosition=true means the order will:
+        - Close the ENTIRE position when triggered
+        - Auto-cancel when position is closed manually
+        - NOT require quantity parameter
+
+        Args:
+            symbol: Trading pair (e.g., ETHUSDT)
+            side: BUY or SELL
+            order_type: STOP_MARKET or TAKE_PROFIT_MARKET
+            trigger_price: Price that triggers the order
+            close_position: If True, closes entire position (like old closePosition param)
+            working_type: MARK_PRICE or CONTRACT_PRICE (default)
+
+        Returns:
+            Dict with success, algoId, and order details
+        """
+        import hashlib
+        import hmac
+        import requests
+
+        try:
+            # Base URL for futures API
+            base_url = "https://fapi.binance.com"
+            endpoint = "/fapi/v1/algoOrder"
+
+            # Get current timestamp with offset
+            timestamp = int(time.time() * 1000) + self.time_offset
+
+            # Prepare parameters - using closePosition instead of quantity
+            # When closePosition=true, do NOT include quantity or reduceOnly
+            params = {
+                'symbol': symbol.upper(),
+                'side': side.upper(),
+                'type': order_type.upper(),
+                'algoType': 'CONDITIONAL',
+                'triggerPrice': str(trigger_price),
+                'closePosition': 'true' if close_position else 'false',
+                'workingType': working_type,
+                'timestamp': timestamp,
+                'recvWindow': 60000  # 60 seconds tolerance
+            }
+
+            # Create query string
+            query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+
+            # Generate signature
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                query_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+
+            # Add signature to params
+            params['signature'] = signature
+
+            # Headers
+            headers = {
+                'X-MBX-APIKEY': self.api_key
+            }
+
+            logger.info(f"🔵 Calling Binance Algo Order API: {order_type} {side} {symbol} @ {trigger_price}")
+
+            # Make request
+            response = await asyncio.to_thread(
+                requests.post,
+                f"{base_url}{endpoint}",
+                params=params,
+                headers=headers,
+                timeout=30
+            )
+
+            result = response.json()
+
+            if response.status_code == 200:
+                logger.info(f"✅ Algo Order created: {result.get('algoId')} - {order_type}")
+                return {
+                    "success": True,
+                    "algoId": result.get('algoId'),
+                    "clientAlgoId": result.get('clientAlgoId'),
+                    "algoStatus": result.get('algoStatus'),
+                    "triggerPrice": result.get('triggerPrice'),
+                    "data": result
+                }
+            else:
+                error_msg = result.get('msg', 'Unknown error')
+                error_code = result.get('code', 'N/A')
+                logger.error(f"❌ Algo Order API error: [{error_code}] {error_msg}")
+                return {
+                    "success": False,
+                    "error": f"[{error_code}] {error_msg}",
+                    "data": result
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Exception creating Algo Order: {e}")
             return {"success": False, "error": str(e)}
 
 

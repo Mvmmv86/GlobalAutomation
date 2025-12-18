@@ -1,4 +1,4 @@
-"""FastAPI main application - Entry point"""
+"""FastAPI main application - Entry point - v2.1 - Reload trigger"""
 
 import os
 import structlog
@@ -39,6 +39,7 @@ from presentation.controllers.bot_subscriptions_controller import router as bot_
 from presentation.controllers.admin_controller import router as admin_router
 from presentation.controllers.chart_data_controller import router as chart_data_router
 from presentation.controllers.notifications_controller import create_notifications_router
+from presentation.controllers.indicator_alerts_controller import create_indicator_alerts_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -46,6 +47,7 @@ from infrastructure.security.encryption_service import EncryptionService
 from infrastructure.pricing.binance_price_service import BinancePriceService
 from infrastructure.cache import start_cache_cleanup_task
 from infrastructure.cache.candles_cache import start_candles_cache_cleanup
+from infrastructure.services.indicator_alert_monitor import get_indicator_alert_monitor
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -114,6 +116,18 @@ async def lifespan(app: FastAPI):
         logger.info("📊 Starting candles cache cleanup background task")
         asyncio.create_task(start_candles_cache_cleanup())
 
+        # Start indicator alert monitor (checks indicator signals every 30s)
+        print("📊 [main.py] Starting Indicator Alert Monitor...")
+        try:
+            indicator_alert_monitor = get_indicator_alert_monitor(transaction_db)
+            print(f"📊 [main.py] Got indicator_alert_monitor: {indicator_alert_monitor}")
+            await indicator_alert_monitor.start()
+            print("📊 [main.py] Indicator Alert Monitor start() completed")
+        except Exception as e:
+            print(f"❌ [main.py] Error starting Indicator Alert Monitor: {e}")
+            import traceback
+            traceback.print_exc()
+
         yield
 
     finally:
@@ -123,6 +137,9 @@ async def lifespan(app: FastAPI):
         # Stop background sync scheduler
         logger.info("🛑 Stopping background sync scheduler")
         await sync_scheduler.stop()
+
+        # Stop indicator alert monitor
+        await indicator_alert_monitor.stop()
 
         # Close connections
         await transaction_db.disconnect()
@@ -296,6 +313,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)  # Admin management (dashboard, users, bots CRUD)
     app.include_router(chart_data_router)  # Chart data and WebSocket support
     app.include_router(create_notifications_router())  # Notifications CRUD endpoints
+    app.include_router(create_indicator_alerts_router())  # Indicator Alerts CRUD endpoints
 
 
     return app
@@ -1453,8 +1471,8 @@ async def auth_login_override(request: Request):
             "exp": datetime.utcnow() + timedelta(days=7),  # 7 dias
         }
 
-        # Chave secreta (em produção usar variável de ambiente)
-        secret_key = "trading_platform_secret_key_2024"
+        # Chave secreta - usar variável de ambiente SECRET_KEY
+        secret_key = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
 
         access_token = jwt.encode(access_payload, secret_key, algorithm="HS256")
         refresh_token = jwt.encode(refresh_payload, secret_key, algorithm="HS256")
@@ -1468,6 +1486,69 @@ async def auth_login_override(request: Request):
 
     except Exception as e:
         logger.error(f"Login error: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+# 🔐 ENDPOINT DE REFRESH TOKEN
+@app.post("/api/v1/auth/refresh")
+async def auth_refresh_token(request: Request):
+    """Refresh access token using refresh token"""
+    try:
+        body = await request.json()
+        refresh_token = body.get("refresh_token")
+
+        if not refresh_token:
+            return JSONResponse(
+                status_code=400, content={"detail": "Refresh token required"}
+            )
+
+        import jwt
+        from datetime import datetime, timedelta
+
+        secret_key = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
+
+        try:
+            # Verificar refresh token
+            payload = jwt.decode(refresh_token, secret_key, algorithms=["HS256"])
+
+            # Verificar se é um refresh token
+            if payload.get("type") != "refresh":
+                return JSONResponse(
+                    status_code=401, content={"detail": "Invalid token type"}
+                )
+
+            # Standard JWT uses "sub" for subject (user_id)
+            user_id = payload.get("sub") or payload.get("user_id")
+            email = payload.get("email", "")
+
+            # Criar novo access token - usando formato padrão JWT
+            access_payload = {
+                "sub": user_id,  # Standard JWT field for subject
+                "email": email,
+                "type": "access",
+                "iat": datetime.utcnow(),
+                "exp": datetime.utcnow() + timedelta(minutes=30),
+            }
+
+            new_access_token = jwt.encode(access_payload, secret_key, algorithm="HS256")
+
+            return {
+                "access_token": new_access_token,
+                "expires_in": 1800,  # 30 minutos em segundos
+                "token_type": "bearer",
+            }
+
+        except jwt.ExpiredSignatureError:
+            return JSONResponse(
+                status_code=401, content={"detail": "Refresh token expired"}
+            )
+        except jwt.InvalidTokenError:
+            return JSONResponse(
+                status_code=401, content={"detail": "Invalid refresh token"}
+            )
+
+    except Exception as e:
+        logger.error(f"Refresh token error: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
 
@@ -1487,7 +1568,7 @@ async def get_current_user(request: Request):
         # Verificar token
         import jwt
 
-        secret_key = "trading_platform_secret_key_2024"
+        secret_key = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
 
         try:
             payload = jwt.decode(token, secret_key, algorithms=["HS256"])
@@ -1549,7 +1630,7 @@ async def get_exchange_accounts(request: Request):
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.split(" ")[1]
             import jwt
-            secret_key = "trading_platform_secret_key_2024"
+            secret_key = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
             try:
                 payload = jwt.decode(token, secret_key, algorithms=["HS256"])
                 user_id = payload.get("user_id")

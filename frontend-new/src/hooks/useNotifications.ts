@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import api from '@/lib/api'
+import { apiClient } from '@/lib/api'
 
 // Types matching backend and NotificationCenter component
 export interface Notification {
   id: string
   type: 'success' | 'warning' | 'error' | 'info'
-  category: 'order' | 'position' | 'system' | 'market' | 'bot' | 'price_alert'
+  category: 'order' | 'position' | 'system' | 'market' | 'bot' | 'price_alert' | 'indicator'
   title: string
   message: string
   timestamp: string
@@ -42,34 +42,44 @@ const fetchNotifications = async (params: {
   if (params.offset) queryParams.append('offset', params.offset.toString())
 
   const url = `/notifications${queryParams.toString() ? `?${queryParams.toString()}` : ''}`
-  const response = await api.get(url)
-  return response.data
+  // Use axios instance directly to get full response (not just .data)
+  const axios = apiClient.getAxiosInstance()
+  const response = await axios.get<NotificationsResponse>(url)
+  // Return full response data with success, data, total, unread_count
+  return response.data || { success: true, data: [], total: 0, unread_count: 0 }
 }
 
 // Fetch notification count
 const fetchNotificationCount = async (): Promise<NotificationCountResponse> => {
-  const response = await api.get('/notifications/count')
-  return response.data
+  // Use axios instance directly to get full response
+  const axios = apiClient.getAxiosInstance()
+  const response = await axios.get<NotificationCountResponse>('/notifications/count')
+  // Return full response data with success, unread_count, total_count
+  return response.data || { success: true, unread_count: 0, total_count: 0 }
 }
 
 // Mark notification as read
 const markAsReadApi = async (notificationId: string): Promise<void> => {
-  await api.put(`/notifications/${notificationId}`, { read: true })
+  const axios = apiClient.getAxiosInstance()
+  await axios.put(`/notifications/${notificationId}`, { read: true })
 }
 
 // Mark all notifications as read
 const markAllAsReadApi = async (): Promise<void> => {
-  await api.put('/notifications/mark-all-read')
+  const axios = apiClient.getAxiosInstance()
+  await axios.put('/notifications/mark-all-read')
 }
 
 // Delete notification
 const deleteNotificationApi = async (notificationId: string): Promise<void> => {
-  await api.delete(`/notifications/${notificationId}`)
+  const axios = apiClient.getAxiosInstance()
+  await axios.delete(`/notifications/${notificationId}`)
 }
 
 // Clear all notifications
 const clearAllNotificationsApi = async (): Promise<void> => {
-  await api.delete('/notifications')
+  const axios = apiClient.getAxiosInstance()
+  await axios.delete('/notifications')
 }
 
 // Hook options

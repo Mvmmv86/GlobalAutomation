@@ -21,6 +21,7 @@ from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.pricing.binance_price_service import BinancePriceService
 from infrastructure.services.bot_sltp_monitor_service import get_bot_sltp_monitor
+from infrastructure.services.indicator_alert_monitor import get_indicator_alert_monitor
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +39,10 @@ class SyncScheduler:
         self._task = None
         # 🚀 RATE LIMIT FIX: Track last sync time per account
         self._last_sync_times: Dict[str, float] = {}
+        # 📅 Daily reset tracking - stores the last date when daily counters were reset
+        self._last_daily_reset_date: str = None
+        # 🔔 Indicator Alert Monitor instance
+        self._indicator_alert_monitor = None
 
     async def start(self):
         """Inicia o scheduler"""
@@ -49,6 +54,13 @@ class SyncScheduler:
         self._task = asyncio.create_task(self._sync_loop())
         logger.info("🔄 Sync scheduler started - syncing every 30 seconds (optimized for 100-500 clients)")
 
+        # Start Indicator Alert Monitor
+        try:
+            self._indicator_alert_monitor = get_indicator_alert_monitor(transaction_db)
+            await self._indicator_alert_monitor.start()
+        except Exception as e:
+            logger.error(f"❌ Failed to start Indicator Alert Monitor: {e}")
+
     async def stop(self):
         """Para o scheduler"""
         self.is_running = False
@@ -58,6 +70,14 @@ class SyncScheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+        # Stop Indicator Alert Monitor
+        if self._indicator_alert_monitor:
+            try:
+                await self._indicator_alert_monitor.stop()
+            except Exception as e:
+                logger.error(f"❌ Error stopping Indicator Alert Monitor: {e}")
+
         logger.info("⏹️ Sync scheduler stopped")
 
     async def _sync_loop(self):
@@ -68,6 +88,9 @@ class SyncScheduler:
 
                 # Monitor SL/TP orders for bot subscriptions
                 await self._monitor_bot_sltp_orders()
+
+                # 📅 Check and reset daily loss counters at midnight UTC
+                await self._check_daily_reset()
 
                 await asyncio.sleep(30)  # Aguarda 30 segundos (otimizado para 100-500 clientes)
             except asyncio.CancelledError:
@@ -237,6 +260,127 @@ class SyncScheduler:
 
         except Exception as e:
             logger.error(f"❌ Error in bot SL/TP monitoring: {e}")
+
+    async def _check_daily_reset(self):
+        """
+        Check if it's a new day (UTC) and reset daily loss counters.
+        This runs every 30 seconds but only resets once per day.
+        Also generates daily P&L snapshots for historical tracking.
+        """
+        try:
+            # Get current date in UTC
+            current_date_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+            # If we already reset today, skip
+            if self._last_daily_reset_date == current_date_utc:
+                return
+
+            # It's a new day! First, generate yesterday's P&L snapshots before resetting
+            logger.info(f"📅 New day detected ({current_date_utc}) - Generating daily snapshots and resetting counters...")
+
+            # Generate daily P&L snapshots for yesterday (before reset)
+            await self._generate_daily_pnl_snapshots()
+
+            # Reset the daily loss counters
+            result = await transaction_db.execute("""
+                UPDATE bot_subscriptions
+                SET current_daily_loss_usd = 0,
+                    updated_at = NOW()
+                WHERE status = 'active'
+            """)
+
+            # Update last reset date
+            self._last_daily_reset_date = current_date_utc
+
+            logger.info(f"✅ Daily loss counters reset successfully for all active subscriptions")
+
+        except Exception as e:
+            logger.error(f"❌ Error resetting daily loss counters: {e}")
+
+    async def _generate_daily_pnl_snapshots(self):
+        """
+        Generate daily P&L snapshots for all active subscriptions.
+        This creates historical records for performance tracking.
+        """
+        try:
+            from datetime import date, timedelta
+            yesterday = date.today() - timedelta(days=1)
+
+            # Get all active subscriptions that don't have yesterday's snapshot
+            subscriptions = await transaction_db.fetch("""
+                SELECT
+                    bs.id as subscription_id,
+                    bs.user_id,
+                    bs.bot_id,
+                    bs.total_pnl_usd,
+                    bs.win_count,
+                    bs.loss_count
+                FROM bot_subscriptions bs
+                WHERE bs.status = 'active'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bot_pnl_history ph
+                      WHERE ph.subscription_id = bs.id AND ph.snapshot_date = $1
+                  )
+            """, yesterday)
+
+            if not subscriptions:
+                logger.debug("📊 No subscriptions need daily snapshots")
+                return
+
+            snapshots_created = 0
+
+            for sub in subscriptions:
+                subscription_id = sub["subscription_id"]
+                user_id = sub["user_id"]
+                bot_id = sub["bot_id"]
+
+                # Get the previous day's cumulative values
+                prev = await transaction_db.fetchrow("""
+                    SELECT cumulative_pnl_usd, cumulative_wins, cumulative_losses
+                    FROM bot_pnl_history
+                    WHERE subscription_id = $1 AND snapshot_date < $2
+                    ORDER BY snapshot_date DESC
+                    LIMIT 1
+                """, subscription_id, yesterday)
+
+                prev_pnl = float(prev["cumulative_pnl_usd"]) if prev else 0
+                prev_wins = prev["cumulative_wins"] if prev else 0
+                prev_losses = prev["cumulative_losses"] if prev else 0
+
+                current_pnl = float(sub["total_pnl_usd"]) if sub["total_pnl_usd"] else 0
+                current_wins = sub["win_count"] or 0
+                current_losses = sub["loss_count"] or 0
+
+                daily_pnl = current_pnl - prev_pnl
+                daily_wins = current_wins - prev_wins
+                daily_losses = current_losses - prev_losses
+
+                # Only create snapshot if there was activity
+                if daily_pnl != 0 or daily_wins != 0 or daily_losses != 0:
+                    total_daily = daily_wins + daily_losses
+                    win_rate = (daily_wins / total_daily * 100) if total_daily > 0 else 0
+
+                    await transaction_db.execute("""
+                        INSERT INTO bot_pnl_history (
+                            subscription_id, user_id, bot_id, snapshot_date,
+                            daily_pnl_usd, cumulative_pnl_usd,
+                            daily_wins, daily_losses, cumulative_wins, cumulative_losses,
+                            win_rate_pct
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        ON CONFLICT (subscription_id, snapshot_date) DO NOTHING
+                    """,
+                        subscription_id, user_id, bot_id, yesterday,
+                        daily_pnl, current_pnl,
+                        daily_wins, daily_losses, current_wins, current_losses,
+                        win_rate
+                    )
+                    snapshots_created += 1
+
+            if snapshots_created > 0:
+                logger.info(f"📊 Created {snapshots_created} daily P&L snapshots for {yesterday}")
+
+        except Exception as e:
+            logger.error(f"❌ Error generating daily P&L snapshots: {e}")
 
 
 # Instância global do scheduler

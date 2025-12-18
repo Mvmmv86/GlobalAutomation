@@ -24,6 +24,11 @@ class BotCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=255)
     description: str = Field(..., min_length=10, max_length=1000)
     market_type: str = Field(default="futures", pattern="^(spot|futures)$")
+    trading_symbol: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="Trading pair for P&L filtering (e.g., BNBUSDT, ETHUSDT). Required for accurate P&L tracking."
+    )
     allowed_directions: str = Field(
         default="both",
         pattern="^(buy_only|sell_only|both)$",
@@ -42,6 +47,11 @@ class BotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=255)
     description: Optional[str] = Field(None, min_length=10, max_length=1000)
     status: Optional[str] = Field(None, pattern="^(active|paused|archived)$")
+    trading_symbol: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="Trading pair for P&L filtering (e.g., BNBUSDT, ETHUSDT)"
+    )
     default_leverage: Optional[int] = Field(None, ge=1, le=125)
     default_margin_usd: Optional[float] = Field(None, ge=5.00)
     default_stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
@@ -354,7 +364,7 @@ async def get_all_bots(
         bots = await transaction_db.fetch(f"""
             SELECT
                 id, name, description, market_type, status,
-                master_webhook_path,
+                trading_symbol, master_webhook_path,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct,
                 total_subscribers, total_signals_sent,
@@ -397,15 +407,16 @@ async def create_bot(
         bot_id = await transaction_db.fetchval("""
             INSERT INTO bots (
                 name, description, market_type, status,
-                allowed_directions, master_webhook_path,
+                trading_symbol, allowed_directions, master_webhook_path,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct
-            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9)
+            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
         """,
             bot_data.name,
             bot_data.description,
             bot_data.market_type,
+            bot_data.trading_symbol.upper() if bot_data.trading_symbol else None,
             bot_data.allowed_directions,
             bot_data.master_webhook_path,
             bot_data.default_leverage,
@@ -470,6 +481,11 @@ async def update_bot(
         if bot_data.status is not None:
             updates.append(f"status = ${param_idx}")
             params.append(bot_data.status)
+            param_idx += 1
+
+        if bot_data.trading_symbol is not None:
+            updates.append(f"trading_symbol = ${param_idx}")
+            params.append(bot_data.trading_symbol.upper())
             param_idx += 1
 
         if bot_data.default_leverage is not None:

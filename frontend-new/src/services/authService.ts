@@ -83,7 +83,14 @@ class AuthService {
       throw new Error('No refresh token available')
     }
 
-    return apiClient.post('/auth/refresh', { refreshToken })
+    // Backend espera snake_case: refresh_token
+    const response = await apiClient.post<any>('/auth/refresh', { refresh_token: refreshToken })
+
+    // Backend retorna snake_case, converter para camelCase
+    return {
+      accessToken: response.access_token || response.accessToken,
+      refreshToken: response.refresh_token || response.refreshToken || refreshToken
+    }
   }
 
   async requestPasswordReset(email: string): Promise<void> {

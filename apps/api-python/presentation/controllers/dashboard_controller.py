@@ -15,12 +15,13 @@ from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.pricing.binance_price_service import BinancePriceService
+import os
 
 logger = structlog.get_logger(__name__)
 cache = get_positions_cache()
 
-# JWT Secret Key (should be in environment variable in production)
-JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+# JWT Secret Key from environment
+JWT_SECRET_KEY = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
 
 
 def get_user_id_from_request(request: Request) -> Optional[str]:

@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import {
-  Maximize2, Minimize2, TrendingUp, Sun, Moon, BarChart3, X, ChevronDown, Settings
+  Maximize2, Minimize2, TrendingUp, Sun, Moon, BarChart3, X, ChevronDown, Settings, AlertTriangle
 } from 'lucide-react'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { SymbolSelector } from '../molecules/SymbolSelector'
 import { SeparateIndicatorPanels } from '../molecules/SeparateIndicatorPanels'
 import { IndicatorSettingsModal } from '../molecules/IndicatorSettingsModal'
+import { ActiveAlertsPopup } from '../molecules/ActiveAlertsPopup'
 import { CustomChart } from '../atoms/CustomChart'
+import { useIndicatorAlerts } from '@/hooks/useIndicatorAlerts'
 import type { Candle } from '@/utils/indicators'
 import { useChartPositions } from '@/hooks/useChartPositions'
 import { useCandles } from '@/hooks/useCandles'
@@ -122,7 +124,11 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
 
   // ✅ NOVO: Estado para ferramentas de desenho
   const [activeDrawingTool, setActiveDrawingTool] = useState<string | null>(null)
-  const [showAlerts, setShowAlerts] = useState(false)
+  const [showAlertsPopup, setShowAlertsPopup] = useState(false)
+
+  // Hook para alertas de indicadores
+  const { data: indicatorAlerts } = useIndicatorAlerts({ symbol, active_only: true })
+  const activeAlertsCount = indicatorAlerts?.length ?? 0
 
   // ✅ NOVO: Estado para modal de configurações de indicador
   const [settingsModalIndicator, setSettingsModalIndicator] = useState<AnyIndicatorConfig | null>(null)
@@ -535,6 +541,29 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
               {chartTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
 
+            {/* Alertas de Indicadores */}
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setShowAlertsPopup(!showAlertsPopup)}
+                title="Alertas de Indicadores"
+              >
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                {activeAlertsCount > 0 && (
+                  <Badge className="absolute -top-1 -right-1 h-4 min-w-4 p-0 text-[10px] flex items-center justify-center">
+                    {activeAlertsCount}
+                  </Badge>
+                )}
+              </Button>
+              <ActiveAlertsPopup
+                isOpen={showAlertsPopup}
+                onClose={() => setShowAlertsPopup(false)}
+                symbol={symbol}
+              />
+            </div>
+
             {/* Indicadores */}
             <div className="relative indicators-menu">
               <Button
@@ -765,6 +794,8 @@ const ChartContainer: React.FC<ChartContainerProps> = ({
           setSettingsModalIndicator(null)
         }}
         onSave={handleSaveIndicatorSettings}
+        symbol={symbol}
+        timeframe={selectedInterval}
       />
     </div>
   )

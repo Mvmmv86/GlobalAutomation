@@ -1,11 +1,11 @@
 import React, { useState } from 'react'
-import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info } from 'lucide-react'
+import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info, XCircle } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { botsService, Bot as BotType, BotSubscription, CreateSubscriptionData } from '@/services/botsService'
+import { botsService, Bot as BotType, BotSubscription, CreateMultiExchangeSubscriptionData } from '@/services/botsService'
 import { SubscribeBotModal } from '../molecules/SubscribeBotModal'
 import { BotDetailsModal } from '../molecules/BotDetailsModal'
 import { useExchangeAccounts } from '@/hooks/useExchangeAccounts'
@@ -34,14 +34,14 @@ const BotsPage: React.FC = () => {
   const { data: exchangeAccounts = [] } = useExchangeAccounts()
 
   const subscribeMutation = useMutation({
-    mutationFn: (data: CreateSubscriptionData) => botsService.subscribeToBot(userId, data),
-    onSuccess: () => {
+    mutationFn: (data: CreateMultiExchangeSubscriptionData) => botsService.subscribeToBotMultiExchange(userId, data),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['bot-subscriptions'] })
       queryClient.invalidateQueries({ queryKey: ['bots-available'] })
-      alert('✅ Bot ativado com sucesso!')
+      alert(`Bot ativado com sucesso em ${result.exchanges_count} exchange(s)!`)
     },
     onError: (error: any) => {
-      alert(`❌ Erro ao ativar bot: ${error.message}`)
+      alert(`Erro ao ativar bot: ${error.message}`)
     }
   })
 
@@ -58,20 +58,53 @@ const BotsPage: React.FC = () => {
     }
   })
 
+  const unsubscribeMutation = useMutation({
+    mutationFn: (subscriptionId: string) => botsService.unsubscribeFromBot(subscriptionId, userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['bot-subscriptions'] })
+      queryClient.invalidateQueries({ queryKey: ['bots-available'] })
+      alert('Bot desativado com sucesso!')
+    },
+    onError: (error: any) => {
+      alert(`Erro ao desativar bot: ${error.message}`)
+    }
+  })
+
   const handleSubscribe = (bot: BotType) => {
     setSelectedBot(bot)
     setIsSubscribeModalOpen(true)
   }
 
-  const handleTogglePause = (subscription: BotSubscription, e: React.MouseEvent) => {
+  const handlePause = (subscription: BotSubscription, e: React.MouseEvent) => {
     e.stopPropagation()
-    const action = subscription.status === 'active' ? 'pause' : 'resume'
-    const message = action === 'pause'
-      ? 'Deseja pausar este bot? Você deixará de receber sinais.'
-      : 'Deseja reativar este bot? Você voltará a receber sinais.'
+    // For multi-exchange, pause all exchanges
+    const subscriptionIds = subscription.exchanges?.map(ex => ex.subscription_id) || [subscription.id]
+    if (confirm(`Deseja pausar este bot? ${subscriptionIds.length > 1 ? `(${subscriptionIds.length} exchanges serao pausadas)` : ''}`)) {
+      // Pause all subscriptions
+      subscriptionIds.forEach(subId => {
+        if (subId) toggleSubscriptionMutation.mutate({ subscriptionId: subId, action: 'pause' })
+      })
+    }
+  }
 
-    if (confirm(message)) {
-      toggleSubscriptionMutation.mutate({ subscriptionId: subscription.id, action })
+  const handleReactivate = async (subscription: BotSubscription, bot: BotType, e: React.MouseEvent) => {
+    e.stopPropagation()
+    // Delete all existing subscriptions and open modal for new config
+    const subscriptionIds = subscription.exchanges?.map(ex => ex.subscription_id) || [subscription.id]
+    const exchangesText = subscriptionIds.length > 1 ? ` (${subscriptionIds.length} exchanges)` : ''
+    if (confirm(`Para reconfigurar o bot${exchangesText}, a(s) assinatura(s) atual(is) sera(o) removida(s).\n\nVoce podera configurar novamente com as novas opcoes.`)) {
+      try {
+        // Unsubscribe from all exchanges
+        for (const subId of subscriptionIds) {
+          if (subId) await botsService.unsubscribeFromBot(subId, userId)
+        }
+        queryClient.invalidateQueries({ queryKey: ['bot-subscriptions'] })
+        // Open modal for new config
+        setSelectedBot(bot)
+        setIsSubscribeModalOpen(true)
+      } catch (error: any) {
+        alert(`Erro ao preparar reconfiguracao: ${error.message}`)
+      }
     }
   }
 
@@ -79,6 +112,18 @@ const BotsPage: React.FC = () => {
     e.stopPropagation()
     setSelectedSubscription(subscription)
     setIsDetailsModalOpen(true)
+  }
+
+  const handleUnsubscribe = (subscription: BotSubscription, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const subscriptionIds = subscription.exchanges?.map(ex => ex.subscription_id) || [subscription.id]
+    const exchangesText = subscriptionIds.length > 1 ? ` de ${subscriptionIds.length} exchanges` : ''
+    if (confirm(`Tem certeza que deseja DESATIVAR este bot${exchangesText}?\n\nIsso ira cancelar sua(s) assinatura(s) e voce precisara reconfigurar o bot para ativa-lo novamente.`)) {
+      // Unsubscribe from all exchanges
+      subscriptionIds.forEach(subId => {
+        if (subId) unsubscribeMutation.mutate(subId)
+      })
+    }
   }
 
   const getSubscription = (botId: string): BotSubscription | undefined => {
@@ -181,27 +226,59 @@ const BotsPage: React.FC = () => {
                         </Button>
                       ) : (
                         <>
-                          <div className="flex items-center justify-center gap-2 p-3 bg-yellow-100 dark:bg-yellow-900/30 border-2 border-yellow-500 rounded-lg">
-                            <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-                            <span className="font-semibold text-yellow-700 dark:text-yellow-400">
-                              {isActive ? 'Bot Ativado' : 'Bot Pausado'}
-                            </span>
+                          <div className="flex flex-col gap-2 p-3 bg-yellow-100 dark:bg-yellow-900/30 border-2 border-yellow-500 rounded-lg">
+                            <div className="flex items-center justify-center gap-2">
+                              <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                              <span className="font-semibold text-yellow-700 dark:text-yellow-400">
+                                {isActive ? 'Bot Ativado' : 'Bot Pausado'}
+                              </span>
+                            </div>
+                            {/* Show active exchanges */}
+                            {subscription.exchanges && subscription.exchanges.length > 0 && (
+                              <div className="flex items-center justify-center gap-1 flex-wrap">
+                                {subscription.exchanges.map((ex) => (
+                                  <Badge
+                                    key={ex.subscription_id}
+                                    variant={ex.status === 'active' ? 'default' : 'secondary'}
+                                    className="text-xs"
+                                  >
+                                    {ex.exchange.toUpperCase()}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                            {/* Fallback for old single-exchange structure */}
+                            {!subscription.exchanges && subscription.exchange && (
+                              <div className="flex items-center justify-center">
+                                <Badge variant="default" className="text-xs">
+                                  {subscription.exchange.toUpperCase()}
+                                </Badge>
+                              </div>
+                            )}
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={(e) => handleTogglePause(subscription, e)}
-                              disabled={toggleSubscriptionMutation.isPending}
-                              className={isActive ? 'border-orange-500 text-orange-600 hover:bg-orange-50' : 'border-green-500 text-green-600 hover:bg-green-50'}
-                            >
-                              {isActive ? (
-                                <><Pause className="w-4 h-4 mr-1" /> Pausar</>
-                              ) : (
-                                <><Play className="w-4 h-4 mr-1" /> Reativar</>
-                              )}
-                            </Button>
+                          <div className="grid grid-cols-3 gap-2">
+                            {isActive ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => handlePause(subscription, e)}
+                                disabled={toggleSubscriptionMutation.isPending}
+                                className="border-orange-500 text-orange-600 hover:bg-orange-50"
+                              >
+                                <Pause className="w-4 h-4 mr-1" /> Pausar
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => handleReactivate(subscription, bot, e)}
+                                disabled={subscribeMutation.isPending}
+                                className="border-green-500 text-green-600 hover:bg-green-50"
+                              >
+                                <Settings className="w-4 h-4 mr-1" /> Reconfigurar
+                              </Button>
+                            )}
                             <Button
                               variant="outline"
                               size="sm"
@@ -210,6 +287,16 @@ const BotsPage: React.FC = () => {
                             >
                               <Info className="w-4 h-4 mr-1" />
                               Detalhes
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => handleUnsubscribe(subscription, e)}
+                              disabled={unsubscribeMutation.isPending}
+                              className="border-red-500 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30"
+                            >
+                              <XCircle className="w-4 h-4 mr-1" />
+                              Desativar
                             </Button>
                           </div>
                         </>

@@ -320,6 +320,10 @@ class BotBroadcastService:
                 testnet=False
             )
 
+            # Normalize ticker to exchange format
+            # TradingView sends "ETH-USDT", Binance needs "ETHUSDT", BingX handles both
+            ticker = ticker.replace("-", "")
+
             # 4. Get current price
             current_price = await connector.get_current_price(ticker)
 
@@ -357,22 +361,58 @@ class BotBroadcastService:
                     user_id=str(user_id)
                 )
 
-            if action.lower() == "buy":
-                order_result = await connector.create_futures_order(
-                    symbol=ticker,
-                    side="BUY",
-                    order_type="MARKET",
-                    quantity=quantity,
-                    position_side=position_side  # BingX: passa position_side, outras exchanges: None
+            if action.lower() in ["buy", "sell"]:
+                # ================================================================
+                # STRATEGY PATTERN: Usar execute_order_with_sl_tp()
+                # Cada connector implementa a lógica específica da exchange:
+                # - Binance: SL/TP na mesma chamada da ordem principal
+                # - BingX: Ordem principal + delay + SL/TP separados
+                # ================================================================
+
+                # Calcular preços de SL/TP
+                sl_tp_prices = self._calculate_sl_tp_prices(
+                    action=action.lower(),
+                    entry_price=float(current_price),
+                    stop_loss_pct=config["stop_loss_pct"],
+                    take_profit_pct=config["take_profit_pct"]
                 )
-            elif action.lower() == "sell":
-                order_result = await connector.create_futures_order(
-                    symbol=ticker,
-                    side="SELL",
-                    order_type="MARKET",
+                sl_price = sl_tp_prices["stop_loss"]
+                tp_price = sl_tp_prices["take_profit"]
+
+                logger.info(
+                    f"🚀 Executando ordem via execute_order_with_sl_tp ({exchange.upper()})",
+                    user_id=str(user_id),
+                    ticker=ticker,
+                    side=action.upper(),
                     quantity=quantity,
-                    position_side=position_side  # BingX: passa position_side, outras exchanges: None
+                    leverage=config["leverage"],
+                    sl_price=sl_price,
+                    tp_price=tp_price
                 )
+
+                # Chamar método unificado - cada connector sabe como lidar
+                order_result = await connector.execute_order_with_sl_tp(
+                    symbol=ticker,
+                    side=action.upper(),
+                    quantity=quantity,
+                    leverage=config["leverage"],
+                    stop_loss_price=sl_price,
+                    take_profit_price=tp_price,
+                    position_side=position_side  # BingX usa, Binance ignora via **kwargs
+                )
+
+                # Extrair IDs de SL/TP do resultado
+                if order_result and order_result.get("success"):
+                    sl_order_id = order_result.get("stop_loss_order_id")
+                    tp_order_id = order_result.get("take_profit_order_id")
+                    logger.info(
+                        f"✅ Ordem + SL/TP executados via método unificado ({exchange.upper()})",
+                        user_id=str(user_id),
+                        order_id=order_result.get("orderId"),
+                        sl_order_id=sl_order_id,
+                        tp_order_id=tp_order_id
+                    )
+
             elif action.lower() == "close":
                 # Close existing position and record the trade
                 # First, get position info before closing to calculate P&L
@@ -390,48 +430,6 @@ class BotBroadcastService:
                             exchange_order_id=str(order_result.get("orderId", "")),
                             realized_pnl=realized_pnl
                         )
-
-            # 8. Create Stop Loss and Take Profit for BUY/SELL orders
-            if order_result and action.lower() in ["buy", "sell"]:
-                entry_price = float(order_result.get("avgPrice", current_price))
-                executed_qty = float(order_result.get("executedQty", quantity))
-
-                # Wait for position to be registered on exchange before creating SL/TP
-                # BingX requires position to exist before placing stop orders
-                await asyncio.sleep(2)
-
-                # Calculate SL/TP prices
-                sl_tp_prices = self._calculate_sl_tp_prices(
-                    action=action.lower(),
-                    entry_price=entry_price,
-                    stop_loss_pct=config["stop_loss_pct"],
-                    take_profit_pct=config["take_profit_pct"]
-                )
-
-                sl_price = sl_tp_prices["stop_loss"]
-                tp_price = sl_tp_prices["take_profit"]
-
-                # Create SL/TP orders with retry
-                sl_tp_result = await self._create_sl_tp_orders(
-                    connector=connector,
-                    ticker=ticker,
-                    action=action.lower(),
-                    quantity=executed_qty,
-                    sl_price=sl_price,
-                    tp_price=tp_price
-                )
-
-                sl_order_id = sl_tp_result.get("sl_order_id")
-                tp_order_id = sl_tp_result.get("tp_order_id")
-
-                logger.info(
-                    "SL/TP orders created",
-                    user_id=str(user_id),
-                    sl_order_id=sl_order_id,
-                    tp_order_id=tp_order_id,
-                    sl_price=sl_price,
-                    tp_price=tp_price
-                )
 
             # 9. Calculate execution time
             execution_end = datetime.utcnow()
@@ -613,6 +611,7 @@ class BotBroadcastService:
         quantity: float,
         sl_price: float,
         tp_price: float,
+        exchange: str,  # Added: exchange name to determine which params to use
         max_retries: int = 3
     ) -> Dict[str, Optional[str]]:
         """
@@ -625,6 +624,7 @@ class BotBroadcastService:
             quantity: Quantity to close
             sl_price: Stop loss trigger price
             tp_price: Take profit trigger price
+            exchange: Exchange name (e.g., "binance", "bingx")
             max_retries: Maximum number of retry attempts
 
         Returns:
@@ -637,6 +637,24 @@ class BotBroadcastService:
         sl_order_id = None
         tp_order_id = None
 
+        # ✅ BINANCE: Normalizar preços de SL/TP para evitar erro de precisão
+        # Erro -1111: "Precision is over the maximum defined for this asset"
+        print(f"🔍 DEBUG _create_sl_tp_orders: exchange={exchange}, connector_type={type(connector).__name__}, has_normalize={hasattr(connector, 'normalize_price')}")
+        if exchange == "binance" and hasattr(connector, 'normalize_price'):
+            try:
+                original_sl = sl_price
+                original_tp = tp_price
+                sl_price = await connector.normalize_price(ticker, sl_price, is_futures=True)
+                tp_price = await connector.normalize_price(ticker, tp_price, is_futures=True)
+                logger.info(
+                    f"✅ Binance SL/TP preços normalizados: SL={original_sl}→{sl_price}, TP={original_tp}→{tp_price}",
+                    ticker=ticker
+                )
+            except Exception as e:
+                import traceback
+                logger.error(f"⚠️ Erro ao normalizar preços SL/TP: {e}")
+                logger.error(f"⚠️ Traceback: {traceback.format_exc()}")
+
         # Try to create Stop Loss with retry
         for attempt in range(max_retries):
             try:
@@ -644,19 +662,31 @@ class BotBroadcastService:
                     f"Creating Stop Loss order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
                     sl_price=sl_price,
-                    position_side=position_side
+                    exchange=exchange,
+                    position_side=position_side if exchange == "bingx" else "N/A"
                 )
 
-                sl_result = await connector.create_stop_loss_order(
-                    symbol=ticker,
-                    side=exit_side,
-                    quantity=quantity,
-                    stop_price=sl_price,
-                    position_side=position_side  # Required for BingX Hedge Mode
-                )
+                # BingX: requires position_side for Hedge Mode
+                # Binance: does NOT accept position_side parameter
+                if exchange == "bingx":
+                    sl_result = await connector.create_stop_loss_order(
+                        symbol=ticker,
+                        side=exit_side,
+                        quantity=quantity,
+                        stop_price=sl_price,
+                        position_side=position_side
+                    )
+                else:
+                    # Binance and other exchanges that don't use position_side
+                    sl_result = await connector.create_stop_loss_order(
+                        symbol=ticker,
+                        side=exit_side,
+                        quantity=quantity,
+                        stop_price=sl_price
+                    )
 
                 if sl_result.get("success"):
-                    sl_order_id = sl_result.get("order_id")  # Fixed: was "orderId", should be "order_id"
+                    sl_order_id = sl_result.get("order_id")
                     logger.info("Stop Loss order created successfully", order_id=sl_order_id)
                     break
                 else:
@@ -684,19 +714,31 @@ class BotBroadcastService:
                     f"Creating Take Profit order (attempt {attempt + 1}/{max_retries})",
                     ticker=ticker,
                     tp_price=tp_price,
-                    position_side=position_side
+                    exchange=exchange,
+                    position_side=position_side if exchange == "bingx" else "N/A"
                 )
 
-                tp_result = await connector.create_take_profit_order(
-                    symbol=ticker,
-                    side=exit_side,
-                    quantity=quantity,
-                    stop_price=tp_price,
-                    position_side=position_side  # Required for BingX Hedge Mode
-                )
+                # BingX: requires position_side for Hedge Mode
+                # Binance: does NOT accept position_side parameter
+                if exchange == "bingx":
+                    tp_result = await connector.create_take_profit_order(
+                        symbol=ticker,
+                        side=exit_side,
+                        quantity=quantity,
+                        stop_price=tp_price,
+                        position_side=position_side
+                    )
+                else:
+                    # Binance and other exchanges that don't use position_side
+                    tp_result = await connector.create_take_profit_order(
+                        symbol=ticker,
+                        side=exit_side,
+                        quantity=quantity,
+                        stop_price=tp_price
+                    )
 
                 if tp_result.get("success"):
-                    tp_order_id = tp_result.get("order_id")  # Fixed: was "orderId", should be "order_id"
+                    tp_order_id = tp_result.get("order_id")
                     logger.info("Take Profit order created successfully", order_id=tp_order_id)
                     break
                 else:
@@ -816,7 +858,7 @@ class BotBroadcastService:
             await self.db.execute("""
                 INSERT INTO bot_trades (
                     subscription_id, user_id, signal_execution_id,
-                    ticker, side, direction,
+                    symbol, side, direction,
                     entry_price, entry_quantity, entry_time,
                     sl_order_id, tp_order_id,
                     status, is_winner,

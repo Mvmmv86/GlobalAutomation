@@ -33,7 +33,23 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ className }) =>
 
   // Filter notifications based on active tab and read status
   const filteredNotifications = notifications.filter((notification: Notification) => {
-    const categoryMatch = activeTab === 'all' || notification.category === activeTab
+    let categoryMatch = activeTab === 'all'
+
+    // Map tabs to categories
+    if (activeTab === 'order') {
+      categoryMatch = notification.category === 'order'
+    } else if (activeTab === 'position') {
+      // Positions tab includes position and bot categories
+      categoryMatch = notification.category === 'position' || notification.category === 'bot'
+    } else if (activeTab === 'system') {
+      categoryMatch = notification.category === 'system'
+    } else if (activeTab === 'market') {
+      categoryMatch = notification.category === 'market'
+    } else if (activeTab === 'alerts') {
+      // Alerts tab includes price_alert and indicator categories
+      categoryMatch = notification.category === 'price_alert' || notification.category === 'indicator'
+    }
+
     const readMatch = !showUnreadOnly || !notification.read
     return categoryMatch && readMatch
   })
@@ -43,11 +59,12 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ className }) =>
     all: notifications.length,
     unread: unreadCount,
     order: notifications.filter((n: Notification) => n.category === 'order').length,
-    position: notifications.filter((n: Notification) => n.category === 'position').length,
+    // Positions includes position + bot
+    position: notifications.filter((n: Notification) => n.category === 'position' || n.category === 'bot').length,
     system: notifications.filter((n: Notification) => n.category === 'system').length,
     market: notifications.filter((n: Notification) => n.category === 'market').length,
-    bot: notifications.filter((n: Notification) => n.category === 'bot').length,
-    price_alert: notifications.filter((n: Notification) => n.category === 'price_alert').length
+    // Alerts includes price_alert + indicator
+    alerts: notifications.filter((n: Notification) => n.category === 'price_alert' || n.category === 'indicator').length
   }
 
   const getNotificationIcon = (type: Notification['type']) => {
@@ -202,7 +219,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ className }) =>
       <CardContent className="p-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="px-6 pb-4">
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="grid w-full grid-cols-6">
               <TabsTrigger value="all" className="text-xs">
                 All ({counts.all})
               </TabsTrigger>
@@ -217,6 +234,9 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ className }) =>
               </TabsTrigger>
               <TabsTrigger value="market" className="text-xs">
                 Market ({counts.market})
+              </TabsTrigger>
+              <TabsTrigger value="alerts" className="text-xs">
+                Alerts ({counts.alerts})
               </TabsTrigger>
             </TabsList>
           </div>

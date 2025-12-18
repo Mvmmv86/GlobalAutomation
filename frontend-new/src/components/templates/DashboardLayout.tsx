@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   BarChart3,
@@ -15,7 +15,8 @@ import {
   Sun,
   ChevronLeft,
   ChevronRight,
-  Bot
+  Bot,
+  Bell
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
@@ -24,6 +25,8 @@ import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { DemoBanner } from '../atoms/DemoBanner'
 import { useCandlesPrefetch } from '@/hooks/useCandlesPrefetch'
+import { useNotificationCount } from '@/hooks/useNotifications'
+import { NotificationCenter } from '../organisms/NotificationCenter'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
@@ -44,12 +47,28 @@ const navigation = [
 export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children, fullWidth = false }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false) // Desktop collapse
+  const [showNotifications, setShowNotifications] = useState(false)
+  const notificationRef = useRef<HTMLDivElement>(null)
   const { user, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const location = useLocation()
+  const { unreadCount } = useNotificationCount()
 
   // 🚀 Prefetch popular symbols for ultra-fast chart loading
   useCandlesPrefetch()
+
+  // Close notification center when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
+        setShowNotifications(false)
+      }
+    }
+    if (showNotifications) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showNotifications])
 
   return (
     <div className="min-h-screen bg-background">
@@ -213,6 +232,30 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children, full
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {/* Add any header content here */}
             </div>
+          </div>
+
+          {/* Notification Bell - Right side of header */}
+          <div className="relative" ref={notificationRef}>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowNotifications(!showNotifications)}
+              className="relative"
+            >
+              <Bell className="h-5 w-5" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-[10px] font-medium text-white">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </Button>
+
+            {/* Notification Center Popup */}
+            {showNotifications && (
+              <div className="absolute right-0 top-full mt-2 z-50 w-[min(640px,calc(100vw-2rem))]">
+                <NotificationCenter className="shadow-lg" />
+              </div>
+            )}
           </div>
         </div>
 

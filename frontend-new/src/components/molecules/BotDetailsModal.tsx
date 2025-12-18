@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info, ChevronDown, ChevronUp, CheckCircle, XCircle, Download, FileSpreadsheet } from 'lucide-react'
-import { BotSubscription, botsService, SubscriptionPerformance } from '@/services/botsService'
+import { BotSubscription, botsService, SubscriptionPerformance, ExchangeSubscription } from '@/services/botsService'
 import { BotPnLChart } from './BotPnLChart'
 import { BotWinRateChart } from './BotWinRateChart'
 import { SharePnLModal } from './SharePnLModal'
 import { useAuth } from '@/contexts/AuthContext'
+import { Badge } from '../atoms/Badge'
 
 // Trade item from exchange
 interface TradeItem {
@@ -74,12 +75,68 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   const [selectedDays, setSelectedDays] = useState(30)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  // Multi-exchange tab selection: 'TOTAL' or exchange subscription_id
+  const [selectedExchangeTab, setSelectedExchangeTab] = useState<string>('TOTAL')
+
+  // Multi-exchange helpers
+  const hasMultipleExchanges = subscription?.exchanges && subscription.exchanges.length >= 2
+  const exchanges = subscription?.exchanges || []
+
+  // Get active subscription_id based on tab selection
+  const getActiveSubscriptionId = (): string | undefined => {
+    if (!subscription) return undefined
+
+    // If 'TOTAL' tab or single exchange, use the first subscription_id
+    if (selectedExchangeTab === 'TOTAL' || !hasMultipleExchanges) {
+      return subscription.exchanges?.[0]?.subscription_id || subscription.id
+    }
+
+    // Find the selected exchange subscription_id
+    return selectedExchangeTab
+  }
+
+  // Get selected exchange data
+  const getSelectedExchange = (): ExchangeSubscription | undefined => {
+    if (!subscription?.exchanges) return undefined
+    if (selectedExchangeTab === 'TOTAL') return undefined
+    return subscription.exchanges.find(ex => ex.subscription_id === selectedExchangeTab)
+  }
+
+  // Helper to get first exchange or selected exchange data
+  const getExchangeData = () => {
+    const selectedEx = getSelectedExchange()
+    if (selectedEx) return selectedEx
+    return subscription?.exchanges?.[0]
+  }
+
+  // Helper to get risk management values (from first exchange or selected)
+  const getRiskValue = (field: 'max_daily_loss_usd' | 'max_concurrent_positions' | 'current_daily_loss_usd' | 'current_positions') => {
+    const ex = getExchangeData()
+    if (ex) {
+      return ex[field] ?? 0
+    }
+    // Fallback to subscription direct fields (backwards compat)
+    return (subscription as any)?.[field] ?? 0
+  }
+
+  // Reset tab when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedExchangeTab('TOTAL')
+    }
+  }, [isOpen])
 
   // Fetch performance data when modal opens
   useEffect(() => {
     if (isOpen && subscription && user?.id) {
       setIsLoading(true)
-      botsService.getSubscriptionPerformance(subscription.id, user.id, selectedDays)
+      const subscriptionId = getActiveSubscriptionId()
+      if (!subscriptionId) {
+        setIsLoading(false)
+        return
+      }
+
+      botsService.getSubscriptionPerformance(subscriptionId, user.id, selectedDays)
         .then(data => {
           setPerformance(data)
         })
@@ -90,7 +147,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
           setIsLoading(false)
         })
     }
-  }, [isOpen, subscription, user?.id, selectedDays])
+  }, [isOpen, subscription, user?.id, selectedDays, selectedExchangeTab])
 
   if (!isOpen || !subscription) return null
 
@@ -102,9 +159,12 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
     if (filteredStats) {
       return filteredStats.win_rate.toFixed(1)
     }
-    const total = subscription.win_count + subscription.loss_count
+    // Use total_win_count/total_loss_count for new multi-exchange format
+    const winCount = subscription.total_win_count ?? 0
+    const lossCount = subscription.total_loss_count ?? 0
+    const total = winCount + lossCount
     if (total === 0) return '0'
-    return ((subscription.win_count / total) * 100).toFixed(1)
+    return ((winCount / total) * 100).toFixed(1)
   }
 
   const getTotalPnl = () => {
@@ -287,6 +347,40 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Exchange Tabs (only show if 2+ exchanges) */}
+        {hasMultipleExchanges && (
+          <div className="px-6 pt-4 border-b border-border">
+            <div className="flex gap-2 overflow-x-auto pb-3">
+              <button
+                onClick={() => setSelectedExchangeTab('TOTAL')}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap ${
+                  selectedExchangeTab === 'TOTAL'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary/50 text-muted-foreground hover:bg-secondary'
+                }`}
+              >
+                TOTAL ({exchanges.length} exchanges)
+              </button>
+              {exchanges.map((ex) => (
+                <button
+                  key={ex.subscription_id}
+                  onClick={() => setSelectedExchangeTab(ex.subscription_id)}
+                  className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
+                    selectedExchangeTab === ex.subscription_id
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-secondary/50 text-muted-foreground hover:bg-secondary'
+                  }`}
+                >
+                  {ex.exchange.toUpperCase()}
+                  <Badge variant={ex.status === 'active' ? 'default' : 'secondary'} className="text-xs py-0">
+                    {ex.status === 'active' ? 'ON' : 'OFF'}
+                  </Badge>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Content */}
         <div className="p-6 space-y-6">
@@ -499,25 +593,25 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div>
                 <p className="text-sm text-muted-foreground">Alavancagem</p>
                 <p className="text-lg font-semibold text-foreground">
-                  {subscription.custom_leverage || subscription.default_leverage}x
+                  {getExchangeData()?.custom_leverage || subscription.default_leverage}x
                 </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Margem USD</p>
                 <p className="text-lg font-semibold text-foreground">
-                  ${subscription.custom_margin_usd || subscription.default_margin_usd}
+                  ${getExchangeData()?.custom_margin_usd || subscription.default_margin_usd}
                 </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Stop Loss</p>
                 <p className="text-lg font-semibold text-danger">
-                  {subscription.custom_stop_loss_pct || subscription.default_stop_loss_pct}%
+                  {getExchangeData()?.custom_stop_loss_pct || subscription.default_stop_loss_pct}%
                 </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Take Profit</p>
                 <p className="text-lg font-semibold text-success">
-                  {subscription.custom_take_profit_pct || subscription.default_take_profit_pct}%
+                  {getExchangeData()?.custom_take_profit_pct || subscription.default_take_profit_pct}%
                 </p>
               </div>
             </div>
@@ -532,48 +626,57 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
               <div>
                 <p className="text-sm text-muted-foreground">Perda Diária Máxima</p>
                 <p className="text-lg font-semibold text-foreground">
-                  ${subscription.max_daily_loss_usd.toFixed(2)}
+                  ${(currentState?.max_daily_loss_usd ?? getRiskValue('max_daily_loss_usd') ?? 0).toFixed(2)}
                 </p>
                 <div className="mt-2">
                   <div className="flex justify-between text-xs mb-1">
-                    <span className="text-muted-foreground">Perda Atual</span>
-                    <span className={subscription.current_daily_loss_usd > 0 ? 'text-danger' : 'text-muted-foreground'}>
-                      ${subscription.current_daily_loss_usd.toFixed(2)}
+                    <span className="text-muted-foreground">Perda Atual (Hoje)</span>
+                    <span className={(currentState?.today_loss_usd || 0) > 0 ? 'text-danger' : 'text-muted-foreground'}>
+                      ${(currentState?.today_loss_usd || 0).toFixed(2)}
                     </span>
                   </div>
                   <div className="w-full bg-secondary rounded-full h-2">
-                    <div
-                      className={`h-2 rounded-full transition-all ${
-                        subscription.current_daily_loss_usd / subscription.max_daily_loss_usd > 0.8
-                          ? 'bg-danger'
-                          : subscription.current_daily_loss_usd / subscription.max_daily_loss_usd > 0.5
-                          ? 'bg-warning'
-                          : 'bg-success'
-                      }`}
-                      style={{
-                        width: `${Math.min((subscription.current_daily_loss_usd / subscription.max_daily_loss_usd) * 100, 100)}%`
-                      }}
-                    ></div>
+                    {(() => {
+                      const maxLoss = currentState?.max_daily_loss_usd ?? getRiskValue('max_daily_loss_usd') ?? 1
+                      const todayLoss = currentState?.today_loss_usd || 0
+                      const ratio = maxLoss > 0 ? todayLoss / maxLoss : 0
+                      return (
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            ratio > 0.8 ? 'bg-danger' : ratio > 0.5 ? 'bg-warning' : 'bg-success'
+                          }`}
+                          style={{ width: `${Math.min(ratio * 100, 100)}%` }}
+                        ></div>
+                      )
+                    })()}
                   </div>
                 </div>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Posições Simultâneas</p>
                 <p className="text-lg font-semibold text-foreground">
-                  {subscription.current_positions} / {subscription.max_concurrent_positions}
+                  {currentState?.current_positions ?? getRiskValue('current_positions')} / {currentState?.max_concurrent_positions ?? getRiskValue('max_concurrent_positions')}
                 </p>
                 <div className="mt-2">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-muted-foreground">Utilização</span>
                     <span className="text-foreground">
-                      {((subscription.current_positions / subscription.max_concurrent_positions) * 100).toFixed(0)}%
+                      {(() => {
+                        const current = currentState?.current_positions ?? getRiskValue('current_positions')
+                        const max = currentState?.max_concurrent_positions ?? getRiskValue('max_concurrent_positions')
+                        return max > 0 ? ((current / max) * 100).toFixed(0) : '0'
+                      })()}%
                     </span>
                   </div>
                   <div className="w-full bg-secondary rounded-full h-2">
                     <div
                       className="bg-primary h-2 rounded-full transition-all"
                       style={{
-                        width: `${(subscription.current_positions / subscription.max_concurrent_positions) * 100}%`
+                        width: `${(() => {
+                          const current = currentState?.current_positions ?? getRiskValue('current_positions')
+                          const max = currentState?.max_concurrent_positions ?? getRiskValue('max_concurrent_positions')
+                          return max > 0 ? (current / max) * 100 : 0
+                        })()}%`
                       }}
                     ></div>
                   </div>
@@ -585,28 +688,55 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
           {/* Exchange Info */}
           <div className="bg-secondary/30 rounded-lg border border-border p-5">
             <h3 className="text-lg font-semibold mb-4 text-foreground">
-              Informações da Conta
+              Informacoes da Conta
             </h3>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              <div>
-                <p className="text-muted-foreground">Exchange</p>
-                <p className="font-semibold text-foreground capitalize">
-                  {subscription.exchange}
-                </p>
+            {/* Show different info depending on tab */}
+            {selectedExchangeTab === 'TOTAL' && hasMultipleExchanges ? (
+              // TOTAL view: Show all exchanges
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground mb-2">Exchanges ativas neste bot:</p>
+                <div className="flex flex-wrap gap-2">
+                  {exchanges.map((ex) => (
+                    <div
+                      key={ex.subscription_id}
+                      className="flex items-center gap-2 bg-secondary/50 rounded-lg px-3 py-2 border border-border"
+                    >
+                      <span className="font-semibold text-foreground">{ex.exchange.toUpperCase()}</span>
+                      <span className="text-muted-foreground text-sm">- {ex.account_name}</span>
+                      <Badge variant={ex.status === 'active' ? 'default' : 'secondary'} className="text-xs">
+                        {ex.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 pt-3 border-t border-border">
+                  <p className="text-sm text-muted-foreground">Mercado</p>
+                  <p className="font-semibold text-foreground capitalize">{subscription.market_type}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-muted-foreground">Conta</p>
-                <p className="font-semibold text-foreground">
-                  {subscription.account_name}
-                </p>
+            ) : (
+              // Single exchange view
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Exchange</p>
+                  <p className="font-semibold text-foreground capitalize">
+                    {getSelectedExchange()?.exchange || subscription.exchange}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Conta</p>
+                  <p className="font-semibold text-foreground">
+                    {getSelectedExchange()?.account_name || subscription.account_name}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Mercado</p>
+                  <p className="font-semibold text-foreground capitalize">
+                    {subscription.market_type}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-muted-foreground">Mercado</p>
-                <p className="font-semibold text-foreground capitalize">
-                  {subscription.market_type}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Timeline */}

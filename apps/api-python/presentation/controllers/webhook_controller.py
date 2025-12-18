@@ -233,8 +233,12 @@ def create_webhook_router() -> APIRouter:
 
             try:
                 # Buscar preço atual do símbolo
-                ticker = payload.get("ticker") or payload.get("symbol")
+                ticker_raw = payload.get("ticker") or payload.get("symbol")
                 action = payload.get("action", "").lower()
+
+                # Normalizar ticker: ETH-USDT -> ETHUSDT (Binance API format)
+                ticker = ticker_raw.replace("-", "").replace("/", "").upper() if ticker_raw else ""
+                logger.info("Ticker normalized", raw=ticker_raw, normalized=ticker)
 
                 # Normalizar action
                 if action in ["venda", "sell", "short"]:
@@ -244,11 +248,17 @@ def create_webhook_router() -> APIRouter:
 
                 # Buscar preço REAL do mercado
                 import aiohttp
+                price = 0
                 async with aiohttp.ClientSession() as session:
                     price_api = "https://fapi.binance.com/fapi/v1/ticker/price" if webhook.market_type == "futures" else "https://api.binance.com/api/v3/ticker/price"
                     async with session.get(f"{price_api}?symbol={ticker}") as resp:
                         price_data = await resp.json()
                         price = float(price_data.get("price", 0))
+                        logger.info("Price fetched", ticker=ticker, price=price, api_response=price_data)
+
+                # Proteção contra divisão por zero
+                if price <= 0:
+                    raise ValueError(f"Invalid price ({price}) for ticker {ticker}. API response: {price_data}")
 
                 # Calcular quantity usando trading parameters
                 margin_usd = float(webhook.default_margin_usd)
@@ -274,7 +284,7 @@ def create_webhook_router() -> APIRouter:
                         else:
                             quantity = raw_quantity
 
-                # Criar payload normalizado
+                # Criar payload normalizado com SL/TP
                 normalized_payload = {
                     "ticker": ticker,
                     "action": action,
@@ -283,6 +293,8 @@ def create_webhook_router() -> APIRouter:
                     "order_type": "market",
                     "leverage": leverage,
                     "margin_usd": margin_usd,
+                    "stop_loss_pct": float(webhook.default_stop_loss_pct),
+                    "take_profit_pct": float(webhook.default_take_profit_pct),
                 }
 
                 # Processar ordem (passando delivery_id para vinculação)

@@ -4,19 +4,25 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react'
-import { X, RotateCcw, Check, Palette } from 'lucide-react'
+import { X, RotateCcw, Check, Palette, Bell } from 'lucide-react'
 import {
   AnyIndicatorConfig,
   IndicatorType,
   INDICATOR_NAMES,
   INDICATOR_PRESETS
 } from '@/utils/indicators'
+import { IndicatorAlertConfigModal } from './IndicatorAlertConfigModal'
+
+// Indicators that support signal alerts
+const ALERTABLE_INDICATORS = ['NWENVELOPE', 'RSI', 'MACD', 'BB', 'STOCH', 'STOCHRSI']
 
 interface IndicatorSettingsModalProps {
   indicator: AnyIndicatorConfig | null
   isOpen: boolean
   onClose: () => void
   onSave: (indicator: AnyIndicatorConfig) => void
+  symbol?: string       // Optional: Current chart symbol for alerts
+  timeframe?: string    // Optional: Current chart timeframe for alerts
 }
 
 // Tipo local para edição (evita problemas de tipagem com união de params)
@@ -193,10 +199,14 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
   indicator,
   isOpen,
   onClose,
-  onSave
+  onSave,
+  symbol = 'BTCUSDT',
+  timeframe = '1h'
 }) => {
   // Estado local para edição
   const [localIndicator, setLocalIndicator] = useState<LocalIndicatorState | null>(null)
+  // Estado para modal de alertas
+  const [alertModalOpen, setAlertModalOpen] = useState(false)
 
   // Sincronizar estado local quando o indicador muda
   useEffect(() => {
@@ -463,13 +473,26 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-700 bg-gray-800/30">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-2 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
-          >
-            <RotateCcw className="w-4 h-4" />
-            Resetar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Resetar
+            </button>
+            {/* Alert Button - only for alertable indicators */}
+            {ALERTABLE_INDICATORS.includes(localIndicator.type) && (
+              <button
+                onClick={() => setAlertModalOpen(true)}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 border border-yellow-600/50 rounded-lg transition-colors"
+                title="Configurar alerta para este indicador"
+              >
+                <Bell className="w-4 h-4" />
+                Alertas
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
@@ -487,6 +510,18 @@ export const IndicatorSettingsModal: React.FC<IndicatorSettingsModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Alert Configuration Modal */}
+      {alertModalOpen && (
+        <IndicatorAlertConfigModal
+          isOpen={alertModalOpen}
+          onClose={() => setAlertModalOpen(false)}
+          indicatorType={localIndicator.type as any}
+          indicatorName={indicatorName}
+          symbol={symbol}
+          currentTimeframe={timeframe}
+        />
+      )}
     </div>
   )
 }

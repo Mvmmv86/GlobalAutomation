@@ -288,25 +288,75 @@ class OrderProcessor:
                     "error": f"Order type {order_data['order_type']} not yet supported",
                 }
 
+            # Buscar credenciais do primeiro usuário com conta Binance ativa
+            # NOTE: Este é um fallback para webhooks legados. Para multi-exchange use bot_broadcast_service
+            account = await transaction_db.fetchrow("""
+                SELECT api_key, secret_key
+                FROM exchange_accounts
+                WHERE exchange = 'binance' AND is_active = true
+                ORDER BY created_at
+                LIMIT 1
+            """)
+
+            if not account:
+                return {
+                    "success": False,
+                    "error": "No active Binance exchange account found",
+                }
+
+            # Criar connector dinâmico
+            from infrastructure.exchanges.binance_connector import BinanceConnector
+            connector = BinanceConnector(
+                api_key=account['api_key'],
+                api_secret=account['secret_key'],
+                testnet=False
+            )
+
             # Executar ordem de acordo com o market_type
             if market_type.lower() == "futures":
                 # Executar ordem no mercado de FUTURES
-                # Extrair leverage do payload original (nested dentro de _original_payload)
-                original_payload = order_data["raw_payload"].get("_original_payload", {})
-                leverage = original_payload.get("leverage", 1)
+                # Extrair leverage e SL/TP do payload
+                raw_payload = order_data.get("raw_payload", {})
+                leverage = raw_payload.get("leverage", 1)
+                entry_price = raw_payload.get("price", 0)
+                stop_loss_pct = raw_payload.get("stop_loss_pct", 0)
+                take_profit_pct = raw_payload.get("take_profit_pct", 0)
+                side = order_data["side"].upper()
 
-                logger.info(f"Creating FUTURES order: {order_data['symbol']} {order_data['side']} {order_data['quantity']} @ {leverage}x leverage")
-                result = await self.binance_connector.create_futures_order(
+                # Calcular preços de SL/TP baseado no percentual e direção
+                stop_loss_price = None
+                take_profit_price = None
+
+                if entry_price > 0 and stop_loss_pct > 0:
+                    if side == "BUY":
+                        # LONG: SL abaixo do preço, TP acima
+                        stop_loss_price = entry_price * (1 - stop_loss_pct / 100)
+                        if take_profit_pct > 0:
+                            take_profit_price = entry_price * (1 + take_profit_pct / 100)
+                    else:
+                        # SHORT: SL acima do preço, TP abaixo
+                        stop_loss_price = entry_price * (1 + stop_loss_pct / 100)
+                        if take_profit_pct > 0:
+                            take_profit_price = entry_price * (1 - take_profit_pct / 100)
+
+                logger.info(
+                    f"Creating FUTURES order: {order_data['symbol']} {side} {order_data['quantity']} @ {leverage}x",
+                    extra={"entry_price": entry_price, "stop_loss": stop_loss_price, "take_profit": take_profit_price}
+                )
+
+                result = await connector.create_futures_order(
                     symbol=order_data["symbol"],
-                    side=order_data["side"].upper(),
+                    side=side,
                     order_type="MARKET",
                     quantity=order_data["quantity"],
                     leverage=leverage,
+                    stop_loss=stop_loss_price,
+                    take_profit=take_profit_price,
                 )
             else:
                 # Executar ordem no mercado SPOT (padrão)
                 logger.info(f"Creating SPOT order: {order_data['symbol']} {order_data['side']} {order_data['quantity']}")
-                result = await self.binance_connector.create_market_order(
+                result = await connector.create_market_order(
                     symbol=order_data["symbol"],
                     side=order_data["side"],
                     quantity=order_data["quantity"],
@@ -440,7 +490,6 @@ class OrderProcessor:
 
 
 # Instância global do processador
-# NOTE: Desabilitado temporariamente - requer refatoração para buscar
-# credenciais da conta do usuário ao invés de usar connector global
-# order_processor = OrderProcessor()
-order_processor = None  # Será criado sob demanda quando necessário
+# NOTE: Este OrderProcessor é usado pelo sistema legado de webhooks.
+# Para multi-exchange, use o bot_broadcast_service.
+order_processor = OrderProcessor()

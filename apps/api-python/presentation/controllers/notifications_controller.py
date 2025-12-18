@@ -49,7 +49,8 @@ def get_user_id_from_request(request: Request) -> Optional[str]:
     token = auth_header.split(" ")[1]
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-        return payload.get("user_id")
+        # Support both 'sub' (standard) and 'user_id' (legacy) claims
+        return payload.get("sub") or payload.get("user_id")
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 
@@ -207,7 +208,7 @@ def create_notifications_router() -> APIRouter:
 
             # Validate type and category
             valid_types = ["success", "warning", "error", "info"]
-            valid_categories = ["order", "position", "system", "market", "bot", "price_alert"]
+            valid_categories = ["order", "position", "system", "market", "bot", "price_alert", "indicator"]
 
             if notification.type not in valid_types:
                 notification.type = "info"
@@ -570,6 +571,49 @@ class NotificationService:
             category="system",
             title=title,
             message=message
+        )
+
+    @staticmethod
+    async def notify_indicator_alert(
+        user_id: uuid_module.UUID,
+        symbol: str,
+        timeframe: str,
+        indicator_type: str,
+        signal_type: str,  # 'buy' or 'sell'
+        price: float,
+        alert_id: str
+    ):
+        """Notify user about an indicator alert trigger"""
+        signal_emoji = "📈" if signal_type.lower() == "buy" else "📉"
+        notification_type = "success" if signal_type.lower() == "buy" else "warning"
+
+        indicator_names = {
+            "nadaraya_watson": "NW Envelope",
+            "tpo": "TPO Market Profile",
+            "rsi": "RSI",
+            "macd": "MACD",
+            "bollinger": "Bollinger Bands",
+            "ema_cross": "EMA Cross",
+            "volume_profile": "Volume Profile"
+        }
+
+        indicator_name = indicator_names.get(indicator_type, indicator_type.upper())
+
+        return await NotificationService.create_notification(
+            user_id=user_id,
+            notification_type=notification_type,
+            category="indicator",
+            title=f"{signal_emoji} {indicator_name} Signal: {symbol}",
+            message=f"{signal_type.upper()} signal on {timeframe} at ${price:.2f}",
+            action_url=f"/trading?symbol={symbol}",
+            metadata={
+                "alert_id": alert_id,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "indicator_type": indicator_type,
+                "signal_type": signal_type,
+                "price": price
+            }
         )
 
 

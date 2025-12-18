@@ -83,3 +83,24 @@ apps/api-python/venv/
 **/__pycache__/
 *.pyc
 .claude/settings.local.json
+
+# Debug/test scripts (not for production)
+apps/api-python/check_*.py
+apps/api-python/test_*.py
+apps/api-python/debug_*.py
+apps/api-python/analise_*.py
+apps/api-python/audit_*.py
+apps/api-python/clean_*.py
+apps/api-python/cleanup_*.py
+apps/api-python/reset_*.py
+apps/api-python/get_users.py
+apps/api-python/inspect_schema.py
+apps/api-python/verify_migration.py
+apps/api-python/run_*_migration.py
+apps/api-python/run_positions_fix.py
+apps/api-python/security_audits/
+
+# Temporary/plan files
+PLAN_*.md
+SECURITY_AUDIT_*.md
+nul

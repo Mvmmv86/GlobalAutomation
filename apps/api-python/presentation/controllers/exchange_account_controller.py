@@ -8,11 +8,12 @@ import jwt
 import uuid as uuid_module
 
 from infrastructure.database.connection_transaction_mode import transaction_db
+import os
 
 logger = structlog.get_logger(__name__)
 
-# JWT Secret Key (should be in environment variable in production)
-JWT_SECRET_KEY = "trading_platform_secret_key_2024"
+# JWT Secret Key from environment
+JWT_SECRET_KEY = os.getenv("SECRET_KEY", "trading_platform_secret_key_2024")
 
 
 def get_user_id_from_request(request: Request) -> Optional[str]:
@@ -24,7 +25,8 @@ def get_user_id_from_request(request: Request) -> Optional[str]:
     token = auth_header.split(" ")[1]
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-        return payload.get("user_id")
+        # JWT uses "sub" as standard field for subject (user_id)
+        return payload.get("sub") or payload.get("user_id")
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 

@@ -1596,6 +1596,61 @@ class BinanceConnector:
             return {"success": False, "error": str(e)}
 
 
+    async def get_open_orders(self, symbol: str = None) -> Dict[str, Any]:
+        """
+        Get open orders for a symbol or all symbols
+
+        Args:
+            symbol: Trading pair (optional, if None returns all)
+
+        Returns:
+            Dict with open orders list
+        """
+        try:
+            if self.is_demo_mode():
+                return {
+                    "success": True,
+                    "demo": True,
+                    "orders": []
+                }
+
+            # Get futures open orders
+            if symbol:
+                orders = await asyncio.to_thread(
+                    self.client.futures_get_open_orders,
+                    symbol=symbol.upper()
+                )
+            else:
+                orders = await asyncio.to_thread(
+                    self.client.futures_get_open_orders
+                )
+
+            logger.info(f"📋 Found {len(orders)} open orders" + (f" for {symbol}" if symbol else ""))
+
+            return {
+                "success": True,
+                "demo": False,
+                "orders": orders
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting open orders: {e}")
+            return {"success": False, "error": str(e), "orders": []}
+
+    async def close(self):
+        """
+        Close connector and cleanup resources.
+        For Binance python-binance client, there's no explicit close needed,
+        but we implement this for interface compatibility with other connectors.
+        """
+        try:
+            # python-binance Client doesn't have explicit close
+            # Just log that we're done
+            logger.info("BinanceConnector closed (no cleanup needed)")
+        except Exception as e:
+            logger.warning(f"Error during BinanceConnector close: {e}")
+
+
 # Factory function para criar connector
 def create_binance_connector(
     api_key: str = None, api_secret: str = None, testnet: bool = True

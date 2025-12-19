@@ -355,13 +355,91 @@ else:
 async def root():
     """Root endpoint"""
     settings = get_settings()
+
+    # Extrair identificador do banco (para debug)
+    db_url = settings.database_url
+    # Pegar apenas o identificador do projeto Supabase (ex: zmdqmrugotfftxvrwdsd)
+    db_identifier = "unknown"
+    db_region = "unknown"
+    if "postgres." in db_url:
+        try:
+            db_identifier = db_url.split("postgres.")[1].split(":")[0]
+        except:
+            pass
+
+    if "us-east" in db_url:
+        db_region = "us-east-2 (DEV)"
+    elif "us-west" in db_url:
+        db_region = "us-west-2 (PROD)"
+
     return {
         "service": "TradingView Gateway API",
         "version": settings.version,
         "environment": settings.environment,
         "status": "healthy",
         "database": "asyncpg (pgBouncer transaction mode)",
+        "database_identifier": db_identifier,  # Para debug - mostra qual banco está conectado
+        "database_region": db_region,
+        "is_using_dev_db": db_identifier == "zmdqmrugotfftxvrwdsd",
+        "is_using_prod_db": db_identifier == "wqmqsanuegvzbmjtxzac",
         "admin_panel": "/dashboard-admin" if ADMIN_DIST_PATH.exists() else "not_available"
+    }
+
+
+@app.get("/debug/database-check")
+async def debug_database_check():
+    """
+    TEMPORÁRIO: Endpoint para debug - identificar qual banco está conectado
+    REMOVER APÓS RESOLVER O PROBLEMA!
+    """
+    import os
+    settings = get_settings()
+    db_url = settings.database_url
+
+    # Extrair identificadores (sem expor senha)
+    db_identifier = "unknown"
+    db_region = "unknown"
+
+    if "postgres." in db_url:
+        try:
+            db_identifier = db_url.split("postgres.")[1].split(":")[0]
+        except:
+            pass
+
+    if "us-east" in db_url:
+        db_region = "us-east-2 (DEV)"
+    elif "us-west" in db_url:
+        db_region = "us-west-2 (PROD)"
+
+    # Verificar variáveis de ambiente diretamente
+    raw_db_url = os.getenv("DATABASE_URL", "NOT_SET")
+    raw_env = os.getenv("ENV", "NOT_SET")
+
+    # Mascarar senha
+    masked_raw_url = "NOT_SET"
+    if raw_db_url != "NOT_SET":
+        try:
+            # postgresql+asyncpg://postgres.XXX:PASSWORD@host
+            parts = raw_db_url.split("@")
+            if len(parts) == 2:
+                user_pass = parts[0].split(":")
+                if len(user_pass) >= 3:
+                    masked_raw_url = f"{user_pass[0]}:{user_pass[1]}:****@{parts[1]}"
+                else:
+                    masked_raw_url = raw_db_url[:50] + "..."
+        except:
+            masked_raw_url = raw_db_url[:50] + "..."
+
+    return {
+        "CRITICAL_INFO": "🚨 SE is_dev=True EM PRODUÇÃO, HÁ UM PROBLEMA CRÍTICO!",
+        "database_identifier": db_identifier,
+        "database_region": db_region,
+        "is_dev": db_identifier == "zmdqmrugotfftxvrwdsd",
+        "is_prod": db_identifier == "wqmqsanuegvzbmjtxzac",
+        "settings_environment": settings.environment,
+        "os_ENV": raw_env,
+        "os_DATABASE_URL_masked": masked_raw_url,
+        "env_file_used": str(settings.model_config.get("env_file", "NOT_SET")),
     }
 
 

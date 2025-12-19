@@ -50,7 +50,7 @@ const PublicRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/dashboard" replace />
+    return <Navigate to="/admin" replace />
   }
 
   return <>{children}</>

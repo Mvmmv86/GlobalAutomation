@@ -43,9 +43,9 @@ export const LoginPage: React.FC = () => {
     try {
       console.log('🚀 Calling login function...')
       await login(data)
-      console.log('✅ Login successful, navigating to dashboard...')
-      // Redirect to dashboard after successful login
-      navigate('/dashboard')
+      console.log('✅ Login successful, navigating to admin...')
+      // Redirect to admin after successful login
+      navigate('/admin')
       console.log('🎯 Navigation to dashboard completed')
     } catch (err: any) {
       console.error('❌ Login form error:', err)

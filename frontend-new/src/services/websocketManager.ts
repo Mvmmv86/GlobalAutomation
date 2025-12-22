@@ -92,11 +92,23 @@ class WebSocketManager {
     this.lastConnectionTime = now
 
     // Generate WebSocket URL
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.hostname
-    const port = process.env.NODE_ENV === 'production' ? '' : ':8001'  // ✅ CORRIGIDO: 8000 → 8001
+    // Em produção, usar VITE_API_URL (backend). Em dev, usar localhost
+    const apiUrl = import.meta.env.VITE_API_URL
+    let wsUrl: string
+
+    if (apiUrl) {
+      // Produção: usar URL do backend da env var
+      const wsProtocol = apiUrl.startsWith('https:') ? 'wss:' : 'ws:'
+      const apiHost = apiUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+      wsUrl = `${wsProtocol}//${apiHost}/api/v1/ws/notifications`
+    } else {
+      // Dev: usar localhost com porta 8001
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      wsUrl = `${protocol}//${window.location.hostname}:8001/api/v1/ws/notifications`
+    }
+
     const clientId = `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-    this.currentUrl = `${protocol}//${host}${port}/api/v1/ws/notifications?user_id=${userId}&client_id=${clientId}`
+    this.currentUrl = `${wsUrl}?user_id=${userId}&client_id=${clientId}`
 
     logger.log('Connecting to WebSocket:', this.currentUrl)
 

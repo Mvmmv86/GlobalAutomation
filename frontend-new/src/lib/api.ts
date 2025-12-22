@@ -44,6 +44,12 @@ class ApiClient {
         const token = localStorage.getItem('accessToken')
         if (token) {
           config.headers.Authorization = `Bearer ${token}`
+          // Debug: log token being used (first 20 chars only for security)
+          if (import.meta.env.DEV) {
+            console.log(`[API] Request to ${config.url} with token: ${token.substring(0, 20)}...`)
+          }
+        } else {
+          console.warn(`[API] No token available for request to ${config.url}`)
         }
         return config
       },
@@ -58,36 +64,45 @@ class ApiClient {
 
         // Evitar loop infinito - se já tentou refresh, não tenta de novo
         if (error.response?.status === 401 && !originalRequest._retry) {
+          originalRequest._retry = true
+
           // Se já está fazendo refresh, adiciona à fila e aguarda
           if (this.isRefreshing) {
+            console.log('[API] Refresh in progress, adding request to queue:', originalRequest.url)
             return new Promise((resolve, reject) => {
               this.failedQueue.push({ resolve, reject })
             })
               .then((token) => {
+                console.log('[API] Queue resolved, retrying:', originalRequest.url)
                 originalRequest.headers.Authorization = `Bearer ${token}`
                 return this.instance.request(originalRequest)
               })
               .catch((err) => Promise.reject(err))
           }
 
-          originalRequest._retry = true
           this.isRefreshing = true
+          console.log('[API] Starting token refresh for:', originalRequest.url)
 
           try {
             await this.doRefreshToken()
             const newToken = localStorage.getItem('accessToken')
 
+            if (!newToken) {
+              throw new Error('No token after refresh')
+            }
+
+            console.log('[API] Token refresh successful, processing queue with', this.failedQueue.length, 'requests')
+
+            // Atualizar o header Authorization com o novo token ANTES de processar a fila
+            originalRequest.headers.Authorization = `Bearer ${newToken}`
+
             // Processar fila de requisições que estavam esperando
             this.processQueue(null, newToken)
-
-            // Atualizar o header Authorization com o novo token
-            if (newToken) {
-              originalRequest.headers.Authorization = `Bearer ${newToken}`
-            }
 
             // Retry original request with new token
             return this.instance.request(originalRequest)
           } catch (refreshError) {
+            console.error('[API] Token refresh failed:', refreshError)
             // Processar fila com erro
             this.processQueue(refreshError, null)
 
@@ -134,7 +149,6 @@ class ApiClient {
     } finally {
       // Reset mutex after refresh completes (success or failure)
       this.isRefreshing = false
-      this.refreshPromise = null
     }
   }
 

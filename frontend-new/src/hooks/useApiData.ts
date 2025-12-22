@@ -42,7 +42,7 @@ export const useDeleteExchangeAccount = () => {
 export const useWebhooks = () => {
   return useQuery({
     queryKey: ['webhooks'],
-    queryFn: webhookService.getWebhooks,
+    queryFn: () => webhookService.getWebhooks(),  // ✅ FIX: Wrapper function to avoid passing query context as status
     staleTime: 5 * 60 * 1000,
   })
 }

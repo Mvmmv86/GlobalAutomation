@@ -32,11 +32,11 @@ export default defineConfig(({ mode }) => {
     },
   },
   server: {
-    port: 3002,
+    port: 3001,
     host: true,
     strictPort: false,
     hmr: {
-      clientPort: 3002
+      clientPort: 3001
     },
     proxy: {
       '/auth': {

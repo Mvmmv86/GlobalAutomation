@@ -193,25 +193,73 @@ const BotsPage: React.FC = () => {
                     </div>
 
                     <div className="border rounded-lg p-3 space-y-2 text-xs bg-gray-50 dark:bg-gray-900">
-                      <p className="font-medium text-sm mb-2 text-gray-900 dark:text-white">Configurações Padrão:</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <p className="text-muted-foreground">Alavancagem</p>
-                          <p className="font-medium text-gray-900 dark:text-white">{bot.default_leverage}x</p>
+                      <p className="font-medium text-sm mb-2 text-gray-900 dark:text-white">
+                        {isSubscribed ? 'Suas Configurações:' : 'Configurações Padrão:'}
+                      </p>
+                      {/* Se inscrito com múltiplas exchanges, mostrar cada uma */}
+                      {isSubscribed && subscription?.exchanges && subscription.exchanges.length > 1 ? (
+                        <div className="space-y-3">
+                          {subscription.exchanges.map((ex) => (
+                            <div key={ex.subscription_id} className="border-t pt-2 first:border-t-0 first:pt-0">
+                              <p className="font-medium text-xs text-primary mb-1">{ex.exchange.toUpperCase()} - {ex.account_name}</p>
+                              <div className="grid grid-cols-4 gap-1 text-xs">
+                                <div>
+                                  <p className="text-muted-foreground text-[10px]">Alav.</p>
+                                  <p className="font-medium text-gray-900 dark:text-white">{ex.custom_leverage || bot.default_leverage}x</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground text-[10px]">Margem</p>
+                                  <p className="font-medium text-gray-900 dark:text-white">${ex.custom_margin_usd || bot.default_margin_usd}</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground text-[10px]">SL</p>
+                                  <p className="font-medium text-red-600">{ex.custom_stop_loss_pct || bot.default_stop_loss_pct}%</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground text-[10px]">TP</p>
+                                  <p className="font-medium text-green-600">{ex.custom_take_profit_pct || bot.default_take_profit_pct}%</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                        <div>
-                          <p className="text-muted-foreground">Margem</p>
-                          <p className="font-medium text-gray-900 dark:text-white">${bot.default_margin_usd}</p>
+                      ) : (
+                        /* Single exchange ou não inscrito - mostrar formato padrão */
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <p className="text-muted-foreground">Alavancagem</p>
+                            <p className="font-medium text-gray-900 dark:text-white">
+                              {isSubscribed && subscription?.exchanges?.[0]?.custom_leverage
+                                ? subscription.exchanges[0].custom_leverage
+                                : bot.default_leverage}x
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Margem</p>
+                            <p className="font-medium text-gray-900 dark:text-white">
+                              ${isSubscribed && subscription?.exchanges?.[0]?.custom_margin_usd
+                                ? subscription.exchanges[0].custom_margin_usd
+                                : bot.default_margin_usd}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Stop Loss</p>
+                            <p className="font-medium text-red-600">
+                              {isSubscribed && subscription?.exchanges?.[0]?.custom_stop_loss_pct
+                                ? subscription.exchanges[0].custom_stop_loss_pct
+                                : bot.default_stop_loss_pct}%
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Take Profit</p>
+                            <p className="font-medium text-green-600">
+                              {isSubscribed && subscription?.exchanges?.[0]?.custom_take_profit_pct
+                                ? subscription.exchanges[0].custom_take_profit_pct
+                                : bot.default_take_profit_pct}%
+                            </p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-muted-foreground">Stop Loss</p>
-                          <p className="font-medium text-red-600">{bot.default_stop_loss_pct}%</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Take Profit</p>
-                          <p className="font-medium text-green-600">{bot.default_take_profit_pct}%</p>
-                        </div>
-                      </div>
+                      )}
                     </div>
 
                     <div className="space-y-2">

@@ -40,6 +40,8 @@ from presentation.controllers.admin_controller import router as admin_router
 from presentation.controllers.chart_data_controller import router as chart_data_router
 from presentation.controllers.notifications_controller import create_notifications_router
 from presentation.controllers.indicator_alerts_controller import create_indicator_alerts_router
+# TODO: Re-enable after refactoring - strategy_controller depends on indicators module
+# from presentation.controllers.strategy_controller import router as strategy_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -48,6 +50,7 @@ from infrastructure.pricing.binance_price_service import BinancePriceService
 from infrastructure.cache import start_cache_cleanup_task
 from infrastructure.cache.candles_cache import start_candles_cache_cleanup
 from infrastructure.services.indicator_alert_monitor import get_indicator_alert_monitor
+from infrastructure.services.strategy_websocket_monitor import get_strategy_ws_monitor
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -128,6 +131,16 @@ async def lifespan(app: FastAPI):
             import traceback
             traceback.print_exc()
 
+        # Start Strategy WebSocket Monitor (real-time signal detection < 1s latency)
+        strategy_ws_monitor = None
+        print("🚀 [main.py] Starting Strategy WebSocket Monitor (real-time)...")
+        try:
+            strategy_ws_monitor = get_strategy_ws_monitor(transaction_db)
+            await strategy_ws_monitor.start()
+            print("🚀 [main.py] Strategy WebSocket Monitor started successfully!")
+        except Exception as e:
+            print(f"⚠️ [main.py] Strategy WebSocket Monitor not started (optional): {e}")
+
         yield
 
     finally:
@@ -140,6 +153,10 @@ async def lifespan(app: FastAPI):
 
         # Stop indicator alert monitor
         await indicator_alert_monitor.stop()
+
+        # Stop strategy WebSocket monitor
+        if strategy_ws_monitor:
+            await strategy_ws_monitor.stop()
 
         # Close connections
         await transaction_db.disconnect()
@@ -314,6 +331,8 @@ def create_app() -> FastAPI:
     app.include_router(chart_data_router)  # Chart data and WebSocket support
     app.include_router(create_notifications_router())  # Notifications CRUD endpoints
     app.include_router(create_indicator_alerts_router())  # Indicator Alerts CRUD endpoints
+    # TODO: Re-enable after refactoring
+    # app.include_router(strategy_router)  # Automated trading strategies
 
 
     return app

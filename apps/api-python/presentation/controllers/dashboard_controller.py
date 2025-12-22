@@ -303,6 +303,7 @@ def create_dashboard_router() -> APIRouter:
             futures_pnl = 0.0  # Unrealized P&L (open positions)
             spot_pnl = 0.0
             futures_realized_pnl = 0.0  # Realized P&L (closed positions today)
+            from_database = False  # Flag to indicate if data came from DB fallback
 
             try:
                 # main_account already fetched above for cache key
@@ -569,8 +570,40 @@ def create_dashboard_router() -> APIRouter:
                         logger.warning(f"⚠️ Error calculating realized P&L: {realized_err}")
 
             except Exception as e:
-                logger.error(f"Error getting real-time P&L: {e}")
-                # Fallback to database if API fails
+                logger.error(f"Error getting real-time data from exchange API: {e}")
+                # Fallback to database if API fails (IP whitelist, connection issues, etc.)
+                logger.info("📦 Falling back to cached balances from database...")
+
+                # Get cached balances from exchange_account_balances table
+                cached_balances = await transaction_db.fetch("""
+                    SELECT asset, account_type, total_balance, usd_value, free_balance, locked_balance
+                    FROM exchange_account_balances
+                    WHERE exchange_account_id = $1
+                    ORDER BY usd_value DESC
+                """, str(main_account['id']))
+
+                # Process cached balances
+                for bal in cached_balances:
+                    asset_data = {
+                        "asset": bal['asset'],
+                        "free": float(bal['free_balance'] or 0),
+                        "locked": float(bal['locked_balance'] or 0),
+                        "total": float(bal['total_balance'] or 0),
+                        "usd_value": float(bal['usd_value'] or 0),
+                        "exchange": main_account.get('name', 'Unknown')
+                    }
+
+                    if bal['account_type'] == 'FUTURES':
+                        futures_assets.append(asset_data)
+                        futures_balance += float(bal['usd_value'] or 0)
+                    else:  # SPOT
+                        spot_assets.append(asset_data)
+                        spot_balance += float(bal['usd_value'] or 0)
+
+                logger.info(f"📦 Loaded from DB: FUTURES=${futures_balance:.2f}, SPOT=${spot_balance:.2f}")
+                from_database = True  # Mark that data came from DB fallback
+
+                # Get P&L from positions table
                 positions_pnl = await transaction_db.fetchrow("""
                     SELECT
                         COALESCE(SUM(CASE WHEN ea.account_type IN ('FUTURES', 'LINEAR', 'UNIFIED')
@@ -617,10 +650,11 @@ def create_dashboard_router() -> APIRouter:
                        spot_assets_count=len(spot_assets),
                        total_pnl=futures_pnl + spot_pnl)
 
-            # Store in cache with 3s TTL (using exchange-specific cache key)
-            await cache.set(user_id, cache_key, result, ttl=3)
+            # Store in cache with 3s TTL (using exchange-specific cache key) - only if from real-time API
+            if not from_database:
+                await cache.set(user_id, cache_key, result, ttl=3)
 
-            return {"success": True, "data": result, "from_cache": False}
+            return {"success": True, "data": result, "from_cache": False, "from_database": from_database}
 
         except Exception as e:
             logger.error("Error getting balances summary", error=str(e), exc_info=True)
@@ -994,7 +1028,53 @@ def create_dashboard_router() -> APIRouter:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error getting SPOT balances: {e}", exc_info=True)
+            # Fallback to database if API fails (IP whitelist, connection issues)
+            logger.warning(f"Exchange API failed, falling back to database: {e}")
+
+            try:
+                # Get cached balances from database
+                cached_balances = await transaction_db.fetch("""
+                    SELECT asset, account_type, total_balance, usd_value, free_balance, locked_balance
+                    FROM exchange_account_balances
+                    WHERE exchange_account_id = $1 AND account_type = 'SPOT'
+                    ORDER BY usd_value DESC
+                """, exchange_account_id)
+
+                if cached_balances:
+                    spot_assets = []
+                    total_usd_value = 0.0
+
+                    for bal in cached_balances:
+                        usd_value = float(bal['usd_value'] or 0)
+                        total_usd_value += usd_value
+
+                        spot_assets.append({
+                            "asset": bal['asset'],
+                            "free": float(bal['free_balance'] or 0),
+                            "locked": float(bal['locked_balance'] or 0),
+                            "total": float(bal['total_balance'] or 0),
+                            "in_order": float(bal['locked_balance'] or 0),
+                            "usd_value": usd_value,
+                            "avg_buy_price": 0,
+                            "pnl": 0,
+                            "pnl_percent": 0
+                        })
+
+                    logger.info(f"📦 Loaded {len(spot_assets)} SPOT assets from DB cache")
+
+                    return {
+                        "success": True,
+                        "from_database": True,
+                        "data": {
+                            "exchange_account_id": exchange_account_id,
+                            "assets": spot_assets,
+                            "total_assets": len(spot_assets),
+                            "total_usd_value": total_usd_value
+                        }
+                    }
+            except Exception as db_error:
+                logger.error(f"Database fallback also failed: {db_error}")
+
             raise HTTPException(status_code=500, detail=f"Failed to get SPOT balances: {str(e)}")
 
     @router.get("/stats")

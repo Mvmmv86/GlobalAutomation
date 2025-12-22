@@ -13,7 +13,7 @@ function getBackendUrl(mode: string): string {
   }
 
   // Sempre usar localhost para desenvolvimento
-  return 'http://localhost:8000'
+  return 'http://localhost:8001'
 }
 
 console.log('🔧 Vite Config: Loading with environment variables')

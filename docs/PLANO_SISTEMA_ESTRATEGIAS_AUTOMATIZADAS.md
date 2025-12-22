@@ -1,7 +1,7 @@
 # Sistema de Estrategias Automatizadas
 
-**Ultima atualizacao:** 21/12/2024
-**Status:** Fase 1 (Backend) CONCLUIDA | Fase 2 (Frontend) PENDENTE
+**Ultima atualizacao:** 22/12/2024
+**Status:** Fase 1 (Backend) CONCLUIDA | Fase 2 (Frontend) CONCLUIDA
 
 ---
 
@@ -49,7 +49,7 @@ BINANCE WEBSOCKET (< 1s latencia)
 
 ---
 
-## O Que Foi Implementado (Fase 1 - Backend)
+## Fase 1 - Backend (CONCLUIDA)
 
 ### Tabelas no Supabase (5 tabelas criadas)
 - `strategies` - Configuracao geral (nome, simbolos, timeframe, bot_id)
@@ -58,17 +58,21 @@ BINANCE WEBSOCKET (< 1s latencia)
 - `strategy_signals` - Sinais gerados
 - `strategy_backtest_results` - Resultados de backtests
 
-### Arquivos Backend Criados/Modificados
+### Arquivos Backend
 
 | Arquivo | Status | Descricao |
 |---------|--------|-----------|
-| `infrastructure/exchanges/binance_websocket.py` | OK | WebSocket Binance (ja existia, corrigido) |
-| `infrastructure/services/strategy_websocket_monitor.py` | NOVO | Monitor real-time via WebSocket |
-| `infrastructure/services/strategy_engine_service.py` | OK | Engine com polling (backup) |
-| `infrastructure/services/indicator_alert_monitor.py` | OK | Calculos de indicadores (REUSADO) |
-| `infrastructure/database/models/strategy.py` | OK | Models SQLAlchemy |
-| `infrastructure/database/repositories/strategy.py` | OK | Repositories |
-| `main.py` | MODIFICADO | Inicializa WebSocket monitor |
+| `infrastructure/exchanges/binance_websocket.py` | ✅ OK | WebSocket Binance |
+| `infrastructure/services/strategy_websocket_monitor.py` | ✅ NOVO | Monitor real-time via WebSocket |
+| `infrastructure/services/strategy_engine_service.py` | ✅ OK | Engine com polling (backup) |
+| `infrastructure/services/indicator_alert_monitor.py` | ✅ OK | Calculos de indicadores (REUSADO) |
+| `infrastructure/services/strategy_service_sql.py` | ✅ NOVO | Service com transaction_db |
+| `infrastructure/database/repositories/strategy_sql.py` | ✅ NOVO | Repository SQL direto |
+| `presentation/controllers/strategy_controller.py` | ✅ NOVO | API REST completa |
+| `main.py` | ✅ MODIFICADO | Inicializa WebSocket monitor |
+
+### Nota sobre Arquitetura
+O plano original previa SQLAlchemy ORM, mas foi migrado para `transaction_db` (SQL direto via asyncpg) por compatibilidade com pgBouncer. Esta mudanca foi aprovada e nao afeta a funcionalidade.
 
 ### Principio de Nao Duplicacao
 Todos os calculos de indicadores sao feitos via `IndicatorAlertMonitor`:
@@ -82,9 +86,9 @@ Todos os calculos de indicadores sao feitos via `IndicatorAlertMonitor`:
 
 ---
 
-## O Que Falta Implementar (Fase 2 - Frontend Admin)
+## Fase 2 - Frontend Admin (CONCLUIDA)
 
-### 3 Modos de Configuracao
+### 3 Modos de Configuracao Implementados
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -95,6 +99,7 @@ Todos os calculos de indicadores sao feitos via `IndicatorAlertMonitor`:
 │   ┌────────────┐  ┌────────────┐  ┌────────────┐            │
 │   │  VISUAL    │  │   YAML     │  │ PINESCRIPT │            │
 │   │  EDITOR    │  │  EDITOR    │  │   MODE     │            │
+│   │    ✅      │  │    ✅      │  │    ✅      │            │
 │   └─────┬──────┘  └─────┬──────┘  └─────┬──────┘            │
 │         │               │               │                    │
 │         └───────────────┼───────────────┘                    │
@@ -106,46 +111,51 @@ Todos os calculos de indicadores sao feitos via `IndicatorAlertMonitor`:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Tarefas Pendentes
+### Tarefas Completadas
 
-| Tarefa | Prioridade | Descricao |
-|--------|------------|-----------|
-| Visual Editor | ALTA | Interface drag-and-drop para indicadores |
-| YAML Editor | ALTA | Monaco Editor com syntax highlighting |
-| YAML Parser | ALTA | Converte YAML para tabelas do banco |
-| Strategy CRUD API | ALTA | Endpoints REST para gerenciar estrategias |
-| PineScript Webhook | MEDIA | Endpoint para receber alertas TradingView |
-| Backtest UI | BAIXA | Interface para rodar e ver backtests |
+| Tarefa | Prioridade | Status | Arquivo |
+|--------|------------|--------|---------|
+| Visual Editor | ALTA | ✅ COMPLETO | `VisualEditor.tsx` |
+| YAML Editor | ALTA | ✅ COMPLETO | `YamlEditor.tsx` |
+| YAML Parser | ALTA | ✅ COMPLETO | Backend endpoint `/strategies/{id}/yaml` |
+| Strategy CRUD API | ALTA | ✅ COMPLETO | `strategy_controller.py` |
+| PineScript Webhook | MEDIA | ✅ COMPLETO | Endpoint `/pinescript-webhook` |
+| Backtest UI | BAIXA | ✅ COMPLETO | `BacktestPanel.tsx` |
 
-### Arquivos Frontend a Criar
+### Arquivos Frontend Criados
 
 ```
 frontend-admin/src/
-├── pages/
-│   └── StrategiesPage.tsx          # Pagina principal
-├── components/strategies/
-│   ├── StrategyList.tsx            # Lista de estrategias
-│   ├── StrategyEditor.tsx          # Editor principal
-│   ├── VisualEditor.tsx            # Modo visual
-│   ├── YamlEditor.tsx              # Modo YAML
-│   ├── IndicatorSelector.tsx       # Seletor de indicadores
-│   └── ConditionBuilder.tsx        # Builder de condicoes
+├── components/
+│   ├── pages/
+│   │   └── StrategiesPage.tsx        ✅ Pagina principal com grid de estrategias
+│   └── strategies/
+│       ├── IndicatorSelector.tsx     ✅ Seletor de indicadores com parametros
+│       ├── ConditionBuilder.tsx      ✅ Builder de condicoes entry/exit
+│       ├── VisualEditor.tsx          ✅ Editor visual com 3 abas
+│       ├── YamlEditor.tsx            ✅ Editor YAML com template e validacao
+│       ├── PineScriptMode.tsx        ✅ Interface webhook TradingView
+│       ├── CreateStrategyModal.tsx   ✅ Modal unificado com 3 modos
+│       └── BacktestPanel.tsx         ✅ Interface de backtest
 └── services/
-    └── strategyApi.ts              # API calls
+    └── strategyService.ts            ✅ API calls + tipos TypeScript
 ```
 
 ---
 
 ## Fluxo de Cada Modo
 
-### 1. Visual Editor
+### 1. Visual Editor ✅
 ```
-Admin seleciona indicadores → Define parametros → Define condicoes
-    → Salva → API grava em strategy_indicators + strategy_conditions
+Admin abre modal → Seleciona "Editor Visual"
+    → Aba 1: Nome, descricao, simbolos, timeframe
+    → Aba 2: Adiciona indicadores via IndicatorSelector
+    → Aba 3: Define condicoes via ConditionBuilder
+    → Salva → API grava em strategy + strategy_indicators + strategy_conditions
     → StrategyWebSocketMonitor detecta e comeca monitorar
 ```
 
-### 2. YAML Editor
+### 2. YAML Editor ✅
 ```yaml
 strategy:
   name: "NDY + RSI Strategy"
@@ -165,34 +175,150 @@ conditions:
       - { left: close, op: "<", right: nadaraya_watson.lower }
       - { left: rsi.value, op: "<", right: 30 }
 ```
-→ YAML Parser converte para tabelas do banco
+→ Admin cola/edita YAML → Clica "Aplicar YAML"
+→ Backend endpoint `/strategies/{id}/yaml` faz parse
+→ Converte para tabelas do banco automaticamente
 
-### 3. PineScript Mode
+### 3. PineScript Mode ✅
 ```
-Admin cola script PineScript → Define webhook URL
-    → TradingView envia alertas → Webhook receiver processa
-    → Chama bot_broadcast_service
+Admin abre modal → Seleciona "PineScript / TradingView"
+    → Sistema gera webhook URL e secret automatico
+    → Admin copia URL e JSON template
+    → Configura alerta no TradingView com webhook
+    → TradingView envia POST para /pinescript-webhook
+    → Backend valida secret, cria signal
+    → Se strategy tem bot_id, executa via bot_broadcast_service
+```
+
+**Webhook URL:** `https://globalautomation-tqu2m.ondigitalocean.app/api/v1/strategies/pinescript-webhook`
+
+**JSON Template para TradingView:**
+```json
+{
+  "secret": "{{webhook_secret}}",
+  "action": "{{strategy.order.action}}",
+  "ticker": "{{ticker}}",
+  "price": {{close}},
+  "quantity": {{strategy.order.contracts}},
+  "position_size": {{strategy.position_size}},
+  "comment": "{{strategy.order.comment}}"
+}
 ```
 
 ---
 
-## Como Testar o Backend
+## Endpoints API Implementados
 
-1. Criar estrategia diretamente no banco:
-```sql
-INSERT INTO strategies (name, symbols, timeframe, is_active, bot_id)
-VALUES ('Test NDY', '["BTCUSDT"]', '5m', true, 'uuid-do-bot');
+### Estrategias (CRUD)
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| GET | `/api/v1/strategies` | Listar estrategias com stats |
+| GET | `/api/v1/strategies/{id}` | Detalhes com indicadores e condicoes |
+| POST | `/api/v1/strategies` | Criar estrategia |
+| PUT | `/api/v1/strategies/{id}` | Atualizar estrategia |
+| DELETE | `/api/v1/strategies/{id}` | Excluir estrategia |
+| POST | `/api/v1/strategies/{id}/activate` | Ativar estrategia |
+| POST | `/api/v1/strategies/{id}/deactivate` | Desativar estrategia |
 
-INSERT INTO strategy_indicators (strategy_id, indicator_type, parameters)
-VALUES ('uuid-estrategia', 'nadaraya_watson', '{"bandwidth": 8, "mult": 3.0}');
+### Indicadores
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| POST | `/api/v1/strategies/{id}/indicators` | Adicionar indicador |
+| DELETE | `/api/v1/strategies/{id}/indicators/{ind_id}` | Remover indicador |
 
-INSERT INTO strategy_conditions (strategy_id, condition_type, conditions, logic_operator)
-VALUES ('uuid-estrategia', 'entry_long',
-  '[{"left": "close", "operator": "<", "right": "nadaraya_watson.lower"}]', 'AND');
+### Condicoes
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| POST | `/api/v1/strategies/{id}/conditions` | Adicionar condicao |
+| DELETE | `/api/v1/strategies/{id}/conditions/{cond_id}` | Remover condicao |
+
+### YAML
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| POST | `/api/v1/strategies/{id}/yaml` | Aplicar config YAML |
+| GET | `/api/v1/strategies/yaml-template` | Gerar template YAML |
+
+### Sinais
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| GET | `/api/v1/strategies/{id}/signals` | Listar sinais |
+
+### Backtest
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| GET | `/api/v1/strategies/{id}/backtest-results` | Listar resultados |
+| POST | `/api/v1/strategies/{id}/backtest` | Executar backtest |
+
+### PineScript Webhook
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| POST | `/api/v1/strategies/pinescript-webhook` | Receber alertas TradingView |
+
+### Engine
+| Metodo | Endpoint | Descricao |
+|--------|----------|-----------|
+| GET | `/api/v1/strategies/engine/status` | Status do engine |
+| POST | `/api/v1/strategies/engine/reload` | Recarregar estrategias |
+
+---
+
+## Indicadores Suportados
+
+| Indicador | Tipo | Parametros Padrao |
+|-----------|------|-------------------|
+| Nadaraya-Watson Envelope | `nadaraya_watson` | bandwidth: 8, mult: 3.0 |
+| RSI | `rsi` | period: 14, overbought: 70, oversold: 30 |
+| MACD | `macd` | fast: 12, slow: 26, signal: 9 |
+| EMA | `ema` | period: 20 |
+| Bollinger Bands | `bollinger` | period: 20, std_dev: 2 |
+| ATR | `atr` | period: 14 |
+| Volume Profile | `volume_profile` | lookback: 24 |
+
+---
+
+## Como Testar
+
+### 1. Via Interface Admin
+1. Acesse `https://globalautomation-frontend-g9gmr.ondigitalocean.app`
+2. Faca login como admin
+3. Va para menu "Estrategias"
+4. Clique "Criar Estrategia"
+5. Escolha um dos 3 modos e configure
+
+### 2. Via API Direta
+```bash
+# Criar estrategia
+curl -X POST https://globalautomation-tqu2m.ondigitalocean.app/api/v1/strategies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer {token}" \
+  -d '{
+    "name": "Test Strategy",
+    "symbols": ["BTCUSDT"],
+    "timeframe": "5m",
+    "config_type": "visual"
+  }'
+
+# Adicionar indicador
+curl -X POST https://globalautomation-tqu2m.ondigitalocean.app/api/v1/strategies/{id}/indicators \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer {token}" \
+  -d '{
+    "indicator_type": "nadaraya_watson",
+    "parameters": {"bandwidth": 8, "mult": 3.0}
+  }'
 ```
 
-2. Verificar logs do servidor para ver WebSocket conectando
-3. Esperar candle fechar e verificar se sinal foi gerado
+### 3. Testar Webhook PineScript
+```bash
+curl -X POST https://globalautomation-tqu2m.ondigitalocean.app/api/v1/strategies/pinescript-webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "secret": "ps_xxxxxxxxxxxxx",
+    "action": "buy",
+    "ticker": "BTCUSDT",
+    "price": 42000.50
+  }'
+```
 
 ---
 
@@ -200,6 +326,10 @@ VALUES ('uuid-estrategia', 'entry_long',
 
 | Data | Alteracao |
 |------|-----------|
+| 22/12/2024 | **FASE 2 CONCLUIDA** - Frontend Admin completo |
+| 22/12/2024 | Implementado PineScript webhook endpoint |
+| 22/12/2024 | Criados 7 componentes React para estrategias |
+| 22/12/2024 | Migrado backend para transaction_db (SQL direto) |
 | 21/12/2024 | Implementado StrategyWebSocketMonitor (< 1s latencia) |
 | 21/12/2024 | Removido codigo duplicado de indicadores |
 | 20/12/2024 | Criadas 5 tabelas no Supabase |
@@ -207,10 +337,19 @@ VALUES ('uuid-estrategia', 'entry_long',
 
 ---
 
-## Proximos Passos
+## Notas Importantes
 
-1. **Criar endpoints REST** para CRUD de estrategias (`/api/v1/strategies`)
-2. **Criar pagina no admin** para listar/criar estrategias
-3. **Implementar Visual Editor** com seletor de indicadores
-4. **Implementar YAML Parser** para converter YAML em tabelas
-5. **Testar fluxo completo** criando estrategia e verificando execucao
+1. **Bots existentes NAO foram afetados** - O sistema de estrategias e adicional
+2. **Compatibilidade pgBouncer** - Usa transaction_db (asyncpg) em vez de SQLAlchemy ORM
+3. **Backtest** - Interface pronta, mas usa simulacao (backend real precisaria dados historicos)
+4. **PineScript** - Webhook funcional, executa via bot_broadcast_service se strategy tem bot_id
+
+---
+
+## Proximos Passos Sugeridos (Futuro)
+
+1. [ ] Implementar backtest real com dados historicos da Binance
+2. [ ] Adicionar mais indicadores (Stochastic, Ichimoku, etc)
+3. [ ] Dashboard de performance das estrategias
+4. [ ] Alertas por email/telegram quando sinal e gerado
+5. [ ] Paper trading mode para testar sem risco

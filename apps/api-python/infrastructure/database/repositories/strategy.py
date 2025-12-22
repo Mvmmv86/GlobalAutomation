@@ -74,7 +74,8 @@ class StrategyRepository(BaseRepository[Strategy]):
         self,
         skip: int = 0,
         limit: int = 100,
-        is_active: Optional[bool] = None
+        is_active: Optional[bool] = None,
+        user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Get strategies with signal statistics"""
         query = select(Strategy).options(
@@ -83,6 +84,9 @@ class StrategyRepository(BaseRepository[Strategy]):
 
         if is_active is not None:
             query = query.where(Strategy.is_active == is_active)
+
+        if user_id is not None:
+            query = query.where(Strategy.created_by == user_id)
 
         query = query.order_by(Strategy.created_at.desc()).offset(skip).limit(limit)
 

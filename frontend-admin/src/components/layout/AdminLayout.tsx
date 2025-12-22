@@ -13,7 +13,8 @@ import {
   Settings,
   LogOut,
   Menu,
-  X
+  X,
+  BarChart3
 } from 'lucide-react'
 import { Button } from '@/components/atoms/Button'
 import { useAuth } from '@/contexts/AuthContext'
@@ -33,8 +34,9 @@ const navItems: NavItem[] = [
   { label: 'Clientes', path: '/admin/users', icon: <Users className="w-5 h-5" /> },
   { label: 'Exchanges', path: '/admin/exchanges', icon: <Building2 className="w-5 h-5" /> },
   { label: 'Bots', path: '/admin/bots', icon: <Bot className="w-5 h-5" /> },
+  { label: 'Estrategias', path: '/admin/strategies', icon: <BarChart3 className="w-5 h-5" /> },
   { label: 'Webhooks', path: '/admin/webhooks', icon: <Webhook className="w-5 h-5" /> },
-  { label: 'Configurações', path: '/admin/settings', icon: <Settings className="w-5 h-5" /> },
+  { label: 'Configuracoes', path: '/admin/settings', icon: <Settings className="w-5 h-5" /> },
 ]
 
 export function AdminLayout({ children }: AdminLayoutProps) {

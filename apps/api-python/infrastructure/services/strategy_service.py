@@ -139,9 +139,9 @@ class StrategyService:
         """
         return await self._strategy_repo.get_strategies_with_stats(
             user_id=user_id,
-            active_only=active_only,
+            is_active=True if active_only else None,
             limit=limit,
-            offset=offset
+            skip=offset
         )
 
     async def update_strategy(

@@ -40,8 +40,7 @@ from presentation.controllers.admin_controller import router as admin_router
 from presentation.controllers.chart_data_controller import router as chart_data_router
 from presentation.controllers.notifications_controller import create_notifications_router
 from presentation.controllers.indicator_alerts_controller import create_indicator_alerts_router
-# TODO: Re-enable after refactoring - strategy_controller depends on indicators module
-# from presentation.controllers.strategy_controller import router as strategy_router
+from presentation.controllers.strategy_controller import router as strategy_router
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -331,8 +330,7 @@ def create_app() -> FastAPI:
     app.include_router(chart_data_router)  # Chart data and WebSocket support
     app.include_router(create_notifications_router())  # Notifications CRUD endpoints
     app.include_router(create_indicator_alerts_router())  # Indicator Alerts CRUD endpoints
-    # TODO: Re-enable after refactoring
-    # app.include_router(strategy_router)  # Automated trading strategies
+    app.include_router(strategy_router)  # Automated trading strategies
 
 
     return app

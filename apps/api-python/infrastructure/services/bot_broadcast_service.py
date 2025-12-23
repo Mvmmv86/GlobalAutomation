@@ -335,18 +335,7 @@ class BotBroadcastService:
             quantity = (margin_usd * Decimal(str(leverage))) / price
             quantity = float(quantity)
 
-            # 6. Set leverage on exchange
-            if subscription["market_type"] == "futures":
-                await connector.set_leverage(ticker, leverage)
-
-            # 7. Execute order based on action
-            order_result = None
-            sl_order_id = None
-            tp_order_id = None
-            sl_price = None
-            tp_price = None
-
-            # BingX: Detectar position_mode automaticamente da API (não do banco)
+            # 6. Detectar position_mode ANTES de set_leverage (necessário para BingX One-Way Mode)
             position_side = None
             if exchange == "bingx":
                 # Detectar modo da conta diretamente da BingX API
@@ -372,6 +361,21 @@ class BotBroadcastService:
                     f"BingX position_mode={position_mode} (detectado da API), position_side={position_side}",
                     user_id=str(user_id)
                 )
+
+            # 7. Set leverage on exchange (com position_side correto para BingX)
+            if subscription["market_type"] == "futures":
+                if exchange == "bingx" and position_side:
+                    # BingX: passar position_side para set_leverage
+                    await connector.set_leverage(ticker, leverage, position_side)
+                else:
+                    await connector.set_leverage(ticker, leverage)
+
+            # 8. Execute order based on action
+            order_result = None
+            sl_order_id = None
+            tp_order_id = None
+            sl_price = None
+            tp_price = None
 
             if action.lower() in ["buy", "sell"]:
                 # ================================================================

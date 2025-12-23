@@ -680,10 +680,12 @@ class BingXConnector:
             
             if result.get("code") == 0:
                 order_data = result.get("data", {})
+                # FIX: Evitar str(None) -> "None" string
+                order_id = order_data.get("orderId")
                 return {
                     "success": True,
                     "demo": False,
-                    "order_id": str(order_data.get("orderId")),
+                    "order_id": str(order_id) if order_id else None,
                     "symbol": symbol,
                     "side": side,
                     "type": "MARKET",
@@ -911,10 +913,12 @@ class BingXConnector:
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
+                # FIX: Evitar str(None) -> "None" string
+                order_id = order_data.get("orderId")
                 return {
                     "success": True,
                     "demo": False,
-                    "order_id": str(order_data.get("orderId")),
+                    "order_id": str(order_id) if order_id else None,
                     "symbol": symbol,
                     "side": side,
                     "type": order_type,
@@ -941,10 +945,12 @@ class BingXConnector:
                     if retry_result.get("code") == 0:
                         order_data = retry_result.get("data", {})
                         logger.info(f"✅ BingX ordem criada com sucesso após fallback para One-Way Mode")
+                        # FIX: Evitar str(None) -> "None" string
+                        order_id = order_data.get("orderId")
                         return {
                             "success": True,
                             "demo": False,
-                            "order_id": str(order_data.get("orderId")),
+                            "order_id": str(order_id) if order_id else None,
                             "symbol": symbol,
                             "side": side,
                             "type": order_type,
@@ -1594,10 +1600,12 @@ class BingXConnector:
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
+                # FIX: Evitar str(None) -> "None" string
+                order_id = order_data.get("orderId")
                 return {
                     "success": True,
                     "demo": False,
-                    "order_id": str(order_data.get("orderId")),
+                    "order_id": str(order_id) if order_id else None,
                     "symbol": symbol,
                     "side": side,
                     "type": "LIMIT",
@@ -1766,10 +1774,12 @@ class BingXConnector:
 
             if result.get("code") == 0:
                 order_data = result.get("data", {})
+                # FIX: Evitar str(None) -> "None" string
+                fetched_order_id = order_data.get("orderId")
                 return {
                     "success": True,
                     "demo": False,
-                    "order_id": str(order_data.get("orderId")),
+                    "order_id": str(fetched_order_id) if fetched_order_id else None,
                     "symbol": symbol,
                     "status": order_data.get("status"),
                     "side": order_data.get("side"),

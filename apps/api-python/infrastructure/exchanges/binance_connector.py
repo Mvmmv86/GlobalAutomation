@@ -1063,11 +1063,12 @@ class BinanceConnector:
             )
 
             logger.info(f"✅ SPOT order created successfully: {order_result.get('orderId')}")
-
+            # FIX: Evitar str(None) -> "None" string
+            order_id = order_result.get('orderId')
             return {
                 "success": True,
                 "data": order_result,
-                "order_id": str(order_result.get('orderId')),
+                "order_id": str(order_id) if order_id else None,
                 "demo": False
             }
 
@@ -1206,10 +1207,12 @@ class BinanceConnector:
                     logger.warning(f"⚠️ Failed to create Take Profit: {tp_error}")
 
             # Retornar IDs de todas as ordens
+            # FIX: Evitar str(None) -> "None" string
+            main_order_id = order_result.get('orderId')
             return {
                 "success": True,
                 "data": order_result,
-                "order_id": str(order_result.get('orderId')),
+                "order_id": str(main_order_id) if main_order_id else None,
                 "stop_loss_order_id": sl_order_id,  # ✅ NOVO: ID do Stop Loss
                 "take_profit_order_id": tp_order_id,  # ✅ NOVO: ID do Take Profit
                 "demo": False
@@ -1267,11 +1270,13 @@ class BinanceConnector:
             )
 
             logger.info(f"✅ Stop Loss order created: {result.get('orderId')}")
-
+            # FIX: Evitar str(None) -> "None" string
+            sl_order_id = result.get('orderId')
             return {
                 "success": True,
                 "demo": False,
-                "orderId": str(result.get('orderId')),
+                "orderId": str(sl_order_id) if sl_order_id else None,
+                "order_id": str(sl_order_id) if sl_order_id else None,
                 "symbol": symbol,
                 "stopPrice": stop_price
             }
@@ -1328,11 +1333,13 @@ class BinanceConnector:
             )
 
             logger.info(f"✅ Take Profit order created: {result.get('orderId')}")
-
+            # FIX: Evitar str(None) -> "None" string
+            tp_order_id = result.get('orderId')
             return {
                 "success": True,
                 "demo": False,
-                "orderId": str(result.get('orderId')),
+                "orderId": str(tp_order_id) if tp_order_id else None,
+                "order_id": str(tp_order_id) if tp_order_id else None,
                 "symbol": symbol,
                 "stopPrice": stop_price
             }

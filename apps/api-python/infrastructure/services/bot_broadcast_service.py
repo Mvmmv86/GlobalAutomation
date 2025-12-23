@@ -346,18 +346,30 @@ class BotBroadcastService:
             sl_price = None
             tp_price = None
 
-            # BingX: Calcular position_side baseado no modo da conta (Hedge/One-Way)
+            # BingX: Detectar position_mode automaticamente da API (não do banco)
             position_side = None
             if exchange == "bingx":
-                position_mode = subscription.get("position_mode", "hedge")
-                if position_mode == "hedge":
+                # Detectar modo da conta diretamente da BingX API
+                try:
+                    position_mode_result = await connector.get_position_mode()
+                    is_hedge_mode = position_mode_result.get("dualSidePosition", True)
+                    position_mode = "hedge" if is_hedge_mode else "one-way"
+                except Exception as e:
+                    logger.warning(
+                        f"Falha ao detectar position_mode da BingX, usando default 'hedge': {e}",
+                        user_id=str(user_id)
+                    )
+                    position_mode = "hedge"
+                    is_hedge_mode = True
+
+                if is_hedge_mode:
                     # Hedge Mode: LONG para BUY, SHORT para SELL
                     position_side = "LONG" if action.lower() == "buy" else "SHORT"
                 else:
                     # One-Way Mode: usar BOTH
                     position_side = "BOTH"
                 logger.info(
-                    f"BingX position_mode={position_mode}, position_side={position_side}",
+                    f"BingX position_mode={position_mode} (detectado da API), position_side={position_side}",
                     user_id=str(user_id)
                 )
 

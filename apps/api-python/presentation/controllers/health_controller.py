@@ -135,34 +135,26 @@ def create_health_router() -> APIRouter:
     @router.get("/whitelist-ips")
     async def get_whitelist_ips():
         """
-        Get FIXED list of IPs for exchange API key whitelisting
+        Get FIXED IP for exchange API key whitelisting
 
-        Similar to Insilico Terminal, this provides a fixed list of IPs
-        that clients should add to their Binance/Bybit API key whitelist.
-
-        These IPs represent all possible server IPs (current + backups).
+        Returns the fixed Droplet IP that clients should add to their
+        Binance/Bybit/BingX API key whitelist.
         """
-        # Fixed list of IPs from our infrastructure
-        # Includes current + historical IPs to prevent breaking if IP changes
+        # IP fixo do Droplet Digital Ocean
         fixed_ips = [
-            "157.230.254.126",  # Digital Ocean production (current - Oct 26, 2025)
-            "178.128.19.69",    # Digital Ocean production (previous)
-            "159.223.46.195",   # Singapore primary
-            "143.198.80.231",   # Singapore backup
-            "134.199.194.84",   # USA backup 1
-            "129.212.187.46",   # USA backup 2
-            "134.199.195.235",  # USA backup 3
+            "167.71.14.195",  # Digital Ocean Droplet (IP fixo permanente)
         ]
 
         return {
             "success": True,
             "ips": fixed_ips,
             "count": len(fixed_ips),
-            "message": "Add ALL these IPs to your exchange API key whitelist (separated by commas or spaces)",
+            "message": "Adicione este IP na whitelist da sua API Key na exchange",
             "instructions": {
-                "binance": "Go to Binance → API Management → Edit Key → Restrict access to trusted IPs only → Paste all IPs separated by spaces",
-                "bybit": "Go to Bybit → API Management → Edit Key → IP restriction → Paste all IPs separated by commas",
-                "tip": "Whitelisting ALL IPs ensures your connection works even if our server IP changes"
+                "binance": "Binance → API Management → Edit Key → Restrict access to trusted IPs only → Cole o IP",
+                "bybit": "Bybit → API Management → Edit Key → IP restriction → Cole o IP",
+                "bingx": "BingX → API Management → Edit → IP Whitelist → Cole o IP",
+                "tip": "Este IP é fixo e não muda. Configure uma vez e pronto!"
             }
         }
 

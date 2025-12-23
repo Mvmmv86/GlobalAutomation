@@ -560,14 +560,27 @@ class BotBroadcastService:
                 "reason": f"Daily loss limit reached: ${current_loss:.2f} >= ${max_loss:.2f}"
             }
 
-        # Check concurrent positions limit
-        current_positions = subscription.get("current_positions", 0)
+        # Check concurrent positions limit - CALCULATE IN REAL-TIME from bot_trades
         max_positions = subscription.get("max_concurrent_positions", 999)
+
+        # Query real open trades count from bot_trades table
+        current_positions = await self.db.fetchval("""
+            SELECT COUNT(*) FROM bot_trades
+            WHERE subscription_id = $1
+              AND status = 'open'
+        """, subscription["subscription_id"])
+
+        logger.info(
+            "Risk check - concurrent positions",
+            subscription_id=str(subscription["subscription_id"]),
+            current_positions=current_positions,
+            max_positions=max_positions
+        )
 
         if current_positions >= max_positions:
             return {
                 "allowed": False,
-                "reason": f"Max concurrent positions reached: {current_positions} >= {max_positions}"
+                "reason": f"Max concurrent positions reached: {current_positions}/{max_positions}"
             }
 
         return {"allowed": True}

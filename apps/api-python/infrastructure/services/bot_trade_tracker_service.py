@@ -405,6 +405,150 @@ class BotTradeTrackerService:
             )
             return {"success": False, "error": str(e)}
 
+    async def sync_position_counters(self) -> Dict:
+        """
+        Synchronize current_positions counters with actual open positions.
+
+        This method:
+        1. Closes ghost trades in bot_trades that have no corresponding position in exchange
+        2. Recalculates current_positions for each subscription
+
+        Should be called periodically to fix any drift in counters.
+
+        Returns:
+            Dict with sync results
+        """
+        try:
+            logger.debug("🔄 Starting position counter sync...")
+
+            # ============================================================
+            # STEP 1: Close ghost trades in bot_trades table
+            # Ghost trades = open in bot_trades but no matching position in exchange
+            # ============================================================
+            ghost_trades_closed = await self._close_ghost_bot_trades()
+
+            # ============================================================
+            # STEP 2: Update subscription counters based on bot_trades
+            # ============================================================
+            # Get all active subscriptions with their current counter
+            subscriptions = await self.db.fetch("""
+                SELECT bs.id, bs.current_positions, bs.exchange_account_id, b.name as bot_name
+                FROM bot_subscriptions bs
+                JOIN bots b ON b.id = bs.bot_id
+                WHERE bs.status = 'active'
+            """)
+
+            updated_count = 0
+            corrections = []
+
+            for sub in subscriptions:
+                subscription_id = sub["id"]
+                current_counter = sub["current_positions"] or 0
+                bot_name = sub["bot_name"]
+
+                # Count ACTUAL open trades in bot_trades table for this subscription
+                actual_open = await self.db.fetchval("""
+                    SELECT COUNT(*)
+                    FROM bot_trades
+                    WHERE subscription_id = $1
+                      AND status = 'open'
+                """, subscription_id)
+
+                actual_open = actual_open or 0
+
+                # Update if different
+                if current_counter != actual_open:
+                    await self.db.execute("""
+                        UPDATE bot_subscriptions
+                        SET current_positions = $1,
+                            updated_at = NOW()
+                        WHERE id = $2
+                    """, actual_open, subscription_id)
+
+                    updated_count += 1
+                    corrections.append({
+                        "subscription_id": str(subscription_id),
+                        "bot_name": bot_name,
+                        "old_value": current_counter,
+                        "new_value": actual_open
+                    })
+
+                    logger.info(
+                        f"📊 Corrected {bot_name}: {current_counter} -> {actual_open}"
+                    )
+
+            if updated_count > 0 or ghost_trades_closed > 0:
+                logger.info(
+                    f"✅ Position counter sync: {updated_count} counter corrections, {ghost_trades_closed} ghost trades closed",
+                    updated_count=updated_count,
+                    ghost_trades_closed=ghost_trades_closed
+                )
+
+            return {
+                "success": True,
+                "total_subscriptions": len(subscriptions),
+                "updated_count": updated_count,
+                "ghost_trades_closed": ghost_trades_closed,
+                "corrections": corrections
+            }
+
+        except Exception as e:
+            logger.error(
+                "Failed to sync position counters",
+                error=str(e),
+                exc_info=True
+            )
+            return {"success": False, "error": str(e)}
+
+    async def _close_ghost_bot_trades(self) -> int:
+        """
+        Close ghost bot_trades that have no corresponding open position in the exchange.
+
+        A ghost trade is one marked as 'open' in bot_trades but:
+        - Has no matching position in the positions table for the same symbol/account
+
+        Returns:
+            Number of ghost trades closed
+        """
+        try:
+            # Find all open bot_trades that don't have a matching open position
+            ghost_trades = await self.db.fetch("""
+                SELECT bt.id, bt.symbol, bt.side, bs.exchange_account_id, b.name as bot_name
+                FROM bot_trades bt
+                JOIN bot_subscriptions bs ON bs.id = bt.subscription_id
+                JOIN bots b ON b.id = bs.bot_id
+                WHERE bt.status = 'open'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM positions p
+                      WHERE p.exchange_account_id = bs.exchange_account_id
+                        AND UPPER(p.symbol) = UPPER(bt.symbol)
+                        AND p.status = 'open'
+                  )
+            """)
+
+            if not ghost_trades:
+                return 0
+
+            closed_count = 0
+            for trade in ghost_trades:
+                await self.db.execute("""
+                    UPDATE bot_trades
+                    SET status = 'closed',
+                        exit_reason = 'ghost_cleanup_sync',
+                        updated_at = NOW()
+                    WHERE id = $1
+                """, trade["id"])
+                closed_count += 1
+                logger.info(
+                    f"👻 Closed ghost trade: {trade['bot_name']} - {trade['symbol']} {trade['side']}"
+                )
+
+            return closed_count
+
+        except Exception as e:
+            logger.error(f"Error closing ghost bot trades: {e}")
+            return 0
+
     async def generate_daily_snapshots(self):
         """
         Generate daily P&L snapshots for all active subscriptions

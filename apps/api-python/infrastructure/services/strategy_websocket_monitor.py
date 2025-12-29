@@ -51,6 +51,34 @@ except ImportError:
     NUMPY_AVAILABLE = False
     np = None
 
+# Lazy import for modular indicators
+MODULAR_INDICATORS_AVAILABLE = False
+TPOCalculator = None
+StochasticCalculator = None
+StochasticRSICalculator = None
+SuperTrendCalculator = None
+ADXCalculator = None
+VWAPCalculator = None
+IchimokuCalculator = None
+OBVCalculator = None
+Candle = None
+
+try:
+    from infrastructure.indicators import (
+        Candle,
+    )
+    from infrastructure.indicators.tpo import TPOCalculator
+    from infrastructure.indicators.stochastic import StochasticCalculator
+    from infrastructure.indicators.stochastic_rsi import StochasticRSICalculator
+    from infrastructure.indicators.supertrend import SuperTrendCalculator
+    from infrastructure.indicators.adx import ADXCalculator
+    from infrastructure.indicators.vwap import VWAPCalculator
+    from infrastructure.indicators.ichimoku import IchimokuCalculator
+    from infrastructure.indicators.obv import OBVCalculator
+    MODULAR_INDICATORS_AVAILABLE = True
+except ImportError as e:
+    pass  # Modular indicators optional
+
 logger = structlog.get_logger(__name__)
 
 
@@ -110,8 +138,14 @@ class StrategyWebSocketMonitor:
         await monitor.stop()
     """
 
+    # Supported indicator types
+    # - Basic indicators: nadaraya_watson, rsi, macd, bollinger, ema_cross
+    # - Modular indicators: tpo, stochastic, stochastic_rsi, supertrend, adx, vwap, ichimoku, obv
     SUPPORTED_INDICATORS = [
-        'nadaraya_watson', 'rsi', 'macd', 'bollinger', 'ema_cross', 'tpo'
+        # Basic indicators
+        'nadaraya_watson', 'rsi', 'macd', 'bollinger', 'ema_cross',
+        # Modular indicators (require infrastructure.indicators package)
+        'tpo', 'stochastic', 'stochastic_rsi', 'supertrend', 'adx', 'vwap', 'ichimoku', 'obv'
     ]
 
     def __init__(self, db_pool):
@@ -491,12 +525,163 @@ class StrategyWebSocketMonitor:
                             'value': signal.get('indicator_value'),
                             'signal': signal.get('type')
                         }
+                    else:
+                        result = self._get_ema_cross_values(closes, params)
+
+                # ========== MODULAR INDICATORS ==========
+                # These use the Calculator classes from infrastructure.indicators
+
+                elif ind_type == 'tpo' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = TPOCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'poc': float(ind_result.values.get('poc', 0)),
+                            'vah': float(ind_result.values.get('vah', 0)),
+                            'val': float(ind_result.values.get('val', 0)),
+                            'signal': int(ind_result.values.get('signal', 0))
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"TPO calc error: {calc_err}")
+
+                elif ind_type == 'stochastic' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = StochasticCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'k': float(ind_result.values.get('k', 0)),
+                            'd': float(ind_result.values.get('d', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"Stochastic calc error: {calc_err}")
+
+                elif ind_type == 'stochastic_rsi' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = StochasticRSICalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'k': float(ind_result.values.get('k', 0)),
+                            'd': float(ind_result.values.get('d', 0)),
+                            'rsi': float(ind_result.values.get('rsi', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"StochasticRSI calc error: {calc_err}")
+
+                elif ind_type == 'supertrend' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = SuperTrendCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'value': float(ind_result.values.get('value', 0)),
+                            'trend': trend_val,
+                            'upper': float(ind_result.values.get('upper', 0)),
+                            'lower': float(ind_result.values.get('lower', 0)),
+                            'signal': 'buy' if trend_val == 1 else ('sell' if trend_val == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"SuperTrend calc error: {calc_err}")
+
+                elif ind_type == 'adx' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = ADXCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'adx': float(ind_result.values.get('adx', 0)),
+                            'plus_di': float(ind_result.values.get('plus_di', 0)),
+                            'minus_di': float(ind_result.values.get('minus_di', 0)),
+                            'trend_strength': int(ind_result.values.get('trend_strength', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"ADX calc error: {calc_err}")
+
+                elif ind_type == 'vwap' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = VWAPCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'vwap': float(ind_result.values.get('vwap', 0)),
+                            'upper_band': float(ind_result.values.get('upper_band', 0)),
+                            'lower_band': float(ind_result.values.get('lower_band', 0)),
+                            'deviation': float(ind_result.values.get('deviation', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"VWAP calc error: {calc_err}")
+
+                elif ind_type == 'ichimoku' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = IchimokuCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'tenkan': float(ind_result.values.get('tenkan', 0)),
+                            'kijun': float(ind_result.values.get('kijun', 0)),
+                            'senkou_a': float(ind_result.values.get('senkou_a', 0)),
+                            'senkou_b': float(ind_result.values.get('senkou_b', 0)),
+                            'cloud_top': float(ind_result.values.get('cloud_top', 0)),
+                            'cloud_bottom': float(ind_result.values.get('cloud_bottom', 0)),
+                            'trend': trend_val,
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"Ichimoku calc error: {calc_err}")
+
+                elif ind_type == 'obv' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = self._build_candle_list(candles)
+                        calc = OBVCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'obv': float(ind_result.values.get('obv', 0)),
+                            'obv_sma': float(ind_result.values.get('obv_sma', 0)),
+                            'obv_normalized': float(ind_result.values.get('obv_normalized', 50)),
+                            'trend': trend_val,
+                            'divergence': int(ind_result.values.get('divergence', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"OBV calc error: {calc_err}")
 
                 if result:
                     state.latest_indicators[symbol][ind_type] = result
+                    logger.debug(f"Calculated {ind_type}", symbol=symbol, result=result)
 
             except Exception as e:
                 logger.error(f"Error calculating {ind_type}: {e}", symbol=symbol)
+
+    def _build_candle_list(self, candles: List[Dict]) -> List:
+        """Build Candle list for modular indicators"""
+        if not MODULAR_INDICATORS_AVAILABLE or Candle is None:
+            return []
+
+        candle_list = []
+        for c in candles:
+            timestamp = c['time']
+            if isinstance(timestamp, (int, float)):
+                timestamp = datetime.fromtimestamp(timestamp / 1000)
+
+            candle_list.append(Candle(
+                timestamp=timestamp,
+                open=c.get('open', c['close']),
+                high=c['high'],
+                low=c['low'],
+                close=c['close'],
+                volume=c.get('volume', 0)
+            ))
+
+        return candle_list
 
     def _get_nadaraya_watson_values(self, closes, params) -> Optional[Dict]:
         """Get NDY values for condition evaluation when no signal"""
@@ -591,11 +776,49 @@ class StrategyWebSocketMonitor:
         window = closes[-period:]
         sma = np.mean(window)
         std = np.std(window)
+        upper = sma + stddev * std
+        lower = sma - stddev * std
+
+        # Calculate bandwidth (percentage of middle band)
+        bandwidth = ((upper - lower) / sma) * 100 if sma > 0 else 0
+
+        # Calculate %B (where price is within the bands)
+        percent_b = (closes[-1] - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
 
         return {
             'middle': float(sma),
-            'upper': float(sma + stddev * std),
-            'lower': float(sma - stddev * std)
+            'upper': float(upper),
+            'lower': float(lower),
+            'bandwidth': float(bandwidth),
+            'percent_b': float(percent_b)
+        }
+
+    def _get_ema_cross_values(self, closes, params) -> Optional[Dict]:
+        """Get EMA Cross values for condition evaluation"""
+        fast_period = params.get('fast_period', 9)
+        slow_period = params.get('slow_period', 21)
+
+        if len(closes) < slow_period:
+            return None
+
+        def ema(data, period):
+            alpha = 2 / (period + 1)
+            result = np.zeros(len(data))
+            result[0] = data[0]
+            for i in range(1, len(data)):
+                result[i] = alpha * data[i] + (1 - alpha) * result[i-1]
+            return result
+
+        fast_ema = ema(closes, fast_period)
+        slow_ema = ema(closes, slow_period)
+
+        # Determine trend: 1 = bullish (fast > slow), -1 = bearish
+        trend = 1 if fast_ema[-1] > slow_ema[-1] else -1
+
+        return {
+            'fast_ema': float(fast_ema[-1]),
+            'slow_ema': float(slow_ema[-1]),
+            'trend': trend
         }
 
     async def _evaluate_conditions(self, state: StrategyRuntimeState, symbol: str) -> None:
@@ -696,10 +919,44 @@ class StrategyWebSocketMonitor:
         except ValueError:
             pass
 
+        # Map common aliases to full indicator names
         aliases = {
+            # Nadaraya-Watson aliases
             "ndy.lower": "nadaraya_watson.lower",
             "ndy.upper": "nadaraya_watson.upper",
             "ndy.value": "nadaraya_watson.value",
+            # TPO aliases (already correct format, but map for consistency)
+            "tpo.val": "tpo.val",
+            "tpo.vah": "tpo.vah",
+            "tpo.poc": "tpo.poc",
+            # RSI aliases
+            "rsi": "rsi.value",
+            # MACD aliases
+            "macd.signal": "macd.signal_line",
+            # Bollinger aliases
+            "bb.upper": "bollinger.upper",
+            "bb.lower": "bollinger.lower",
+            "bb.middle": "bollinger.middle",
+            "bb.bandwidth": "bollinger.bandwidth",
+            "bb.percent_b": "bollinger.percent_b",
+            # ADX aliases
+            "adx": "adx.adx",
+            "+di": "adx.plus_di",
+            "-di": "adx.minus_di",
+            # SuperTrend aliases
+            "st.trend": "supertrend.trend",
+            "st.value": "supertrend.value",
+            # Ichimoku aliases
+            "ichi.tenkan": "ichimoku.tenkan",
+            "ichi.kijun": "ichimoku.kijun",
+            "ichi.cloud_top": "ichimoku.cloud_top",
+            "ichi.cloud_bottom": "ichimoku.cloud_bottom",
+            # OBV aliases
+            "obv": "obv.obv",
+            "obv.trend": "obv.trend",
+            # EMA cross aliases
+            "ema.fast": "ema_cross.fast_ema",
+            "ema.slow": "ema_cross.slow_ema",
         }
 
         if key in aliases:

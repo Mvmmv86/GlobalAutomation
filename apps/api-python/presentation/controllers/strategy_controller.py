@@ -238,31 +238,45 @@ async def get_strategy(strategy_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/{strategy_id}")
-async def update_strategy(strategy_id: str, payload: StrategyUpdate):
-    """
-    Update a strategy
-    """
-    try:
-        async with database_manager.get_session() as session:
-            service = StrategyService(session)
+async def _do_update_strategy(strategy_id: str, payload: StrategyUpdate):
+    """Internal function to update a strategy"""
+    async with database_manager.get_session() as session:
+        service = StrategyService(session)
 
-            updates = payload.model_dump(exclude_unset=True)
-            strategy = await service.update_strategy(strategy_id, **updates)
+        updates = payload.model_dump(exclude_unset=True)
+        strategy = await service.update_strategy(strategy_id, **updates)
 
-            if not strategy:
-                raise HTTPException(status_code=404, detail="Strategy not found")
+        if not strategy:
+            raise HTTPException(status_code=404, detail="Strategy not found")
 
-            return {
-                "success": True,
-                "data": {
-                    "id": str(strategy.id),
-                    "name": strategy.name,
-                    "symbols": strategy.symbols,
-                    "timeframe": strategy.timeframe
-                }
+        return {
+            "success": True,
+            "data": {
+                "id": str(strategy.id),
+                "name": strategy.name,
+                "symbols": strategy.symbols,
+                "timeframe": strategy.timeframe
             }
+        }
 
+
+@router.put("/{strategy_id}")
+async def update_strategy_put(strategy_id: str, payload: StrategyUpdate):
+    """Update a strategy (PUT)"""
+    try:
+        return await _do_update_strategy(strategy_id, payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/{strategy_id}")
+async def update_strategy_patch(strategy_id: str, payload: StrategyUpdate):
+    """Update a strategy (PATCH)"""
+    try:
+        return await _do_update_strategy(strategy_id, payload)
     except HTTPException:
         raise
     except Exception as e:
@@ -301,23 +315,55 @@ async def activate_strategy(strategy_id: str):
     """
     Activate a strategy for live trading
     """
+    from infrastructure.database.connection_transaction_mode import transaction_db
+
     try:
-        async with database_manager.get_session() as session:
-            service = StrategyService(session)
-            strategy = await service.activate_strategy(strategy_id)
+        # Use asyncpg directly to avoid prepared statement issues with pgbouncer
+        # Check if strategy exists and get symbols
+        row = await transaction_db.fetchrow(
+            "SELECT id, name, symbols FROM strategies WHERE id = $1",
+            strategy_id
+        )
 
-            # Reload strategy engine
-            engine = get_strategy_engine(session)
-            await engine.reload_strategies()
+        if not row:
+            raise ValueError(f"Strategy {strategy_id} not found")
 
-            return {
-                "success": True,
-                "message": f"Strategy '{strategy.name}' activated",
-                "data": {
-                    "id": str(strategy.id),
-                    "is_active": strategy.is_active
-                }
+        # Check symbols
+        symbols = row["symbols"]
+        if not symbols or symbols == "[]" or symbols == "":
+            raise ValueError("Strategy must have at least one symbol configured")
+
+        # Check indicators count
+        indicator_count = await transaction_db.fetchval(
+            "SELECT COUNT(*) FROM strategy_indicators WHERE strategy_id = $1",
+            strategy_id
+        )
+
+        if not indicator_count or indicator_count == 0:
+            raise ValueError("Strategy must have at least one indicator configured")
+
+        # Activate strategy
+        await transaction_db.execute(
+            "UPDATE strategies SET is_active = true, updated_at = NOW() WHERE id = $1",
+            strategy_id
+        )
+
+        # Try to reload strategy engine if available
+        try:
+            engine = get_strategy_engine(None)
+            if engine:
+                await engine.reload_strategies()
+        except Exception as engine_error:
+            logger.warning(f"Could not reload strategy engine: {engine_error}")
+
+        return {
+            "success": True,
+            "message": f"Strategy '{row['name']}' activated",
+            "data": {
+                "id": strategy_id,
+                "is_active": True
             }
+        }
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -331,24 +377,44 @@ async def deactivate_strategy(strategy_id: str):
     """
     Deactivate a strategy
     """
+    from infrastructure.database.connection_transaction_mode import transaction_db
+
     try:
-        async with database_manager.get_session() as session:
-            service = StrategyService(session)
-            strategy = await service.deactivate_strategy(strategy_id)
+        # Use asyncpg directly to avoid prepared statement issues with pgbouncer
+        # Get strategy name first
+        row = await transaction_db.fetchrow(
+            "SELECT name FROM strategies WHERE id = $1",
+            strategy_id
+        )
 
-            # Reload strategy engine
-            engine = get_strategy_engine(session)
-            await engine.reload_strategies()
+        if not row:
+            raise ValueError(f"Strategy {strategy_id} not found")
 
-            return {
-                "success": True,
-                "message": f"Strategy '{strategy.name}' deactivated",
-                "data": {
-                    "id": str(strategy.id),
-                    "is_active": strategy.is_active
-                }
+        # Deactivate strategy
+        await transaction_db.execute(
+            "UPDATE strategies SET is_active = false, updated_at = NOW() WHERE id = $1",
+            strategy_id
+        )
+
+        # Try to reload strategy engine if available
+        try:
+            engine = get_strategy_engine(None)
+            if engine:
+                await engine.reload_strategies()
+        except Exception as engine_error:
+            logger.warning(f"Could not reload strategy engine: {engine_error}")
+
+        return {
+            "success": True,
+            "message": f"Strategy '{row['name']}' deactivated",
+            "data": {
+                "id": strategy_id,
+                "is_active": False
             }
+        }
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error deactivating strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))

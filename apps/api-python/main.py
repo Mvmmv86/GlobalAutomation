@@ -52,6 +52,7 @@ from infrastructure.cache import start_cache_cleanup_task
 from infrastructure.cache.candles_cache import start_candles_cache_cleanup
 from infrastructure.services.indicator_alert_monitor import get_indicator_alert_monitor
 from infrastructure.services.strategy_websocket_monitor import get_strategy_ws_monitor
+from infrastructure.services.strategy_engine_service import start_strategy_engine
 
 # from presentation.controllers.auth_controller import create_auth_router  # Removido - problema DI
 from infrastructure.config.settings import get_settings
@@ -134,14 +135,34 @@ async def lifespan(app: FastAPI):
             traceback.print_exc()
 
         # Start Strategy WebSocket Monitor (real-time signal detection < 1s latency)
+        # with StrategyEngineService as fallback (polling-based, 30s interval)
         strategy_ws_monitor = None
+        strategy_engine = None
+        ws_monitor_active = False
+
         print("🚀 [main.py] Starting Strategy WebSocket Monitor (real-time)...")
         try:
             strategy_ws_monitor = get_strategy_ws_monitor(transaction_db)
             await strategy_ws_monitor.start()
-            print("🚀 [main.py] Strategy WebSocket Monitor started successfully!")
+            ws_monitor_active = True
+            print("✅ [main.py] Strategy WebSocket Monitor started successfully!")
         except Exception as e:
-            print(f"⚠️ [main.py] Strategy WebSocket Monitor not started (optional): {e}")
+            print(f"⚠️ [main.py] Strategy WebSocket Monitor failed: {e}")
+            print("🔄 [main.py] Starting StrategyEngineService as fallback...")
+            try:
+                strategy_engine = await start_strategy_engine(transaction_db)
+                print("✅ [main.py] StrategyEngineService (fallback) started successfully!")
+            except Exception as fallback_err:
+                print(f"❌ [main.py] Both strategy monitors failed: {fallback_err}")
+
+        # If WebSocket started but we want both running for redundancy (optional)
+        # Uncomment below to have Engine as backup even when WS is working
+        # if ws_monitor_active and strategy_engine is None:
+        #     try:
+        #         strategy_engine = await start_strategy_engine(transaction_db)
+        #         print("🔄 [main.py] StrategyEngineService started as secondary monitor")
+        #     except Exception as e:
+        #         print(f"⚠️ [main.py] StrategyEngineService secondary not started: {e}")
 
         yield
 
@@ -159,6 +180,10 @@ async def lifespan(app: FastAPI):
         # Stop strategy WebSocket monitor
         if strategy_ws_monitor:
             await strategy_ws_monitor.stop()
+
+        # Stop strategy engine (fallback)
+        if strategy_engine:
+            await strategy_engine.stop()
 
         # Close connections
         await transaction_db.disconnect()

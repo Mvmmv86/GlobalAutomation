@@ -46,7 +46,7 @@ export function StrategiesPage() {
     queryFn: () => strategyService.getStrategies({
       active_only: selectedStatus === 'active'
     }),
-    refetchInterval: 30000,
+    // refetchInterval desabilitado para performance
   })
 
   // Toggle status mutation

@@ -100,7 +100,7 @@ class StrategyService:
             is_backtesting=False,
         )
 
-        created = await self._strategy_repo.create(strategy)
+        created = await self._strategy_repo.create_strategy(strategy)
 
         # If YAML config provided, parse and create indicators/conditions
         if config_type == ConfigType.YAML and config_yaml:
@@ -139,9 +139,9 @@ class StrategyService:
         """
         return await self._strategy_repo.get_strategies_with_stats(
             user_id=user_id,
-            is_active=True if active_only else None,
+            active_only=active_only,
             limit=limit,
-            skip=offset
+            offset=offset
         )
 
     async def update_strategy(
@@ -267,7 +267,7 @@ class StrategyService:
             order_index=order_index,
         )
 
-        created = await self._indicator_repo.create(indicator)
+        created = await self._indicator_repo.create_indicator(indicator)
 
         logger.info(
             f"Indicator added",
@@ -330,7 +330,7 @@ class StrategyService:
             order_index=order_index,
         )
 
-        created = await self._condition_repo.create(condition)
+        created = await self._condition_repo.create_condition(condition)
 
         logger.info(
             f"Condition added",

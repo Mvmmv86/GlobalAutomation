@@ -41,21 +41,33 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def get_database_url() -> str:
-    """Get database URL from environment or config"""
+def get_database_url(for_async: bool = True) -> str:
+    """Get database URL from environment or config
+    
+    Args:
+        for_async: If True, keep asyncpg driver. If False, convert to sync psycopg2.
+    """
     # For migrations, use DIRECT_URL (Supabase direct connection)
     # This bypasses pooling and uses direct PostgreSQL connection
     direct_url = os.getenv("DIRECT_URL")
     if direct_url:
+        if for_async and direct_url.startswith("postgresql://"):
+            return direct_url.replace("postgresql://", "postgresql+asyncpg://")
         return direct_url
 
-    # Fallback to DATABASE_URL but convert async to sync for Alembic
+    # Use DATABASE_URL
     database_url = os.getenv("DATABASE_URL")
     if database_url:
-        # Convert async URL to sync for Alembic
-        if database_url.startswith("postgresql+asyncpg://"):
-            return database_url.replace("postgresql+asyncpg://", "postgresql://")
-        return database_url
+        if for_async:
+            # Ensure asyncpg driver for async mode
+            if database_url.startswith("postgresql://"):
+                return database_url.replace("postgresql://", "postgresql+asyncpg://")
+            return database_url
+        else:
+            # Convert to sync for offline mode
+            if database_url.startswith("postgresql+asyncpg://"):
+                return database_url.replace("postgresql+asyncpg://", "postgresql://")
+            return database_url
 
     # Try environment-specific config
     env = os.getenv("ENV", "dev")
@@ -82,7 +94,7 @@ def run_migrations_offline() -> None:
     Calls to context.execute() here emit the given string to the
     script output.
     """
-    url = get_database_url()
+    url = get_database_url(for_async=False)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -115,9 +127,9 @@ async def run_async_migrations() -> None:
     """Run migrations in async mode"""
     import ssl
     import os
+    from sqlalchemy.ext.asyncio import create_async_engine
 
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_database_url()
+    db_url = get_database_url(for_async=True)
 
     # Configure SSL for Supabase (same as main app)
     no_verify = os.getenv("DB_SSL_NO_VERIFY", "false").lower() == "true"
@@ -133,9 +145,9 @@ async def run_async_migrations() -> None:
     connect_args["statement_cache_size"] = 0
     connect_args["server_settings"] = {"application_name": "alembic_migrations"}
 
-    connectable = async_engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
+    # Use create_async_engine directly with the URL
+    connectable = create_async_engine(
+        db_url,
         poolclass=pool.NullPool,
         connect_args=connect_args,
     )

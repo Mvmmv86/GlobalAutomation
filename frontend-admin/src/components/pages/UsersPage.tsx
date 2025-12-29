@@ -168,7 +168,7 @@ export function UsersPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['adminUsers', searchQuery],
     queryFn: () => adminService.getUsers({ search: searchQuery || undefined }),
-    refetchInterval: 30000,
+    // refetchInterval desabilitado para performance
     enabled: !!authUser?.id,
   })
 

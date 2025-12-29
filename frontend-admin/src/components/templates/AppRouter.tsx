@@ -1,53 +1,60 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { Suspense, lazy, memo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { AdminLayout } from '../layout/AdminLayout'
 import { AuthLayout } from './AuthLayout'
-import { LoginPage } from '../pages/LoginPage'
-import { RegisterPage } from '../pages/RegisterPage'
-import { AdminDashboard } from '../pages/AdminDashboard'
-import { UsersPage } from '../pages/UsersPage'
-import { BotsPage } from '../pages/BotsPage'
-import { AdminExchangesPage } from '../pages/AdminExchangesPage'
-import { AdminWebhooksPage } from '../pages/AdminWebhooksPage'
-import { StrategiesPage } from '../pages/StrategiesPage'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
+
+// Lazy load das páginas para melhor performance
+const LoginPage = lazy(() => import('../pages/LoginPage').then(m => ({ default: m.LoginPage })))
+const RegisterPage = lazy(() => import('../pages/RegisterPage').then(m => ({ default: m.RegisterPage })))
+const AdminDashboard = lazy(() => import('../pages/AdminDashboard').then(m => ({ default: m.AdminDashboard })))
+const UsersPage = lazy(() => import('../pages/UsersPage').then(m => ({ default: m.UsersPage })))
+const BotsPage = lazy(() => import('../pages/BotsPage').then(m => ({ default: m.BotsPage })))
+const AdminExchangesPage = lazy(() => import('../pages/AdminExchangesPage').then(m => ({ default: m.AdminExchangesPage })))
+const AdminWebhooksPage = lazy(() => import('../pages/AdminWebhooksPage').then(m => ({ default: m.AdminWebhooksPage })))
+const StrategiesPage = lazy(() => import('../pages/StrategiesPage').then(m => ({ default: m.StrategiesPage })))
+
+// Loading fallback component
+const PageLoader = () => (
+  <div className="min-h-[400px] flex items-center justify-center">
+    <LoadingSpinner size="lg" />
+  </div>
+)
+
+// Full page loading (para auth check)
+const FullPageLoader = () => (
+  <div className="min-h-screen flex items-center justify-center bg-[#0a0e17]">
+    <LoadingSpinner size="lg" />
+  </div>
+)
 
 interface ProtectedRouteProps {
   children: React.ReactNode
 }
 
-const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
+// Memoized para evitar re-renders desnecessários
+const ProtectedRoute = memo<ProtectedRouteProps>(({ children }) => {
   const { isAuthenticated, isLoading } = useAuth()
 
-  console.log('🛡️ ProtectedRoute check:', { isAuthenticated, isLoading })
-
   if (isLoading) {
-    console.log('⏳ Still loading, showing spinner...')
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <LoadingSpinner size="lg" />
-      </div>
-    )
+    return <FullPageLoader />
   }
 
   if (!isAuthenticated) {
-    console.log('🚫 Not authenticated, redirecting to login...')
     return <Navigate to="/login" replace />
   }
 
-  console.log('✅ Authenticated, rendering protected content...')
   return <>{children}</>
-}
+})
 
-const PublicRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
+ProtectedRoute.displayName = 'ProtectedRoute'
+
+const PublicRoute = memo<ProtectedRouteProps>(({ children }) => {
   const { isAuthenticated, isLoading } = useAuth()
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <LoadingSpinner size="lg" />
-      </div>
-    )
+    return <FullPageLoader />
   }
 
   if (isAuthenticated) {
@@ -55,7 +62,9 @@ const PublicRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   }
 
   return <>{children}</>
-}
+})
+
+PublicRoute.displayName = 'PublicRoute'
 
 export const AppRouter: React.FC = () => {
   return (
@@ -66,7 +75,9 @@ export const AppRouter: React.FC = () => {
         element={
           <PublicRoute>
             <AuthLayout>
-              <LoginPage />
+              <Suspense fallback={<PageLoader />}>
+                <LoginPage />
+              </Suspense>
             </AuthLayout>
           </PublicRoute>
         }
@@ -76,7 +87,9 @@ export const AppRouter: React.FC = () => {
         element={
           <PublicRoute>
             <AuthLayout>
-              <RegisterPage />
+              <Suspense fallback={<PageLoader />}>
+                <RegisterPage />
+              </Suspense>
             </AuthLayout>
           </PublicRoute>
         }
@@ -88,7 +101,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <AdminDashboard />
+              <Suspense fallback={<PageLoader />}>
+                <AdminDashboard />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }
@@ -98,7 +113,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <UsersPage />
+              <Suspense fallback={<PageLoader />}>
+                <UsersPage />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }
@@ -108,7 +125,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <BotsPage />
+              <Suspense fallback={<PageLoader />}>
+                <BotsPage />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }
@@ -118,7 +137,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <AdminExchangesPage />
+              <Suspense fallback={<PageLoader />}>
+                <AdminExchangesPage />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }
@@ -128,7 +149,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <AdminWebhooksPage />
+              <Suspense fallback={<PageLoader />}>
+                <AdminWebhooksPage />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }
@@ -138,7 +161,9 @@ export const AppRouter: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminLayout>
-              <StrategiesPage />
+              <Suspense fallback={<PageLoader />}>
+                <StrategiesPage />
+              </Suspense>
             </AdminLayout>
           </ProtectedRoute>
         }

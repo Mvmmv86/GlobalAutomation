@@ -93,6 +93,7 @@ export interface Bot {
   default_margin_usd: number
   default_stop_loss_pct: number
   default_take_profit_pct: number
+  default_max_positions: number
   total_subscribers: number
   total_signals_sent: number
   avg_win_rate: number | null
@@ -113,6 +114,7 @@ export interface BotCreateData {
   default_margin_usd: number
   default_stop_loss_pct: number
   default_take_profit_pct: number
+  default_max_positions: number
 }
 
 export interface BotUpdateData {
@@ -123,6 +125,7 @@ export interface BotUpdateData {
   default_margin_usd?: number
   default_stop_loss_pct?: number
   default_take_profit_pct?: number
+  default_max_positions?: number
 }
 
 export interface BotStats {

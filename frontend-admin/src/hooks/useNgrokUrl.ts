@@ -28,7 +28,7 @@ export const useNgrokUrl = () => {
       }
     },
     staleTime: 30000, // Considera "fresco" por 30 segundos
-    refetchInterval: 60000, // Revalida a cada 60 segundos
+    // refetchInterval removido // Revalida a cada 60 segundos
     refetchOnWindowFocus: true, // Revalida quando usuário volta para a aba
   })
 }

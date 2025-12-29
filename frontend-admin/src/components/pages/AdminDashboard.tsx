@@ -74,7 +74,7 @@ export function AdminDashboard() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['adminDashboardStats'],
     queryFn: () => adminService.getDashboardStats(),
-    refetchInterval: 30000, // Refresh every 30 seconds
+    // refetchInterval desabilitado para performance // Refresh every 30 seconds
     enabled: !!user?.id,
   })
 

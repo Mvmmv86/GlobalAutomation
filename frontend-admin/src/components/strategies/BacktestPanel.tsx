@@ -1,6 +1,6 @@
 /**
  * BacktestPanel Component
- * Interface for running and viewing backtest results
+ * Interface for running and viewing backtest results with chart visualization
  */
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
@@ -15,14 +15,24 @@ import {
   Activity,
   AlertCircle,
   RefreshCw,
-  Download
+  LineChart,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react'
 import { Card } from '@/components/atoms/Card'
 import { Button } from '@/components/atoms/Button'
 import { Input } from '@/components/atoms/Input'
 import { Label } from '@/components/atoms/Label'
 import { Badge } from '@/components/atoms/Badge'
-import { strategyService, StrategyBacktestResult } from '@/services/strategyService'
+import {
+  strategyService,
+  StrategyBacktestResult,
+  BacktestCandle,
+  BacktestTrade,
+  BacktestIndicators,
+  BacktestRunResult
+} from '@/services/strategyService'
+import { BacktestChart } from './BacktestChart'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { toast } from 'sonner'
@@ -42,6 +52,12 @@ interface BacktestConfig {
   leverage: number
 }
 
+interface ChartData {
+  candles: BacktestCandle[]
+  trades: BacktestTrade[]
+  indicators: BacktestIndicators
+}
+
 export function BacktestPanel({ strategyId, strategyName, symbols, onClose }: BacktestPanelProps) {
   const [config, setConfig] = useState<BacktestConfig>({
     symbol: symbols[0] || 'BTCUSDT',
@@ -51,6 +67,8 @@ export function BacktestPanel({ strategyId, strategyName, symbols, onClose }: Ba
     leverage: 10,
   })
   const [selectedResult, setSelectedResult] = useState<StrategyBacktestResult | null>(null)
+  const [chartData, setChartData] = useState<ChartData | null>(null)
+  const [showChart, setShowChart] = useState(true)
 
   // Fetch existing backtest results
   const { data: results, isLoading, refetch } = useQuery({
@@ -58,38 +76,52 @@ export function BacktestPanel({ strategyId, strategyName, symbols, onClose }: Ba
     queryFn: () => strategyService.getBacktestResults(strategyId),
   })
 
-  // Run backtest mutation (placeholder - backend would need this endpoint)
+  // Run backtest mutation - calls real API
   const runBacktestMutation = useMutation({
     mutationFn: async (config: BacktestConfig) => {
-      // TODO: Implement actual backtest API call
-      // For now, simulate a backtest result
-      toast.info('Backtest iniciado... (simulacao)')
-      await new Promise(resolve => setTimeout(resolve, 2000))
-
-      // Simulated result
-      return {
-        id: `bt_${Date.now()}`,
-        strategy_id: strategyId,
+      toast.info('Backtest iniciado...')
+      const result = await strategyService.runBacktest(strategyId, {
+        symbol: config.symbol,
         start_date: config.start_date,
         end_date: config.end_date,
-        symbol: config.symbol,
         initial_capital: config.initial_capital,
         leverage: config.leverage,
-        total_trades: Math.floor(Math.random() * 50) + 10,
-        winning_trades: Math.floor(Math.random() * 30) + 5,
-        losing_trades: Math.floor(Math.random() * 20) + 5,
-        win_rate: Math.random() * 30 + 40,
-        profit_factor: Math.random() * 1.5 + 0.8,
-        total_pnl: (Math.random() - 0.3) * 5000,
-        total_pnl_percent: (Math.random() - 0.3) * 50,
-        max_drawdown: Math.random() * 20 + 5,
-        sharpe_ratio: Math.random() * 2,
-        created_at: new Date().toISOString(),
-      } as StrategyBacktestResult
+      })
+
+      return result
     },
-    onSuccess: (result) => {
+    onSuccess: (result: BacktestRunResult) => {
       toast.success('Backtest concluido!')
-      setSelectedResult(result)
+
+      // Map the API response to the StrategyBacktestResult format for display
+      const displayResult: StrategyBacktestResult = {
+        id: result.id,
+        strategy_id: result.strategy_id,
+        start_date: result.start_date,
+        end_date: result.end_date,
+        symbol: result.symbol,
+        initial_capital: config.initial_capital,
+        leverage: config.leverage,
+        total_trades: result.metrics.total_trades,
+        winning_trades: result.metrics.winning_trades,
+        losing_trades: result.metrics.losing_trades,
+        win_rate: result.metrics.win_rate ?? 0,
+        profit_factor: result.metrics.profit_factor ?? 0,
+        total_pnl: result.metrics.total_pnl ?? 0,
+        total_pnl_percent: result.metrics.total_pnl_percent ?? 0,
+        max_drawdown: result.metrics.max_drawdown ?? 0,
+        sharpe_ratio: result.metrics.sharpe_ratio ?? 0,
+        created_at: new Date().toISOString(),
+      }
+      setSelectedResult(displayResult)
+
+      // Store chart data
+      setChartData({
+        candles: result.candles || [],
+        trades: result.trades || [],
+        indicators: result.indicators || {}
+      })
+
       refetch()
     },
     onError: (error: Error) => {
@@ -216,6 +248,46 @@ export function BacktestPanel({ strategyId, strategyName, symbols, onClose }: Ba
           </Button>
         </div>
       </Card>
+
+      {/* Chart Display */}
+      {chartData && chartData.candles.length > 0 && (
+        <Card className="p-4 bg-[#131722] border-[#2a2e39]">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-white font-medium flex items-center gap-2">
+              <LineChart className="w-4 h-4 text-blue-400" />
+              Grafico do Backtest
+            </h4>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowChart(!showChart)}
+              className="text-gray-400 hover:text-white"
+            >
+              {showChart ? (
+                <>
+                  <ChevronUp className="w-4 h-4 mr-1" />
+                  Ocultar
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-4 h-4 mr-1" />
+                  Mostrar
+                </>
+              )}
+            </Button>
+          </div>
+
+          {showChart && (
+            <BacktestChart
+              candles={chartData.candles}
+              trades={chartData.trades}
+              indicators={chartData.indicators}
+              symbol={selectedResult?.symbol || config.symbol}
+              height={600}
+            />
+          )}
+        </Card>
+      )}
 
       {/* Results Display */}
       {selectedResult && (

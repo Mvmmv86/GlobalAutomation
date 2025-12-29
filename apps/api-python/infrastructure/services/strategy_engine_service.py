@@ -43,6 +43,32 @@ except ImportError:
     NUMPY_AVAILABLE = False
     np = None
 
+# Lazy import for modular indicators
+MODULAR_INDICATORS_AVAILABLE = False
+StochasticCalculator = None
+StochasticRSICalculator = None
+SuperTrendCalculator = None
+ADXCalculator = None
+VWAPCalculator = None
+IchimokuCalculator = None
+OBVCalculator = None
+Candle = None
+
+try:
+    from infrastructure.indicators import (
+        StochasticCalculator,
+        StochasticRSICalculator,
+        SuperTrendCalculator,
+        ADXCalculator,
+        VWAPCalculator,
+        IchimokuCalculator,
+        OBVCalculator,
+        Candle,
+    )
+    MODULAR_INDICATORS_AVAILABLE = True
+except ImportError as e:
+    pass
+
 logger = structlog.get_logger(__name__)
 
 
@@ -98,9 +124,14 @@ class StrategyEngineService:
         await engine.stop()
     """
 
-    # Supported indicator types (calculated via IndicatorAlertMonitor)
+    # Supported indicator types
+    # - Calculados via IndicatorAlertMonitor: nadaraya_watson, rsi, macd, bollinger, ema_cross, tpo
+    # - Calculados via modular indicators: stochastic, stochastic_rsi, supertrend, adx, vwap, ichimoku, obv
     SUPPORTED_INDICATORS = [
-        'nadaraya_watson', 'rsi', 'macd', 'bollinger', 'ema_cross', 'tpo'
+        # Via IndicatorAlertMonitor
+        'nadaraya_watson', 'rsi', 'macd', 'bollinger', 'ema_cross', 'tpo',
+        # Via Modular Indicators
+        'stochastic', 'stochastic_rsi', 'supertrend', 'adx', 'vwap', 'ichimoku', 'obv'
     ]
 
     def __init__(self, db_pool):
@@ -397,6 +428,188 @@ class StrategyEngineService:
                             'value': signal.get('indicator_value'),
                             'signal': signal.get('type')
                         }
+                    else:
+                        result = self._get_ema_cross_values(closes, params)
+
+                # ========== MODULAR INDICATORS ==========
+                elif ind_type == 'stochastic' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 0)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = StochasticCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'k': float(ind_result.values.get('k', 0)),
+                            'd': float(ind_result.values.get('d', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"Stochastic calc error: {calc_err}")
+
+                elif ind_type == 'stochastic_rsi' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 0)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = StochasticRSICalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'k': float(ind_result.values.get('k', 0)),
+                            'd': float(ind_result.values.get('d', 0)),
+                            'rsi': float(ind_result.values.get('rsi', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"StochasticRSI calc error: {calc_err}")
+
+                elif ind_type == 'supertrend' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 0)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = SuperTrendCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'value': float(ind_result.values.get('value', 0)),
+                            'trend': trend_val,
+                            'upper': float(ind_result.values.get('upper', 0)),
+                            'lower': float(ind_result.values.get('lower', 0)),
+                            'signal': 'buy' if trend_val == 1 else ('sell' if trend_val == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"SuperTrend calc error: {calc_err}")
+
+                elif ind_type == 'adx' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 0)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = ADXCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'adx': float(ind_result.values.get('adx', 0)),
+                            'plus_di': float(ind_result.values.get('plus_di', 0)),
+                            'minus_di': float(ind_result.values.get('minus_di', 0)),
+                            'trend_strength': int(ind_result.values.get('trend_strength', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"ADX calc error: {calc_err}")
+
+                elif ind_type == 'vwap' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 1)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = VWAPCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        result = {
+                            'vwap': float(ind_result.values.get('vwap', 0)),
+                            'upper_band': float(ind_result.values.get('upper_band', 0)),
+                            'lower_band': float(ind_result.values.get('lower_band', 0)),
+                            'deviation': float(ind_result.values.get('deviation', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"VWAP calc error: {calc_err}")
+
+                elif ind_type == 'ichimoku' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 0)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = IchimokuCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'tenkan': float(ind_result.values.get('tenkan', 0)),
+                            'kijun': float(ind_result.values.get('kijun', 0)),
+                            'senkou_a': float(ind_result.values.get('senkou_a', 0)),
+                            'senkou_b': float(ind_result.values.get('senkou_b', 0)),
+                            'cloud_top': float(ind_result.values.get('cloud_top', 0)),
+                            'cloud_bottom': float(ind_result.values.get('cloud_bottom', 0)),
+                            'trend': trend_val,
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"Ichimoku calc error: {calc_err}")
+
+                elif ind_type == 'obv' and MODULAR_INDICATORS_AVAILABLE:
+                    try:
+                        candle_list = [
+                            Candle(
+                                timestamp=candles[i]['time'] if isinstance(candles[i]['time'], datetime) else datetime.fromtimestamp(candles[i]['time'] / 1000),
+                                open=candles[i].get('open', candles[i]['close']),
+                                high=candles[i]['high'],
+                                low=candles[i]['low'],
+                                close=candles[i]['close'],
+                                volume=candles[i].get('volume', 1)
+                            )
+                            for i in range(len(candles))
+                        ]
+                        calc = OBVCalculator(params)
+                        ind_result = calc.calculate(candle_list)
+                        trend_val = int(ind_result.values.get('trend', 0))
+                        result = {
+                            'obv': float(ind_result.values.get('obv', 0)),
+                            'obv_sma': float(ind_result.values.get('obv_sma', 0)),
+                            'obv_normalized': float(ind_result.values.get('obv_normalized', 50)),
+                            'trend': trend_val,
+                            'divergence': int(ind_result.values.get('divergence', 0)),
+                            'signal': 'buy' if int(ind_result.values.get('signal', 0)) == 1 else ('sell' if int(ind_result.values.get('signal', 0)) == -1 else None)
+                        }
+                    except Exception as calc_err:
+                        logger.debug(f"OBV calc error: {calc_err}")
 
                 if result:
                     state.latest_indicators[symbol][ind_type] = result
@@ -503,10 +716,46 @@ class StrategyEngineService:
         upper = sma + stddev * std
         lower = sma - stddev * std
 
+        # Calculate bandwidth (percentage of middle band)
+        bandwidth = ((upper - lower) / sma) * 100 if sma > 0 else 0
+
+        # Calculate %B (where price is within the bands)
+        percent_b = (closes[-1] - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+
         return {
             'middle': float(sma),
             'upper': float(upper),
-            'lower': float(lower)
+            'lower': float(lower),
+            'bandwidth': float(bandwidth),
+            'percent_b': float(percent_b)
+        }
+
+    def _get_ema_cross_values(self, closes, params) -> Optional[Dict]:
+        """Get EMA Cross values for condition evaluation"""
+        fast_period = params.get('fast_period', 9)
+        slow_period = params.get('slow_period', 21)
+
+        if len(closes) < slow_period:
+            return None
+
+        def ema(data, period):
+            alpha = 2 / (period + 1)
+            result = np.zeros(len(data))
+            result[0] = data[0]
+            for i in range(1, len(data)):
+                result[i] = alpha * data[i] + (1 - alpha) * result[i-1]
+            return result
+
+        fast_ema = ema(closes, fast_period)
+        slow_ema = ema(closes, slow_period)
+
+        # Determine trend: 1 = bullish (fast > slow), -1 = bearish
+        trend = 1 if fast_ema[-1] > slow_ema[-1] else -1
+
+        return {
+            'fast_ema': float(fast_ema[-1]),
+            'slow_ema': float(slow_ema[-1]),
+            'trend': trend
         }
 
     async def _evaluate_conditions(

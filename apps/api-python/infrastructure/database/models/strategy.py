@@ -22,14 +22,27 @@ class ConfigType(str, Enum):
 
 class IndicatorType(str, Enum):
     """Supported indicator types"""
+    # Indicadores existentes
     NADARAYA_WATSON = "nadaraya_watson"
     TPO = "tpo"
     RSI = "rsi"
     MACD = "macd"
     EMA = "ema"
+    EMA_CROSS = "ema_cross"
     BOLLINGER = "bollinger"
     ATR = "atr"
     VOLUME_PROFILE = "volume_profile"
+
+    # Novos indicadores - Fase 1 (Dez/2025)
+    STOCHASTIC = "stochastic"
+    STOCHASTIC_RSI = "stochastic_rsi"
+    SUPERTREND = "supertrend"
+
+    # Novos indicadores - Fase 2 (Dez/2025)
+    ADX = "adx"
+    VWAP = "vwap"
+    ICHIMOKU = "ichimoku"
+    OBV = "obv"
 
 
 class ConditionType(str, Enum):
@@ -78,6 +91,13 @@ class Strategy(Base):
     config_yaml: Mapped[Optional[str]] = mapped_column(Text, comment="YAML configuration")
     pinescript_source: Mapped[Optional[str]] = mapped_column(Text, comment="Original PineScript source")
 
+    # Documentation for admins
+    documentation: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        default=dict,
+        comment="Detailed documentation for strategy selection"
+    )
+
     # Trading configuration
     symbols: Mapped[dict] = mapped_column(JSONB, default=list, comment="Array of trading symbols")
     timeframe: Mapped[str] = mapped_column(String(10), default="5m", comment="Timeframe: 1m, 5m, 15m, etc.")
@@ -86,16 +106,16 @@ class Strategy(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, comment="Whether strategy is active")
     is_backtesting: Mapped[bool] = mapped_column(Boolean, default=False, comment="Whether backtesting is running")
 
-    # Relationships
+    # Bot reference (not a FK - bots table managed separately)
     bot_id: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("bots.id", ondelete="SET NULL"),
+        nullable=True,
         comment="Linked bot for signal execution"
     )
 
     created_by: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         comment="User who created the strategy"
     )
 

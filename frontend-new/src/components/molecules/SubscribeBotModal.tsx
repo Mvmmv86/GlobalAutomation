@@ -14,15 +14,15 @@ interface SubscribeBotModalProps {
   isLoading?: boolean
 }
 
-// Default config for each exchange
-const getDefaultExchangeConfig = (exchangeId: string): ExchangeConfig => ({
+// Default config for each exchange (uses bot's default_max_positions if available)
+const getDefaultExchangeConfig = (exchangeId: string, botDefaultMaxPositions?: number): ExchangeConfig => ({
   exchange_account_id: exchangeId,
   custom_leverage: undefined,
   custom_margin_usd: undefined,
   custom_stop_loss_pct: undefined,
   custom_take_profit_pct: undefined,
   max_daily_loss_usd: 200.00,
-  max_concurrent_positions: 3
+  max_concurrent_positions: botDefaultMaxPositions || 3
 })
 
 export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
@@ -43,13 +43,14 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
   const [selectedConfigTab, setSelectedConfigTab] = useState<string>('')
 
   // Shared config settings (when useSameConfig=true)
+  // Uses bot's default_max_positions if available
   const [sharedConfig, setSharedConfig] = useState({
     custom_leverage: undefined as number | undefined,
     custom_margin_usd: undefined as number | undefined,
     custom_stop_loss_pct: undefined as number | undefined,
     custom_take_profit_pct: undefined as number | undefined,
     max_daily_loss_usd: 200.00,
-    max_concurrent_positions: 3
+    max_concurrent_positions: bot?.default_max_positions || 3
   })
 
   const [useCustomSettings, setUseCustomSettings] = useState({
@@ -75,7 +76,7 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
         custom_stop_loss_pct: undefined,
         custom_take_profit_pct: undefined,
         max_daily_loss_usd: 200.00,
-        max_concurrent_positions: 3
+        max_concurrent_positions: bot?.default_max_positions || 3
       })
       setUseCustomSettings({
         leverage: false,
@@ -98,7 +99,7 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
       if (!individualConfigs[exId]) {
         setIndividualConfigs(prev => ({
           ...prev,
-          [exId]: getDefaultExchangeConfig(exId)
+          [exId]: getDefaultExchangeConfig(exId, bot?.default_max_positions)
         }))
         setIndividualCustomSettings(prev => ({
           ...prev,
@@ -106,7 +107,7 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
         }))
       }
     })
-  }, [selectedExchanges])
+  }, [selectedExchanges, bot?.default_max_positions])
 
   const toggleExchange = (exchangeId: string) => {
     setSelectedExchanges(prev => {
@@ -151,7 +152,7 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
     } else {
       // Build individual configs
       const configs: ExchangeConfig[] = selectedExchanges.map(exId => {
-        const config = individualConfigs[exId] || getDefaultExchangeConfig(exId)
+        const config = individualConfigs[exId] || getDefaultExchangeConfig(exId, bot?.default_max_positions)
         const customSettings = individualCustomSettings[exId] || { leverage: false, margin: false, stopLoss: false, takeProfit: false }
         return {
           exchange_account_id: exId,
@@ -186,7 +187,7 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
     if (useSameConfig) {
       return sharedConfig
     }
-    return individualConfigs[selectedConfigTab] || getDefaultExchangeConfig(selectedConfigTab)
+    return individualConfigs[selectedConfigTab] || getDefaultExchangeConfig(selectedConfigTab, bot?.default_max_positions)
   }
 
   const getCurrentCustomSettings = () => {

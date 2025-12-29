@@ -39,7 +39,7 @@ export function BotsPage() {
   const { data: bots, isLoading, error } = useQuery({
     queryKey: ['adminBots', selectedStatus],
     queryFn: () => adminService.getAllBots(selectedStatus === 'all' ? undefined : selectedStatus),
-    refetchInterval: 30000,
+    // refetchInterval desabilitado para performance
     enabled: !!user?.id,
   })
 

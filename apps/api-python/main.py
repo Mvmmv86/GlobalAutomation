@@ -40,7 +40,9 @@ from presentation.controllers.admin_controller import router as admin_router
 from presentation.controllers.chart_data_controller import router as chart_data_router
 from presentation.controllers.notifications_controller import create_notifications_router
 from presentation.controllers.indicator_alerts_controller import create_indicator_alerts_router
-from presentation.controllers.strategy_controller import router as strategy_router
+from presentation.controllers.indicator_calculator_controller import router as indicator_calculator_router
+from presentation.controllers.trading_ai_controller import router as trading_ai_router
+from presentation.controllers.strategy_controller import router as strategy_router, set_transaction_db
 from infrastructure.background.sync_scheduler import sync_scheduler
 from infrastructure.exchanges.binance_connector import BinanceConnector
 from infrastructure.exchanges.bybit_connector import BybitConnector
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize database with asyncpg (pgBouncer transaction mode)
         await transaction_db.connect()
+        set_transaction_db(transaction_db)  # Inicializar transaction_db no strategy_controller
         logger.info("Database connected successfully (pgBouncer transaction mode)")
 
         # Also initialize the regular database manager for chart cache
@@ -331,6 +334,8 @@ def create_app() -> FastAPI:
     app.include_router(create_notifications_router())  # Notifications CRUD endpoints
     app.include_router(create_indicator_alerts_router())  # Indicator Alerts CRUD endpoints
     app.include_router(strategy_router)  # Automated trading strategies
+    app.include_router(indicator_calculator_router)  # Technical indicators API for frontend charts
+    app.include_router(trading_ai_router)  # Trading AI chat and strategy evaluation
 
 
     return app

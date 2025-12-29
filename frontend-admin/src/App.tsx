@@ -2,8 +2,11 @@ import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { ChatProvider } from './contexts/ChatContext'
 import { AppRouter } from './components/templates/AppRouter'
 import { Toaster } from './components/atoms/Toaster'
+import { AIChatBubble } from './components/atoms/AIChatBubble'
+import { AIChatModal } from './components/organisms/AIChatModal'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,8 +27,13 @@ function App() {
       <BrowserRouter basename="/dashboard-admin">
         <ThemeProvider defaultTheme="dark">
           <AuthProvider>
-            <AppRouter />
-            <Toaster />
+            <ChatProvider>
+              <AppRouter />
+              <Toaster />
+              {/* AI Chat - Always visible */}
+              <AIChatBubble />
+              <AIChatModal />
+            </ChatProvider>
           </AuthProvider>
         </ThemeProvider>
       </BrowserRouter>

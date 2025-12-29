@@ -40,6 +40,10 @@ class BotCreate(BaseModel):
     default_margin_usd: float = Field(default=50.00, ge=5.00)
     default_stop_loss_pct: float = Field(default=2.5, ge=0.1, le=50.0)
     default_take_profit_pct: float = Field(default=5.0, ge=0.1, le=100.0)
+    default_max_positions: int = Field(
+        default=3, ge=1, le=20,
+        description="Número máximo de posições simultâneas sugerido. Clientes podem sobrescrever."
+    )
 
 
 class BotUpdate(BaseModel):
@@ -56,6 +60,7 @@ class BotUpdate(BaseModel):
     default_margin_usd: Optional[float] = Field(None, ge=5.00)
     default_stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
     default_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
+    default_max_positions: Optional[int] = Field(None, ge=1, le=20)
 
 
 # ============================================================================
@@ -367,6 +372,7 @@ async def get_all_bots(
                 trading_symbol, master_webhook_path,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct,
+                default_max_positions,
                 total_subscribers, total_signals_sent,
                 avg_win_rate, avg_pnl_pct,
                 created_at, updated_at
@@ -409,8 +415,8 @@ async def create_bot(
                 name, description, market_type, status,
                 trading_symbol, allowed_directions, master_webhook_path,
                 default_leverage, default_margin_usd,
-                default_stop_loss_pct, default_take_profit_pct
-            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10)
+                default_stop_loss_pct, default_take_profit_pct, default_max_positions
+            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id
         """,
             bot_data.name,
@@ -422,7 +428,8 @@ async def create_bot(
             bot_data.default_leverage,
             bot_data.default_margin_usd,
             bot_data.default_stop_loss_pct,
-            bot_data.default_take_profit_pct
+            bot_data.default_take_profit_pct,
+            bot_data.default_max_positions
         )
 
         # Log admin activity
@@ -506,6 +513,11 @@ async def update_bot(
         if bot_data.default_take_profit_pct is not None:
             updates.append(f"default_take_profit_pct = ${param_idx}")
             params.append(bot_data.default_take_profit_pct)
+            param_idx += 1
+
+        if bot_data.default_max_positions is not None:
+            updates.append(f"default_max_positions = ${param_idx}")
+            params.append(bot_data.default_max_positions)
             param_idx += 1
 
         if not updates:
@@ -1108,4 +1120,81 @@ async def get_bot_detailed_metrics(
         raise
     except Exception as e:
         logger.error("Error getting bot detailed metrics", bot_id=bot_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# DATABASE MIGRATIONS (Admin)
+# ============================================================================
+
+@router.post("/migrations/run")
+async def run_migration(
+    migration_name: str,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Run a specific database migration.
+    Only for admins, and only in development mode.
+    """
+    import os
+    env = os.environ.get('ENV', 'dev').lower()
+
+    # Available migrations
+    migrations = {
+        "add_default_max_positions": """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'bots' AND column_name = 'default_max_positions'
+                ) THEN
+                    ALTER TABLE bots ADD COLUMN default_max_positions INTEGER DEFAULT 3;
+                    ALTER TABLE bots ADD CONSTRAINT check_default_max_positions
+                        CHECK (default_max_positions >= 1 AND default_max_positions <= 20);
+                    RAISE NOTICE 'Coluna default_max_positions adicionada à tabela bots';
+                ELSE
+                    RAISE NOTICE 'Coluna default_max_positions já existe na tabela bots';
+                END IF;
+            END $$;
+            COMMENT ON COLUMN bots.default_max_positions IS 'Número máximo de posições simultâneas sugerido pelo admin. Clientes podem sobrescrever na subscription.';
+        """
+    }
+
+    if migration_name not in migrations:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Migration '{migration_name}' not found. Available: {list(migrations.keys())}"
+        )
+
+    try:
+        # Run the migration
+        await transaction_db.execute(migrations[migration_name])
+
+        # Verify the change
+        if migration_name == "add_default_max_positions":
+            result = await transaction_db.fetchrow("""
+                SELECT column_name, data_type, column_default
+                FROM information_schema.columns
+                WHERE table_name = 'bots' AND column_name = 'default_max_positions'
+            """)
+
+            # Get sample bots
+            bots = await transaction_db.fetch("""
+                SELECT id, name, default_max_positions FROM bots LIMIT 5
+            """)
+
+            return {
+                "success": True,
+                "message": f"Migration '{migration_name}' executed successfully",
+                "column_info": dict(result) if result else None,
+                "sample_bots": [dict(b) for b in bots]
+            }
+
+        return {
+            "success": True,
+            "message": f"Migration '{migration_name}' executed successfully"
+        }
+
+    except Exception as e:
+        logger.error("Error running migration", migration=migration_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

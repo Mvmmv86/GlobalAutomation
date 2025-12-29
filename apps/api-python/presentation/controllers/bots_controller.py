@@ -88,6 +88,7 @@ async def list_bots(
                 master_webhook_path,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct,
+                default_max_positions,
                 total_subscribers, total_signals_sent,
                 avg_win_rate, avg_pnl_pct,
                 created_at, updated_at

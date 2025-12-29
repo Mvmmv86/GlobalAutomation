@@ -25,7 +25,7 @@ export function AdminExchangesPage() {
   const { data, isLoading, error } = useQuery<ExchangesAdminData>({
     queryKey: ['adminExchanges'],
     queryFn: () => adminService.getAllExchanges(),
-    refetchInterval: 30000,
+    // refetchInterval desabilitado para performance
     enabled: !!user?.id,
   })
 

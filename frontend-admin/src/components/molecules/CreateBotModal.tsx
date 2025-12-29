@@ -35,6 +35,7 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
     default_margin_usd: 100,
     default_stop_loss_pct: 3,
     default_take_profit_pct: 5,
+    default_max_positions: 3,
   })
 
   // Generate webhook URL in real-time as user types
@@ -184,6 +185,7 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
       default_margin_usd: 100,
       default_stop_loss_pct: 3,
       default_take_profit_pct: 5,
+      default_max_positions: 3,
     })
   }
 
@@ -418,6 +420,21 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
                 />
                 <p className="text-sm text-gray-400 mt-1">Ex: 5 = 5% de lucro</p>
               </div>
+            </div>
+
+            <div>
+              <Label htmlFor="default_max_positions" className="text-gray-300">Max Posicoes Simultaneas *</Label>
+              <Input
+                id="default_max_positions"
+                type="number"
+                min="1"
+                max="20"
+                value={formData.default_max_positions}
+                onChange={(e) => setFormData({ ...formData, default_max_positions: Number(e.target.value) })}
+                required
+                className="bg-gray-800 border-gray-700 text-white"
+              />
+              <p className="text-sm text-gray-400 mt-1">Sugestao de quantas operacoes abertas ao mesmo tempo (1-20). Cliente pode personalizar.</p>
             </div>
           </div>
 

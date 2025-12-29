@@ -124,7 +124,7 @@ export const usePositions = (params?: {
     queryFn: () => positionService.getPositions(params),
     staleTime: isOpenPositions ? 3 * 1000 : 30 * 1000, // 3s para abertas, 30s para outras
     refetchInterval: isOpenPositions ? 5 * 1000 : undefined, // 5s polling para abertas
-    refetchIntervalInBackground: isOpenPositions,
+    // refetchIntervalInBackground removido
     enabled: !!params?.exchangeAccountId || params?.status === 'closed', // Só funciona com conta selecionada ou fechadas
   })
 }
@@ -144,7 +144,7 @@ export const useSpotBalances = (exchangeAccountId?: string) => {
     queryKey: ['spot-balances', exchangeAccountId],
     queryFn: () => dashboardService.getSpotBalances(exchangeAccountId!),
     staleTime: 10 * 1000, // 10 seconds
-    refetchInterval: 30 * 1000, // Refetch every 30s
+    // refetchInterval removido para performance // Refetch every 30s
     enabled: !!exchangeAccountId, // Only fetch when account is selected
   })
 }
@@ -214,7 +214,7 @@ export const useDashboardCards = () => {
       }
     },
     // 🚀 PERFORMANCE: Reduced from 10s to 30s to minimize API calls
-    refetchInterval: 30000, // Refresh every 30 seconds
+    // refetchInterval removido para performance // Refresh every 30 seconds
     staleTime: 15000,
   })
 }
@@ -236,8 +236,8 @@ export const useBalancesSummary = () => {
     // Backend cache: 3s TTL, so we can refetch less frequently
     staleTime: 10 * 1000, // 10 seconds
     gcTime: 30 * 1000, // 30 seconds garbage collection
-    refetchInterval: 15 * 1000, // refetch every 15 seconds (reduced from 5s)
-    refetchIntervalInBackground: true,
+    // refetchInterval removido para performance // refetch every 15 seconds (reduced from 5s)
+    // refetchIntervalInBackground removido
     retry: 1,
   })
 }
@@ -276,8 +276,8 @@ export const useAccountBalance = (accountId?: string) => {
     enabled: !!accountId,
     // 🚀 PERFORMANCE: Increased intervals to reduce API calls
     staleTime: 20 * 1000, // 20 seconds
-    refetchInterval: 30 * 1000, // refresh every 30 seconds (reduced from 15s)
-    refetchIntervalInBackground: true,
+    // refetchInterval removido para performance // refresh every 30 seconds (reduced from 15s)
+    // refetchIntervalInBackground removido
   })
 }
 
@@ -290,7 +290,7 @@ export const useSymbolDiscovery = () => {
       return symbolDiscoveryService.discoverSymbols()
     },
     staleTime: 2 * 60 * 1000, // 2 minutes
-    refetchInterval: 60 * 1000, // refresh every minute
+    // refetchInterval removido para performance // refresh every minute
   })
 }
 

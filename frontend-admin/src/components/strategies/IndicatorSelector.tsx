@@ -21,7 +21,7 @@ export const AVAILABLE_INDICATORS = [
       { name: 'bandwidth', label: 'Bandwidth', type: 'number', default: 8, min: 1, max: 50 },
       { name: 'mult', label: 'Multiplicador', type: 'number', default: 3.0, min: 0.5, max: 5, step: 0.1 },
     ],
-    outputs: ['upper', 'lower', 'middle'],
+    outputs: ['value', 'upper', 'lower', 'middle'],
   },
   {
     type: 'tpo',
@@ -97,9 +97,9 @@ export const AVAILABLE_INDICATORS = [
     category: 'volatility',
     params: [
       { name: 'period', label: 'Periodo', type: 'number', default: 20, min: 5, max: 50 },
-      { name: 'std_dev', label: 'Desvio Padrao', type: 'number', default: 2, min: 1, max: 4, step: 0.5 },
+      { name: 'stddev', label: 'Desvio Padrao', type: 'number', default: 2, min: 1, max: 4, step: 0.5 },
     ],
-    outputs: ['upper', 'middle', 'lower'],
+    outputs: ['upper', 'middle', 'lower', 'percent_b', 'bandwidth'],
   },
   {
     type: 'atr',
@@ -123,6 +123,75 @@ export const AVAILABLE_INDICATORS = [
       { name: 'oversold', label: 'Sobrevendido', type: 'number', default: 20, min: 5, max: 40 },
     ],
     outputs: ['k', 'd'],
+  },
+  {
+    type: 'stochastic_rsi',
+    label: 'Stochastic RSI',
+    description: 'RSI estocastico - combinacao de RSI com Stochastic',
+    category: 'momentum',
+    params: [
+      { name: 'rsi_period', label: 'Periodo RSI', type: 'number', default: 14, min: 2, max: 50 },
+      { name: 'stoch_period', label: 'Periodo Stoch', type: 'number', default: 14, min: 2, max: 50 },
+      { name: 'k_period', label: 'Periodo %K', type: 'number', default: 3, min: 1, max: 10 },
+      { name: 'd_period', label: 'Periodo %D', type: 'number', default: 3, min: 1, max: 10 },
+    ],
+    outputs: ['k', 'd'],
+  },
+  {
+    type: 'supertrend',
+    label: 'SuperTrend',
+    description: 'Indicador de tendencia baseado em ATR',
+    category: 'trend',
+    params: [
+      { name: 'period', label: 'Periodo ATR', type: 'number', default: 10, min: 2, max: 50 },
+      { name: 'multiplier', label: 'Multiplicador', type: 'number', default: 3.0, min: 1, max: 10, step: 0.1 },
+    ],
+    outputs: ['value', 'trend', 'upper', 'lower'],
+  },
+  {
+    type: 'adx',
+    label: 'ADX (Average Directional Index)',
+    description: 'Forca da tendencia',
+    category: 'trend',
+    params: [
+      { name: 'period', label: 'Periodo', type: 'number', default: 14, min: 2, max: 50 },
+      { name: 'trend_threshold', label: 'Threshold Tendencia', type: 'number', default: 25, min: 15, max: 40 },
+    ],
+    outputs: ['adx', 'plus_di', 'minus_di'],
+  },
+  {
+    type: 'vwap',
+    label: 'VWAP (Volume Weighted Average Price)',
+    description: 'Preco medio ponderado por volume',
+    category: 'volume',
+    params: [
+      { name: 'anchor', label: 'Ancora', type: 'select', default: 'session', options: ['session', 'week', 'month'] },
+    ],
+    outputs: ['value', 'upper_band', 'lower_band'],
+  },
+  {
+    type: 'ichimoku',
+    label: 'Ichimoku Cloud',
+    description: 'Sistema Ichimoku Kinko Hyo',
+    category: 'trend',
+    params: [
+      { name: 'tenkan_period', label: 'Tenkan (Conversao)', type: 'number', default: 9, min: 5, max: 30 },
+      { name: 'kijun_period', label: 'Kijun (Base)', type: 'number', default: 26, min: 10, max: 60 },
+      { name: 'senkou_b_period', label: 'Senkou B', type: 'number', default: 52, min: 20, max: 120 },
+      { name: 'displacement', label: 'Deslocamento', type: 'number', default: 26, min: 10, max: 60 },
+    ],
+    outputs: ['tenkan', 'kijun', 'senkou_a', 'senkou_b', 'chikou', 'trend'],
+  },
+  {
+    type: 'obv',
+    label: 'OBV (On-Balance Volume)',
+    description: 'Volume acumulado baseado em direcao do preco',
+    category: 'volume',
+    params: [
+      { name: 'sma_period', label: 'Periodo SMA', type: 'number', default: 20, min: 5, max: 50 },
+      { name: 'signal_period', label: 'Periodo Sinal', type: 'number', default: 9, min: 3, max: 20 },
+    ],
+    outputs: ['value', 'sma', 'signal', 'trend'],
   },
   {
     type: 'volume_profile',
@@ -173,7 +242,9 @@ export function IndicatorSelector({ indicators, onChange, maxIndicators = 5 }: I
 
     const defaultParams: Record<string, number> = {}
     indicatorInfo.params.forEach(p => {
-      defaultParams[p.name] = p.default
+      if (p.type === 'number') {
+        defaultParams[p.name] = p.default as number
+      }
     })
 
     const newIndicator: IndicatorConfig = {
@@ -301,15 +372,27 @@ export function IndicatorSelector({ indicators, onChange, maxIndicators = 5 }: I
                       {info.params.map(param => (
                         <div key={param.name}>
                           <Label className="text-xs text-gray-300">{param.label}</Label>
-                          <Input
-                            type="number"
-                            value={indicator.parameters[param.name] || param.default}
-                            onChange={(e) => updateParameter(indicator.id, param.name, parseFloat(e.target.value))}
-                            min={param.min}
-                            max={param.max}
-                            step={param.step || 1}
-                            className="mt-1 bg-[#1e222d] border-[#2a2e39] text-white h-8 text-sm"
-                          />
+                          {param.type === 'number' ? (
+                            <Input
+                              type="number"
+                              value={indicator.parameters[param.name] || param.default}
+                              onChange={(e) => updateParameter(indicator.id, param.name, parseFloat(e.target.value))}
+                              min={param.min}
+                              max={param.max}
+                              step={param.step || 1}
+                              className="mt-1 bg-[#1e222d] border-[#2a2e39] text-white h-8 text-sm"
+                            />
+                          ) : param.type === 'select' ? (
+                            <select
+                              value={indicator.parameters[param.name] || param.default}
+                              onChange={(e) => updateParameter(indicator.id, param.name, e.target.value as any)}
+                              className="mt-1 w-full bg-[#1e222d] border border-[#2a2e39] text-white h-8 text-sm rounded px-2"
+                            >
+                              {(param as any).options?.map((opt: string) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                          ) : null}
                         </div>
                       ))}
                     </div>

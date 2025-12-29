@@ -25,6 +25,13 @@ class StrategyRepository(BaseRepository[Strategy]):
     def __init__(self, session: AsyncSession):
         super().__init__(Strategy, session)
 
+    async def create_strategy(self, strategy: Strategy) -> Strategy:
+        """Create a new strategy from Strategy object"""
+        self.session.add(strategy)
+        await self.session.flush()
+        await self.session.refresh(strategy)
+        return strategy
+
     async def get_with_relations(self, id: Union[str, UUID]) -> Optional[Strategy]:
         """Get strategy with all related data (indicators, conditions)"""
         query = (
@@ -72,23 +79,27 @@ class StrategyRepository(BaseRepository[Strategy]):
 
     async def get_strategies_with_stats(
         self,
-        skip: int = 0,
+        user_id: Optional[str] = None,
+        active_only: bool = False,
         limit: int = 100,
-        is_active: Optional[bool] = None,
-        user_id: Optional[str] = None
+        offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """Get strategies with signal statistics"""
+        """Get strategies with signal statistics
+
+        Args:
+            user_id: Filter by creator user ID (optional, not used yet)
+            active_only: Only return active strategies
+            limit: Maximum number of results
+            offset: Pagination offset
+        """
         query = select(Strategy).options(
             selectinload(Strategy.indicators),
         )
 
-        if is_active is not None:
-            query = query.where(Strategy.is_active == is_active)
+        if active_only:
+            query = query.where(Strategy.is_active == True)
 
-        if user_id is not None:
-            query = query.where(Strategy.created_by == user_id)
-
-        query = query.order_by(Strategy.created_at.desc()).offset(skip).limit(limit)
+        query = query.order_by(Strategy.created_at.desc()).offset(offset).limit(limit)
 
         result = await self.session.execute(query)
         strategies = list(result.scalars().all())
@@ -137,6 +148,13 @@ class StrategyIndicatorRepository(BaseRepository[StrategyIndicator]):
     def __init__(self, session: AsyncSession):
         super().__init__(StrategyIndicator, session)
 
+    async def create_indicator(self, indicator: StrategyIndicator) -> StrategyIndicator:
+        """Create a new indicator from StrategyIndicator object"""
+        self.session.add(indicator)
+        await self.session.flush()
+        await self.session.refresh(indicator)
+        return indicator
+
     async def get_by_strategy(self, strategy_id: str) -> List[StrategyIndicator]:
         """Get all indicators for a strategy"""
         query = (
@@ -161,6 +179,13 @@ class StrategyConditionRepository(BaseRepository[StrategyCondition]):
 
     def __init__(self, session: AsyncSession):
         super().__init__(StrategyCondition, session)
+
+    async def create_condition(self, condition: StrategyCondition) -> StrategyCondition:
+        """Create a new condition from StrategyCondition object"""
+        self.session.add(condition)
+        await self.session.flush()
+        await self.session.refresh(condition)
+        return condition
 
     async def get_by_strategy(self, strategy_id: str) -> List[StrategyCondition]:
         """Get all conditions for a strategy"""
@@ -209,7 +234,8 @@ class StrategySignalRepository(BaseRepository[StrategySignal]):
     async def get_by_strategy(
         self,
         strategy_id: str,
-        skip: int = 0,
+        user_id: Optional[str] = None,
+        active_only: bool = False,
         limit: int = 50
     ) -> List[StrategySignal]:
         """Get signals for a strategy"""
@@ -217,7 +243,7 @@ class StrategySignalRepository(BaseRepository[StrategySignal]):
             select(StrategySignal)
             .where(StrategySignal.strategy_id == strategy_id)
             .order_by(StrategySignal.created_at.desc())
-            .offset(skip)
+            
             .limit(limit)
         )
         result = await self.session.execute(query)
@@ -294,10 +320,18 @@ class StrategyBacktestResultRepository(BaseRepository[StrategyBacktestResult]):
     def __init__(self, session: AsyncSession):
         super().__init__(StrategyBacktestResult, session)
 
+    async def create_result(self, result: StrategyBacktestResult) -> StrategyBacktestResult:
+        """Create a new backtest result from StrategyBacktestResult object"""
+        self.session.add(result)
+        await self.session.flush()
+        await self.session.refresh(result)
+        return result
+
     async def get_by_strategy(
         self,
         strategy_id: str,
-        skip: int = 0,
+        user_id: Optional[str] = None,
+        active_only: bool = False,
         limit: int = 10
     ) -> List[StrategyBacktestResult]:
         """Get backtest results for a strategy"""
@@ -305,7 +339,7 @@ class StrategyBacktestResultRepository(BaseRepository[StrategyBacktestResult]):
             select(StrategyBacktestResult)
             .where(StrategyBacktestResult.strategy_id == strategy_id)
             .order_by(StrategyBacktestResult.created_at.desc())
-            .offset(skip)
+            
             .limit(limit)
         )
         result = await self.session.execute(query)

@@ -7,7 +7,7 @@ class ApiClient {
   constructor() {
     this.instance = axios.create({
       baseURL: '/api/v1', // Usar proxy do Vite
-      timeout: 30000,
+      timeout: 300000, // 5 minutes - needed for long backtests
       headers: {
         'Content-Type': 'application/json',
       },

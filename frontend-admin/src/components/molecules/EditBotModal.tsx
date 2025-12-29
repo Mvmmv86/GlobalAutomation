@@ -27,6 +27,7 @@ export function EditBotModal({ isOpen, onClose, onSuccess, bot }: EditBotModalPr
     default_margin_usd: 100,
     default_stop_loss_pct: 3,
     default_take_profit_pct: 5,
+    default_max_positions: 3,
   })
 
   // Load bot data when modal opens
@@ -39,6 +40,7 @@ export function EditBotModal({ isOpen, onClose, onSuccess, bot }: EditBotModalPr
         default_margin_usd: bot.default_margin_usd,
         default_stop_loss_pct: bot.default_stop_loss_pct,
         default_take_profit_pct: bot.default_take_profit_pct,
+        default_max_positions: bot.default_max_positions || 3,
       })
     }
   }, [bot])
@@ -190,6 +192,23 @@ export function EditBotModal({ isOpen, onClose, onSuccess, bot }: EditBotModalPr
                 />
                 <p className="text-xs text-gray-400 mt-1">0.1% até 100%</p>
               </div>
+            </div>
+
+            {/* Max Positions */}
+            <div>
+              <Label htmlFor="max_positions" className="text-gray-300">Max Posicoes Simultaneas</Label>
+              <Input
+                id="max_positions"
+                type="number"
+                value={formData.default_max_positions}
+                onChange={(e) =>
+                  setFormData({ ...formData, default_max_positions: Number(e.target.value) })
+                }
+                min={1}
+                max={20}
+                className="bg-gray-800 border-gray-700 text-white"
+              />
+              <p className="text-xs text-gray-400 mt-1">Sugestao de 1 a 20 operacoes. Cliente pode personalizar.</p>
             </div>
           </div>
 

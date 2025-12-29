@@ -25,7 +25,7 @@ export function AdminWebhooksPage() {
   const { data, isLoading, error } = useQuery<WebhooksAdminData>({
     queryKey: ['adminWebhooks'],
     queryFn: () => adminService.getAllWebhooks(),
-    refetchInterval: 30000,
+    // refetchInterval desabilitado para performance
     enabled: !!user?.id,
   })
 

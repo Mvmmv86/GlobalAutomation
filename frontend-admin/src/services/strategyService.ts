@@ -94,6 +94,78 @@ export interface StrategyBacktestResult {
   created_at: string
 }
 
+export interface RunBacktestConfig {
+  symbol: string
+  start_date: string
+  end_date: string
+  initial_capital: number
+  leverage: number
+  margin_percent?: number
+  stop_loss_percent?: number
+  take_profit_percent?: number
+  include_fees?: boolean
+  include_slippage?: boolean
+}
+
+export interface BacktestTrade {
+  entry_time: string
+  exit_time: string | null
+  signal_type: 'long' | 'short'
+  entry_price: number
+  exit_price: number | null
+  quantity: number
+  pnl: number | null
+  pnl_percent: number | null
+  exit_reason: string | null
+}
+
+export interface BacktestCandle {
+  time: number  // Unix timestamp
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export interface BacktestIndicatorPoint {
+  time: number  // Unix timestamp
+  value: number
+}
+
+export interface BacktestIndicators {
+  [key: string]: BacktestIndicatorPoint[]
+}
+
+export interface BacktestEquityPoint {
+  timestamp: string
+  equity: number
+  price: number
+}
+
+export interface BacktestRunResult {
+  id: string
+  strategy_id: string
+  symbol: string
+  start_date: string
+  end_date: string
+  metrics: {
+    total_trades: number
+    winning_trades: number
+    losing_trades: number
+    win_rate: number | null
+    profit_factor: number | null
+    total_pnl: number | null
+    total_pnl_percent: number | null
+    max_drawdown: number | null
+    sharpe_ratio: number | null
+  }
+  trades: BacktestTrade[]
+  equity_curve: BacktestEquityPoint[]
+  candles: BacktestCandle[]
+  indicators: BacktestIndicators
+}
+
 export interface CreateStrategyData {
   name: string
   description?: string
@@ -210,24 +282,26 @@ class StrategyService {
     const response = await apiClient.instance.get('/strategies', { params })
 
     if (response.data?.success && response.data?.data) {
-      // API returns flat data, we need to wrap it in the expected format
+      // API returns data with strategy nested inside each item
       const strategies = response.data.data.map((item: any) => {
-        // Extract strategy fields from flat response
+        // Check if strategy is nested or flat
+        const strategyData = item.strategy || item
         const strategyFields = {
-          id: item.id,
-          name: item.name,
-          description: item.description,
-          config_type: item.config_type,
-          symbols: item.symbols,
-          timeframe: item.timeframe,
-          is_active: item.is_active,
-          is_backtesting: item.is_backtesting,
-          bot_id: item.bot_id,
-          created_by: item.created_by,
-          config_yaml: item.config_yaml,
-          pinescript_source: item.pinescript_source,
-          created_at: item.created_at,
-          updated_at: item.updated_at,
+          id: strategyData.id,
+          name: strategyData.name,
+          description: strategyData.description,
+          config_type: strategyData.config_type,
+          symbols: strategyData.symbols,
+          timeframe: strategyData.timeframe,
+          is_active: strategyData.is_active,
+          is_backtesting: strategyData.is_backtesting,
+          bot_id: strategyData.bot_id,
+          created_by: strategyData.created_by,
+          config_yaml: strategyData.config_yaml,
+          pinescript_source: strategyData.pinescript_source,
+          created_at: strategyData.created_at,
+          updated_at: strategyData.updated_at,
+          documentation: strategyData.documentation,
         }
 
         return {
@@ -402,10 +476,34 @@ class StrategyService {
   }
 
   /**
+   * Run a backtest for a strategy
+   */
+  async runBacktest(strategyId: string, config: RunBacktestConfig): Promise<BacktestRunResult> {
+    const response = await apiClient.instance.post(`/strategies/${strategyId}/backtest`, {
+      symbol: config.symbol,
+      start_date: config.start_date,
+      end_date: config.end_date,
+      initial_capital: config.initial_capital,
+      leverage: config.leverage,
+      margin_percent: config.margin_percent ?? 5.0,
+      stop_loss_percent: config.stop_loss_percent ?? 2.0,
+      take_profit_percent: config.take_profit_percent ?? 4.0,
+      include_fees: config.include_fees ?? true,
+      include_slippage: config.include_slippage ?? true,
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    throw new Error(response.data?.message || 'Failed to run backtest')
+  }
+
+  /**
    * Get backtest results for a strategy
    */
   async getBacktestResults(strategyId: string): Promise<StrategyBacktestResult[]> {
-    const response = await apiClient.instance.get(`/strategies/${strategyId}/backtest-results`)
+    const response = await apiClient.instance.get(`/strategies/${strategyId}/backtest/results`)
 
     if (response.data?.success && response.data?.data) {
       return response.data.data

@@ -1,9 +1,10 @@
 /**
  * ConditionBuilder Component
  * Build entry/exit conditions for strategies
+ * Supports both indicator references and numeric values
  */
-import { useState } from 'react'
-import { Plus, Trash2, ChevronDown } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Plus, Trash2, ChevronDown, Hash, TrendingUp } from 'lucide-react'
 import { Card } from '@/components/atoms/Card'
 import { Button } from '@/components/atoms/Button'
 import { Input } from '@/components/atoms/Input'
@@ -53,19 +54,32 @@ const PRICE_VALUES = [
 interface ConditionBuilderProps {
   conditions: ConditionConfig[]
   onChange: (conditions: ConditionConfig[]) => void
-  availableIndicators: string[] // List of indicator types currently in the strategy
+  availableIndicators: string[]
+}
+
+// Helper function to check if a value is numeric
+function isNumericValue(value: string): boolean {
+  if (!value || value === '') return false
+  return !isNaN(parseFloat(value)) && isFinite(Number(value))
+}
+
+// Helper function to check if value is an indicator reference
+function isIndicatorReference(value: string, availableValues: {value: string, label: string}[]): boolean {
+  return availableValues.some(v => v.value === value)
 }
 
 export function ConditionBuilder({ conditions, onChange, availableIndicators }: ConditionBuilderProps) {
   const [expandedCondition, setExpandedCondition] = useState<string | null>(null)
   const [showAddPanel, setShowAddPanel] = useState(false)
+  const [numericModes, setNumericModes] = useState<Record<string, boolean>>({})
 
   // Build available values for left/right selectors
   const getAvailableValues = () => {
+    // Dedupe indicadores para evitar keys duplicadas
+    const uniqueIndicators = [...new Set(availableIndicators)]
     const values = [...PRICE_VALUES]
 
-    // Add indicator outputs
-    availableIndicators.forEach(indType => {
+    uniqueIndicators.forEach(indType => {
       const indicator = AVAILABLE_INDICATORS.find(i => i.type === indType)
       if (indicator) {
         indicator.outputs.forEach(output => {
@@ -82,8 +96,36 @@ export function ConditionBuilder({ conditions, onChange, availableIndicators }: 
 
   const availableValues = getAvailableValues()
 
+  // Initialize numeric modes based on existing data
+  useEffect(() => {
+    const modes: Record<string, boolean> = {}
+    conditions.forEach(condition => {
+      condition.conditions.forEach((rule, ruleIdx) => {
+        const key = `${condition.id}_${ruleIdx}`
+        if (rule.right && isNumericValue(rule.right) && !isIndicatorReference(rule.right, availableValues)) {
+          modes[key] = true
+        }
+      })
+    })
+    setNumericModes(prev => ({ ...prev, ...modes }))
+  }, [conditions, availableIndicators])
+
   const getConditionTypeInfo = (type: string) => {
     return CONDITION_TYPES.find(c => c.value === type)
+  }
+
+  const toggleNumericMode = (conditionId: string, ruleIdx: number) => {
+    const key = `${conditionId}_${ruleIdx}`
+    setNumericModes(prev => ({ ...prev, [key]: !prev[key] }))
+    updateRule(conditionId, ruleIdx, { right: '' })
+  }
+
+  const isInNumericMode = (conditionId: string, ruleIdx: number, rightValue: string): boolean => {
+    const key = `${conditionId}_${ruleIdx}`
+    if (numericModes[key] !== undefined) {
+      return numericModes[key]
+    }
+    return rightValue !== '' && isNumericValue(rightValue) && !isIndicatorReference(rightValue, availableValues)
   }
 
   const addCondition = (type: string) => {
@@ -138,6 +180,13 @@ export function ConditionBuilder({ conditions, onChange, availableIndicators }: 
   }
 
   const removeRule = (conditionId: string, ruleIndex: number) => {
+    const key = `${conditionId}_${ruleIndex}`
+    setNumericModes(prev => {
+      const newModes = { ...prev }
+      delete newModes[key]
+      return newModes
+    })
+
     onChange(conditions.map(cond => {
       if (cond.id === conditionId) {
         const newRules = cond.conditions.filter((_, idx) => idx !== ruleIndex)
@@ -220,71 +269,93 @@ export function ConditionBuilder({ conditions, onChange, availableIndicators }: 
 
                     {/* Rules */}
                     <div className="space-y-2">
-                      {condition.conditions.map((rule, ruleIdx) => (
-                        <div key={ruleIdx} className="flex items-center gap-2 p-2 bg-[#1e222d] rounded-lg">
-                          {ruleIdx > 0 && (
-                            <span className="text-xs text-gray-500 w-8">{condition.logic_operator}</span>
-                          )}
-                          {ruleIdx === 0 && <span className="text-xs text-gray-500 w-8">SE</span>}
+                      {condition.conditions.map((rule, ruleIdx) => {
+                        const useNumeric = isInNumericMode(condition.id, ruleIdx, rule.right)
 
-                          {/* Left Value */}
-                          <select
-                            value={rule.left}
-                            onChange={(e) => updateRule(condition.id, ruleIdx, { left: e.target.value })}
-                            className="flex-1 bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1"
-                          >
-                            {availableValues.map(v => (
-                              <option key={v.value} value={v.value}>{v.label}</option>
-                            ))}
-                          </select>
+                        return (
+                          <div key={ruleIdx} className="flex items-center gap-2 p-2 bg-[#1e222d] rounded-lg flex-wrap">
+                            {ruleIdx > 0 && (
+                              <span className="text-xs text-gray-500 w-8">{condition.logic_operator}</span>
+                            )}
+                            {ruleIdx === 0 && <span className="text-xs text-gray-500 w-8">SE</span>}
 
-                          {/* Operator */}
-                          <select
-                            value={rule.operator}
-                            onChange={(e) => updateRule(condition.id, ruleIdx, { operator: e.target.value })}
-                            className="bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1"
-                          >
-                            {OPERATORS.map(op => (
-                              <option key={op.value} value={op.value}>{op.label}</option>
-                            ))}
-                          </select>
-
-                          {/* Right Value */}
-                          <select
-                            value={rule.right}
-                            onChange={(e) => updateRule(condition.id, ruleIdx, { right: e.target.value })}
-                            className="flex-1 bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1"
-                          >
-                            <option value="">Selecionar...</option>
-                            {availableValues.map(v => (
-                              <option key={v.value} value={v.value}>{v.label}</option>
-                            ))}
-                            <option value="__custom__">Valor customizado</option>
-                          </select>
-
-                          {/* Custom value input */}
-                          {rule.right === '__custom__' && (
-                            <Input
-                              type="number"
-                              placeholder="Valor"
-                              onChange={(e) => updateRule(condition.id, ruleIdx, { right: e.target.value })}
-                              className="w-20 bg-[#131722] border-[#2a2e39] text-white h-7 text-sm"
-                            />
-                          )}
-
-                          {/* Remove rule */}
-                          {condition.conditions.length > 1 && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeRule(condition.id, ruleIdx)}
-                              className="p-1 h-7 w-7 text-red-400 hover:text-red-300"
+                            {/* Left Value */}
+                            <select
+                              value={rule.left}
+                              onChange={(e) => updateRule(condition.id, ruleIdx, { left: e.target.value })}
+                              className="flex-1 min-w-[140px] bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1.5"
                             >
-                              <Trash2 className="w-3 h-3" />
-                            </Button>
-                          )}
-                        </div>
-                      ))}
+                              {availableValues.map(v => (
+                                <option key={v.value} value={v.value}>{v.label}</option>
+                              ))}
+                            </select>
+
+                            {/* Operator */}
+                            <select
+                              value={rule.operator}
+                              onChange={(e) => updateRule(condition.id, ruleIdx, { operator: e.target.value })}
+                              className="bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1.5 min-w-[130px]"
+                            >
+                              {OPERATORS.map(op => (
+                                <option key={op.value} value={op.value}>{op.label}</option>
+                              ))}
+                            </select>
+
+                            {/* Right Value - Toggle between indicator and numeric */}
+                            <div className="flex items-center gap-1 flex-1 min-w-[180px]">
+                              {/* Toggle button */}
+                              <button
+                                type="button"
+                                onClick={() => toggleNumericMode(condition.id, ruleIdx)}
+                                className={`p-1.5 rounded transition-colors flex-shrink-0 ${
+                                  useNumeric
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
+                                    : 'bg-[#131722] text-gray-400 border border-[#2a2e39] hover:text-white'
+                                }`}
+                                title={useNumeric ? 'Clique para usar Indicador' : 'Clique para usar Valor Numerico'}
+                              >
+                                {useNumeric ? <Hash className="w-3.5 h-3.5" /> : <TrendingUp className="w-3.5 h-3.5" />}
+                              </button>
+
+                              {useNumeric ? (
+                                /* Numeric Input */
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  value={rule.right}
+                                  onChange={(e) => updateRule(condition.id, ruleIdx, { right: e.target.value })}
+                                  placeholder="Ex: 35, 0.2, 100"
+                                  className="flex-1 bg-[#131722] border-[#2a2e39] text-white h-8 text-sm"
+                                />
+                              ) : (
+                                /* Indicator Select */
+                                <select
+                                  value={isIndicatorReference(rule.right, availableValues) ? rule.right : ''}
+                                  onChange={(e) => updateRule(condition.id, ruleIdx, { right: e.target.value })}
+                                  className="flex-1 bg-[#131722] border border-[#2a2e39] text-white text-sm rounded px-2 py-1.5"
+                                >
+                                  <option value="">Selecionar...</option>
+                                  {availableValues.map(v => (
+                                    <option key={v.value} value={v.value}>{v.label}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
+
+                            {/* Remove rule */}
+                            {condition.conditions.length > 1 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => removeRule(condition.id, ruleIdx)}
+                                className="p-1 h-7 w-7 text-red-400 hover:text-red-300 flex-shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
 
                     {/* Add Rule Button */}
@@ -356,6 +427,18 @@ export function ConditionBuilder({ conditions, onChange, availableIndicators }: 
           </div>
         </Card>
       )}
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-gray-500">
+        <div className="flex items-center gap-1">
+          <TrendingUp className="w-3 h-3" />
+          <span>= Indicador</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Hash className="w-3 h-3 text-emerald-400" />
+          <span className="text-emerald-400">= Valor Numerico</span>
+        </div>
+      </div>
 
       {/* Warning if no indicators */}
       {availableIndicators.length === 0 && (

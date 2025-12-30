@@ -16,6 +16,7 @@ from infrastructure.exchanges.bybit_connector import BybitConnector
 from infrastructure.exchanges.bingx_connector import BingXConnector
 from infrastructure.exchanges.bitget_connector import BitgetConnector
 from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
+from infrastructure.security.encryption_service import EncryptionService
 
 logger = structlog.get_logger(__name__)
 
@@ -29,6 +30,7 @@ class BotBroadcastService:
     def __init__(self, db_pool):
         self.db = db_pool
         self.trade_tracker = BotTradeTrackerService(db_pool)
+        self.encryption_service = EncryptionService()
         self.exchange_connectors = {
             "binance": BinanceConnector,
             "bybit": BybitConnector,
@@ -314,9 +316,32 @@ class BotBroadcastService:
             if exchange not in self.exchange_connectors:
                 raise ValueError(f"Exchange {exchange} not supported yet")
 
+            # Decrypt API keys before passing to connector
+            try:
+                api_key = self.encryption_service.decrypt_string(subscription["api_key"]) if subscription["api_key"] else None
+                api_secret = self.encryption_service.decrypt_string(subscription["api_secret"]) if subscription["api_secret"] else None
+
+                if not api_key or not api_secret:
+                    raise ValueError("API keys are empty after decryption")
+
+                logger.info(
+                    "API keys decrypted successfully",
+                    user_id=str(user_id),
+                    exchange=exchange,
+                    api_key_length=len(api_key) if api_key else 0
+                )
+            except Exception as decrypt_error:
+                logger.error(
+                    "Failed to decrypt API keys",
+                    user_id=str(user_id),
+                    exchange=exchange,
+                    error=str(decrypt_error)
+                )
+                raise ValueError(f"Cannot decrypt exchange API keys: {decrypt_error}")
+
             connector = self.exchange_connectors[exchange](
-                api_key=subscription["api_key"],
-                api_secret=subscription["api_secret"],
+                api_key=api_key,
+                api_secret=api_secret,
                 testnet=False
             )
 

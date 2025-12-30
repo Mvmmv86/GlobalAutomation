@@ -484,14 +484,16 @@ class BotBroadcastService:
             await self._update_subscription_stats(subscription_id, True)
 
             # 11. Create bot_trade record for open trade (for P&L tracking)
-            if action.lower() in ["buy", "sell"]:
+            # ONLY create if order was REALLY executed (entry_price > 0)
+            final_entry_price = float(executed_price or current_price or 0)
+            if action.lower() in ["buy", "sell"] and final_entry_price > 0:
                 await self._create_open_trade_record(
                     subscription_id=subscription_id,
                     user_id=user_id,
                     signal_id=signal_id,
                     ticker=ticker,
                     action=action.lower(),
-                    entry_price=float(executed_price or current_price),
+                    entry_price=final_entry_price,
                     quantity=float(executed_qty or quantity),
                     sl_order_id=sl_order_id,
                     tp_order_id=tp_order_id,
@@ -499,6 +501,14 @@ class BotBroadcastService:
                     tp_price=tp_price,
                     leverage=config.get("leverage", 10),
                     margin_usd=config.get("margin_usd", 20)
+                )
+            elif action.lower() in ["buy", "sell"] and final_entry_price <= 0:
+                logger.warning(
+                    "Skipping bot_trade record - order not confirmed (entry_price = 0)",
+                    subscription_id=str(subscription_id),
+                    ticker=ticker,
+                    executed_price=executed_price,
+                    current_price=current_price
                 )
 
             # 12. Create notification for trade opened

@@ -350,12 +350,8 @@ async def get_daily_report(
     try:
         ai_service = get_ai_service()
 
-        if date:
-            target_date = datetime.strptime(date, "%Y-%m-%d")
-        else:
-            target_date = datetime.now()
-
-        report = await ai_service.generate_daily_report(date=target_date)
+        # generate_daily_report uses current date internally
+        report = await ai_service.generate_daily_report()
 
         return DailyReportResponse(
             date=report.date,
@@ -464,6 +460,32 @@ async def trigger_daily_collection(background_tasks: BackgroundTasks):
 
     except Exception as e:
         logger.error(f"Error triggering collection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/force-daily-report")
+async def force_daily_report():
+    """
+    Força a geração do relatório diário de mercado.
+    Cria um alerta que aparece no chat da IA.
+    """
+    try:
+        from infrastructure.background.sync_scheduler import sync_scheduler
+
+        # Reset para permitir geração
+        sync_scheduler._last_daily_report_date = None
+
+        # Gerar o relatório
+        await sync_scheduler._generate_ai_market_report()
+
+        return {
+            "status": "success",
+            "message": "Relatório diário gerado e alerta criado",
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error forcing daily report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

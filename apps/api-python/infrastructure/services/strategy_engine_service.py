@@ -28,9 +28,9 @@ from infrastructure.database.models.strategy import (
     SignalType,
     Strategy,
 )
-from infrastructure.database.repositories.strategy import (
-    StrategyRepository,
-    StrategySignalRepository,
+from infrastructure.database.repositories.strategy_sql import (
+    StrategyRepositorySQL,
+    StrategySignalRepositorySQL,
 )
 from infrastructure.services.bot_broadcast_service import BotBroadcastService
 from infrastructure.services.indicator_alert_monitor import IndicatorAlertMonitor
@@ -145,8 +145,8 @@ class StrategyEngineService:
         self._broadcast_service: Optional[BotBroadcastService] = None
 
         # Repositories
-        self._strategy_repo: Optional[StrategyRepository] = None
-        self._signal_repo: Optional[StrategySignalRepository] = None
+        self._strategy_repo: Optional[StrategyRepositorySQL] = None
+        self._signal_repo: Optional[StrategySignalRepositorySQL] = None
 
         # Indicator calculator - REUSES IndicatorAlertMonitor methods
         self._indicator_monitor: Optional[IndicatorAlertMonitor] = None
@@ -172,8 +172,8 @@ class StrategyEngineService:
 
         # Initialize components
         self._broadcast_service = BotBroadcastService(self.db)
-        self._strategy_repo = StrategyRepository(self.db)
-        self._signal_repo = StrategySignalRepository(self.db)
+        self._strategy_repo = StrategyRepositorySQL(self.db)
+        self._signal_repo = StrategySignalRepositorySQL(self.db)
 
         # Initialize IndicatorAlertMonitor for indicator calculations
         # We use this instance ONLY for its calculation methods, not for its monitoring loop
@@ -223,7 +223,7 @@ class StrategyEngineService:
 
         # Add/update active strategies
         for strategy in active_strategies:
-            strategy_id = str(strategy.id)
+            strategy_id = str(strategy["id"])
 
             if strategy_id not in current_ids:
                 await self._activate_strategy(strategy)
@@ -238,12 +238,12 @@ class StrategyEngineService:
 
     async def _activate_strategy(self, strategy: Strategy) -> None:
         """Activate a strategy and start monitoring"""
-        strategy_id = str(strategy.id)
+        strategy_id = str(strategy["id"])
 
-        logger.info(f"Activating strategy: {strategy.name} ({strategy_id})")
+        logger.info(f"Activating strategy: {strategy["name"]} ({strategy_id})")
 
         # Load strategy with relations
-        full_strategy = await self._strategy_repo.get_with_relations(strategy.id)
+        full_strategy = await self._strategy_repo.get_with_relations(strategy["id"])
         if not full_strategy:
             logger.error(f"Could not load strategy relations: {strategy_id}")
             return
@@ -251,25 +251,42 @@ class StrategyEngineService:
         # Create state object
         state = StrategyState(
             strategy_id=strategy_id,
-            symbols=full_strategy.get_symbols_list(),
-            timeframe=full_strategy.timeframe,
-            bot_id=str(full_strategy.bot_id) if full_strategy.bot_id else None
+            symbols=(full_strategy.get("symbols") if isinstance(full_strategy.get("symbols"), list) else __import__("json").loads(full_strategy.get("symbols") or "[]")),
+            timeframe=full_strategy["timeframe"],
+            bot_id=str(full_strategy.get("bot_id")) if full_strategy.get("bot_id") else None
         )
 
         # Store indicator configs
-        for indicator in full_strategy.indicators:
-            ind_type = indicator.indicator_type.value if hasattr(indicator.indicator_type, 'value') else str(indicator.indicator_type)
+        for indicator in full_strategy.get("indicators", []):
+            ind_type = indicator["indicator_type"]
             if ind_type in self.SUPPORTED_INDICATORS:
-                state.indicator_configs[ind_type] = indicator.parameters or {}
+                params = indicator.get("parameters", {})
+                # Handle case where parameters is a JSON string (from asyncpg)
+                if isinstance(params, str):
+                    import json as json_module
+                    try:
+                        params = json_module.loads(params)
+                    except json_module.JSONDecodeError:
+                        params = {}
+                state.indicator_configs[ind_type] = params or {}
                 logger.info(
                     f"Configured indicator: {ind_type}",
                     strategy_id=strategy_id
                 )
 
         # Load conditions
-        for condition in full_strategy.conditions:
-            state.conditions[condition.condition_type] = condition.get_conditions_list()
-            state.condition_operators[condition.condition_type] = condition.logic_operator
+        for condition in full_strategy.get("conditions", []):
+            cond_type = condition["condition_type"]
+            cond_list = condition.get("conditions", [])
+            # Handle case where conditions is a JSON string (from asyncpg)
+            if isinstance(cond_list, str):
+                import json as json_module
+                try:
+                    cond_list = json_module.loads(cond_list)
+                except json_module.JSONDecodeError:
+                    cond_list = []
+            state.conditions[cond_type] = cond_list
+            state.condition_operators[cond_type] = condition.get("logic_operator", "AND")
 
         # Store state
         self._strategies[strategy_id] = state
@@ -279,7 +296,7 @@ class StrategyEngineService:
             await self._load_historical_candles(state, symbol)
 
         logger.info(
-            f"Strategy activated: {strategy.name}",
+            f"Strategy activated: {strategy["name"]}",
             symbols=state.symbols,
             timeframe=state.timeframe
         )
@@ -291,7 +308,7 @@ class StrategyEngineService:
 
     async def _update_strategy(self, strategy: Strategy) -> None:
         """Update an existing strategy (reload config)"""
-        await self._deactivate_strategy(str(strategy.id))
+        await self._deactivate_strategy(str(strategy["id"]))
         await self._activate_strategy(strategy)
 
     async def _load_historical_candles(
@@ -914,18 +931,14 @@ class StrategyEngineService:
         )
 
         # Record signal in database
-        from infrastructure.database.models.strategy import StrategySignal
-
-        signal = StrategySignal(
+        # Create signal via SQL repository
+        created_signal = await self._signal_repo.create(
             strategy_id=state.strategy_id,
             symbol=symbol,
-            signal_type=signal_type,
-            entry_price=entry_price,
-            indicator_values=indicator_values,
-            status=SignalStatus.PENDING
+            signal_type=signal_type.value,
+            entry_price=float(entry_price),
+            indicator_values=indicator_values
         )
-
-        created_signal = await self._signal_repo.create(signal)
 
         # Forward to bot_broadcast_service if bot is linked
         if state.bot_id:
@@ -936,29 +949,37 @@ class StrategyEngineService:
                     action=action,
                     source_ip="strategy_engine",
                     payload={
-                        "strategy_signal_id": str(created_signal.id),
+                        "strategy_signal_id": str(created_signal["id"]),
                         "strategy_id": state.strategy_id,
                         "indicator_values": indicator_values
                     }
                 )
 
-                if result.get("success"):
-                    if result.get("signal_id"):
-                        await self._signal_repo.update(
-                            created_signal.id,
-                            status=SignalStatus.EXECUTED,
-                            bot_signal_id=result.get("signal_id")
+                if result.get("success") and result.get("signal_id"):
+                    # Check if at least one execution was successful
+                    successful_executions = result.get("successful", 0)
+                    if successful_executions > 0:
+                        await self._signal_repo.mark_executed(
+                            created_signal["id"],
+                            result.get("signal_id", "")
                         )
-                    logger.info(
-                        f"Signal forwarded to bot",
-                        bot_id=state.bot_id,
-                        broadcast_result=result
-                    )
+                        logger.info(
+                            f"Signal executed successfully",
+                            bot_id=state.bot_id,
+                            successful=successful_executions,
+                            failed=result.get("failed", 0)
+                        )
+                    else:
+                        # Broadcast completed but all executions failed
+                        await self._signal_repo.mark_failed(created_signal["id"])
+                        logger.warning(
+                            f"Signal broadcast completed but all executions failed",
+                            bot_id=state.bot_id,
+                            total_subscribers=result.get("total_subscribers", 0),
+                            failed=result.get("failed", 0)
+                        )
                 else:
-                    await self._signal_repo.update(
-                        created_signal.id,
-                        status=SignalStatus.FAILED
-                    )
+                    await self._signal_repo.mark_failed(created_signal["id"])
                     logger.warning(
                         f"Signal broadcast failed",
                         bot_id=state.bot_id,
@@ -966,10 +987,7 @@ class StrategyEngineService:
                     )
 
             except Exception as e:
-                await self._signal_repo.update(
-                    created_signal.id,
-                    status=SignalStatus.FAILED
-                )
+                await self._signal_repo.mark_failed(created_signal["id"])
                 logger.error(f"Error broadcasting signal: {e}")
         else:
             logger.warning(

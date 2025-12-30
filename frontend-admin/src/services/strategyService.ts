@@ -280,6 +280,46 @@ function parseStrategyFields(data: any): any {
 // Strategy Service Class
 // ============================================================================
 
+// Strategy metrics types
+export interface StrategyMetrics {
+  symbol: string
+  win_rate: number
+  total_pnl: number
+  sharpe_ratio: number
+  max_drawdown: number
+  btc_correlation: number
+  profit_factor: number
+  total_signals: number
+  executed_signals: number
+  pending_signals: number
+  failed_signals: number
+  winning_signals: number
+  losing_signals: number
+  avg_pnl_per_trade: number
+  execution_rate: number
+  best_trade: number
+  worst_trade: number
+}
+
+export interface StrategyMetricsResponse {
+  strategy_id: string
+  strategy_name: string
+  period_days: number
+  symbols: string[]
+  metrics: StrategyMetrics[]
+}
+
+export interface StrategyChartData {
+  symbol: string
+  timeframe: string
+  period_days: number
+  candles: BacktestCandle[]
+  trades: BacktestTrade[]
+  indicators: BacktestIndicators
+  indicator_config: { type: string; parameters: Record<string, any> }[]
+  message?: string
+}
+
 class StrategyService {
   /**
    * Get all strategies with statistics
@@ -564,6 +604,37 @@ class StrategyService {
     }
 
     throw new Error('Failed to generate YAML template')
+  }
+
+  /**
+   * Get strategy metrics
+   */
+  async getMetrics(strategyId: string, params?: {
+    symbol?: string
+    days?: number
+  }): Promise<StrategyMetricsResponse | StrategyMetrics> {
+    const response = await apiClient.instance.get(`/strategies/${strategyId}/metrics`, { params })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    throw new Error(response.data?.message || 'Failed to get metrics')
+  }
+
+  /**
+   * Get strategy chart data
+   */
+  async getChartData(strategyId: string, symbol: string, days: number = 7, timeframe?: string): Promise<StrategyChartData> {
+    const response = await apiClient.instance.get(`/strategies/${strategyId}/chart-data`, {
+      params: { symbol, days, ...(timeframe && { timeframe }) }
+    })
+
+    if (response.data?.success && response.data?.data) {
+      return response.data.data
+    }
+
+    throw new Error(response.data?.message || 'Failed to get chart data')
   }
 }
 

@@ -1198,3 +1198,152 @@ async def run_migration(
     except Exception as e:
         logger.error("Error running migration", migration=migration_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# FIX BOT TRADES - Sync open trades with exchange positions
+# ============================================================================
+
+@router.post("/fix-bot-trades")
+async def fix_bot_open_trades(
+    dry_run: bool = True,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Fix orphan bot_trades that are marked as 'open' but don't have actual positions.
+    This happens when SL/TP closes a position but the bot_trades table isn't updated.
+
+    Args:
+        dry_run: If True, only show what would be fixed without making changes
+
+    Returns:
+        Summary of fixes applied or would be applied
+    """
+    try:
+        # 1. Find all open trades in bot_trades
+        open_trades = await transaction_db.fetch("""
+            SELECT
+                bt.id,
+                bt.subscription_id,
+                bt.symbol,
+                bt.direction,
+                bt.entry_price,
+                bt.entry_quantity,
+                bt.entry_time,
+                bt.sl_order_id,
+                bt.tp_order_id,
+                bs.user_id,
+                u.email
+            FROM bot_trades bt
+            JOIN bot_subscriptions bs ON bs.id = bt.subscription_id
+            JOIN users u ON u.id = bs.user_id
+            WHERE bt.status = 'open'
+            ORDER BY bt.entry_time DESC
+        """)
+
+        # 2. Check subscription position counters
+        subscriptions = await transaction_db.fetch("""
+            SELECT
+                bs.id,
+                bs.current_positions,
+                bs.max_concurrent_positions,
+                u.email,
+                b.name as bot_name,
+                (SELECT COUNT(*) FROM bot_trades WHERE subscription_id = bs.id AND status = 'open') as actual_open
+            FROM bot_subscriptions bs
+            JOIN users u ON u.id = bs.user_id
+            JOIN bots b ON b.id = bs.bot_id
+            WHERE bs.status = 'active'
+        """)
+
+        # Identify mismatches
+        mismatches = [
+            dict(sub) for sub in subscriptions
+            if sub['current_positions'] != sub['actual_open']
+        ]
+
+        result = {
+            "open_trades_found": len(open_trades),
+            "open_trades": [
+                {
+                    "id": str(t['id']),
+                    "email": t['email'],
+                    "symbol": t['symbol'],
+                    "direction": t['direction'],
+                    "entry_price": float(t['entry_price']) if t['entry_price'] else None,
+                    "entry_time": t['entry_time'].isoformat() if t['entry_time'] else None,
+                }
+                for t in open_trades
+            ],
+            "subscription_mismatches": len(mismatches),
+            "mismatches": [
+                {
+                    "id": str(m['id']),
+                    "email": m['email'],
+                    "bot_name": m['bot_name'],
+                    "current_positions_db": m['current_positions'],
+                    "actual_open_trades": m['actual_open'],
+                    "max_concurrent": m['max_concurrent_positions'],
+                }
+                for m in mismatches
+            ],
+            "dry_run": dry_run,
+            "fixes_applied": False
+        }
+
+        # 3. Apply fixes if not dry_run
+        if not dry_run and (open_trades or mismatches):
+            # Close all orphan trades
+            if open_trades:
+                await transaction_db.execute("""
+                    UPDATE bot_trades
+                    SET status = 'closed_manual',
+                        exit_time = NOW(),
+                        exit_reason = 'manual_cleanup_api',
+                        updated_at = NOW()
+                    WHERE status = 'open'
+                """)
+                logger.info(f"Closed {len(open_trades)} orphan trades")
+
+            # Reset all subscription position counters to 0
+            await transaction_db.execute("""
+                UPDATE bot_subscriptions
+                SET current_positions = 0,
+                    updated_at = NOW()
+                WHERE status = 'active'
+            """)
+            logger.info("Reset all subscription position counters to 0")
+
+            result["fixes_applied"] = True
+            result["message"] = f"Fixed {len(open_trades)} orphan trades and reset {len(subscriptions)} subscription counters"
+        elif dry_run:
+            result["message"] = f"DRY RUN: Would fix {len(open_trades)} orphan trades and {len(mismatches)} subscription mismatches"
+        else:
+            result["message"] = "No issues found - all trades are in sync"
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.error("Error fixing bot trades", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sync-bot-positions")
+async def sync_bot_positions(
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Sync bot position counters with actual positions.
+    Uses the smart sync that checks against the positions table.
+    """
+    try:
+        from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
+
+        tracker = BotTradeTrackerService(transaction_db)
+        result = await tracker.sync_position_counters()
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.error("Error syncing bot positions", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

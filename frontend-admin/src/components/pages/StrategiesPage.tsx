@@ -27,6 +27,7 @@ import { strategyService, StrategyWithStats, INDICATOR_TYPES, TIMEFRAMES } from 
 import { CreateStrategyModal } from '@/components/strategies/CreateStrategyModal'
 import { EditStrategyModal } from '@/components/strategies/EditStrategyModal'
 import { BacktestPanel } from '@/components/strategies/BacktestPanel'
+import { StrategyDetailsModal } from '@/components/strategies/StrategyDetailsModal'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { toast } from 'sonner'
@@ -440,7 +441,7 @@ export function StrategiesPage() {
         onClose={() => setIsCreateModalOpen(false)}
       />
 
-      {/* View Details Modal */}
+      {/* View Details Modal - Enhanced with Tabs */}
       {strategyToView && (
         <StrategyDetailsModal
           strategyId={strategyToView}
@@ -488,160 +489,3 @@ export function StrategiesPage() {
   )
 }
 
-// Strategy Details Modal Component
-function StrategyDetailsModal({ strategyId, onClose }: { strategyId: string; onClose: () => void }) {
-  const { data: strategy, isLoading, error } = useQuery({
-    queryKey: ['strategy', strategyId],
-    queryFn: () => strategyService.getStrategy(strategyId),
-  })
-
-  const getIndicatorLabel = (type: string): string => {
-    const indicator = INDICATOR_TYPES.find(i => i.value === type)
-    return indicator?.label || type
-  }
-
-  if (isLoading) {
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-        <Card className="max-w-2xl w-full p-6 bg-[#1e222d] border-[#2a2e39]">
-          <div className="animate-pulse space-y-4">
-            <div className="h-6 bg-gray-700 rounded w-1/3" />
-            <div className="h-4 bg-gray-700 rounded w-2/3" />
-            <div className="h-32 bg-gray-700 rounded" />
-          </div>
-        </Card>
-      </div>
-    )
-  }
-
-  if (error || !strategy) {
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full p-6 bg-[#1e222d] border-[#2a2e39]">
-          <div className="flex items-center text-red-300 mb-4">
-            <AlertCircle className="w-5 h-5 mr-2" />
-            <p>Erro ao carregar estrategia</p>
-          </div>
-          <Button onClick={onClose} className="w-full">Fechar</Button>
-        </Card>
-      </div>
-    )
-  }
-
-  const symbols = Array.isArray(strategy.symbols) ? strategy.symbols : []
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-      <Card className="max-w-2xl w-full p-6 bg-[#1e222d] border-[#2a2e39] my-8">
-        <div className="flex justify-between items-start mb-6">
-          <div>
-            <h3 className="text-xl font-semibold text-cyan-400 mb-1">{strategy.name}</h3>
-            <p className="text-gray-300">{strategy.description || 'Sem descricao'}</p>
-          </div>
-          <Badge variant={strategy.is_active ? 'success' : 'default'}>
-            {strategy.is_active ? 'Ativa' : 'Inativa'}
-          </Badge>
-        </div>
-
-        {/* Config Info */}
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="p-4 bg-[#131722] rounded-lg">
-            <p className="text-xs text-gray-400 mb-1">Tipo de Configuracao</p>
-            <p className="text-white font-medium">{strategy.config_type}</p>
-          </div>
-          <div className="p-4 bg-[#131722] rounded-lg">
-            <p className="text-xs text-gray-400 mb-1">Timeframe</p>
-            <p className="text-white font-medium">{strategy.timeframe}</p>
-          </div>
-        </div>
-
-        {/* Symbols */}
-        <div className="mb-6">
-          <p className="text-sm text-gray-400 mb-2">Simbolos Monitorados</p>
-          <div className="flex flex-wrap gap-2">
-            {symbols.length > 0 ? (
-              symbols.map((symbol: string, idx: number) => (
-                <Badge key={idx} variant="default" className="bg-blue-500/20 text-blue-300">
-                  {symbol}
-                </Badge>
-              ))
-            ) : (
-              <span className="text-gray-500">Nenhum simbolo configurado</span>
-            )}
-          </div>
-        </div>
-
-        {/* Indicators */}
-        <div className="mb-6">
-          <p className="text-sm text-gray-400 mb-2">Indicadores ({strategy.indicators?.length || 0})</p>
-          {strategy.indicators && strategy.indicators.length > 0 ? (
-            <div className="space-y-2">
-              {strategy.indicators.map((ind) => (
-                <div key={ind.id} className="p-3 bg-[#131722] rounded-lg">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="text-emerald-400 font-medium">{getIndicatorLabel(ind.indicator_type)}</p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Parametros: {JSON.stringify(ind.parameters)}
-                      </p>
-                    </div>
-                    <Badge variant="default" className="text-xs">#{ind.order_index}</Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-gray-500 text-sm">Nenhum indicador configurado</p>
-          )}
-        </div>
-
-        {/* Conditions */}
-        <div className="mb-6">
-          <p className="text-sm text-gray-400 mb-2">Condicoes ({strategy.conditions?.length || 0})</p>
-          {strategy.conditions && strategy.conditions.length > 0 ? (
-            <div className="space-y-2">
-              {strategy.conditions.map((cond) => (
-                <div key={cond.id} className="p-3 bg-[#131722] rounded-lg">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="text-purple-400 font-medium">
-                        {cond.condition_type.replace('_', ' ').toUpperCase()}
-                      </p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Operador: {cond.logic_operator} | Regras: {cond.conditions?.length || 0}
-                      </p>
-                    </div>
-                    <Badge variant="default" className="text-xs">#{cond.order_index}</Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-gray-500 text-sm">Nenhuma condicao configurada</p>
-          )}
-        </div>
-
-        {/* YAML Config */}
-        {strategy.config_yaml && (
-          <div className="mb-6">
-            <p className="text-sm text-gray-400 mb-2">Configuracao YAML</p>
-            <pre className="p-3 bg-[#131722] rounded-lg text-xs text-gray-300 overflow-x-auto max-h-48 overflow-y-auto">
-              {strategy.config_yaml}
-            </pre>
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="flex justify-end">
-          <Button
-            variant="outline"
-            onClick={onClose}
-            className="border-[#2a2e39] text-gray-300 hover:bg-[#2a2e39]"
-          >
-            Fechar
-          </Button>
-        </div>
-      </Card>
-    </div>
-  )
-}

@@ -16,6 +16,7 @@ Flow:
 """
 
 import asyncio
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -37,9 +38,9 @@ from infrastructure.database.models.strategy import (
     SignalType,
     Strategy,
 )
-from infrastructure.database.repositories.strategy import (
-    StrategyRepository,
-    StrategySignalRepository,
+from infrastructure.database.repositories.strategy_sql import (
+    StrategyRepositorySQL,
+    StrategySignalRepositorySQL,
 )
 from infrastructure.services.bot_broadcast_service import BotBroadcastService
 from infrastructure.services.indicator_alert_monitor import IndicatorAlertMonitor
@@ -160,8 +161,8 @@ class StrategyWebSocketMonitor:
 
         # Services
         self._broadcast_service: Optional[BotBroadcastService] = None
-        self._strategy_repo: Optional[StrategyRepository] = None
-        self._signal_repo: Optional[StrategySignalRepository] = None
+        self._strategy_repo: Optional[StrategyRepositorySQL] = None
+        self._signal_repo: Optional[StrategySignalRepositorySQL] = None
         self._indicator_monitor: Optional[IndicatorAlertMonitor] = None
 
         # Track subscriptions by symbol+timeframe
@@ -182,26 +183,30 @@ class StrategyWebSocketMonitor:
             logger.warning("Cannot start StrategyWebSocketMonitor - NumPy not installed")
             return
 
+        print("📡 [StrategyWebSocketMonitor] Starting...")
         logger.info("Starting StrategyWebSocketMonitor...")
 
         self._running = True
 
         # Initialize components
         self._broadcast_service = BotBroadcastService(self.db)
-        self._strategy_repo = StrategyRepository(self.db)
-        self._signal_repo = StrategySignalRepository(self.db)
+        self._strategy_repo = StrategyRepositorySQL(self.db)
+        self._signal_repo = StrategySignalRepositorySQL(self.db)
         self._indicator_monitor = IndicatorAlertMonitor(self.db)
 
         # Get WebSocket manager (singleton)
         self._ws_manager = get_binance_ws_manager(use_futures=True)
+        print("📡 [StrategyWebSocketMonitor] Starting WebSocket manager...")
         await self._ws_manager.start()
 
         # Load active strategies
+        print("📡 [StrategyWebSocketMonitor] Loading active strategies...")
         await self.reload_strategies()
 
         # Start periodic reload task (check for new/modified strategies every 60s)
         self._reload_task = asyncio.create_task(self._periodic_reload())
 
+        print(f"✅ [StrategyWebSocketMonitor] Started with {len(self._strategies)} strategies")
         logger.info("StrategyWebSocketMonitor started")
 
     async def stop(self) -> None:
@@ -230,12 +235,20 @@ class StrategyWebSocketMonitor:
 
     async def reload_strategies(self) -> None:
         """Load or reload active strategies"""
+        print("📡 [StrategyWebSocketMonitor] reload_strategies() called...")
         logger.info("Reloading active strategies for WebSocket monitoring...")
 
-        active_strategies = await self._strategy_repo.get_active_strategies()
+        try:
+            active_strategies = await self._strategy_repo.get_active_strategies()
+            print(f"📡 [StrategyWebSocketMonitor] Found {len(active_strategies)} active strategies")
+        except Exception as e:
+            print(f"❌ [StrategyWebSocketMonitor] Error loading strategies: {e}")
+            import traceback
+            traceback.print_exc()
+            return
 
         current_ids = set(self._strategies.keys())
-        new_ids = {str(s.id) for s in active_strategies}
+        new_ids = {str(s["id"]) for s in active_strategies}
 
         # Remove deactivated strategies
         for strategy_id in current_ids - new_ids:
@@ -243,11 +256,19 @@ class StrategyWebSocketMonitor:
 
         # Add/update active strategies
         for strategy in active_strategies:
-            strategy_id = str(strategy.id)
+            strategy_id = str(strategy["id"])
+            strategy_name = strategy.get("name", "unknown")
 
             if strategy_id not in current_ids:
-                await self._activate_strategy(strategy)
+                print(f"📡 [StrategyWebSocketMonitor] Activating strategy: {strategy_name}")
+                try:
+                    await self._activate_strategy(strategy)
+                except Exception as e:
+                    print(f"❌ [StrategyWebSocketMonitor] Error activating {strategy_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
 
+        print(f"✅ [StrategyWebSocketMonitor] Reload complete: {len(self._strategies)} strategies, {len(self._subscriptions)} streams")
         logger.info(
             f"Strategy reload complete",
             active_count=len(self._strategies),
@@ -256,12 +277,12 @@ class StrategyWebSocketMonitor:
 
     async def _activate_strategy(self, strategy: Strategy) -> None:
         """Activate a strategy and subscribe to WebSocket streams"""
-        strategy_id = str(strategy.id)
+        strategy_id = str(strategy["id"])
 
-        logger.info(f"Activating strategy for WebSocket: {strategy.name} ({strategy_id})")
+        logger.info(f"Activating strategy for WebSocket: {strategy.get('name', 'unknown')} ({strategy_id})")
 
         # Load full strategy with relations
-        full_strategy = await self._strategy_repo.get_with_relations(strategy.id)
+        full_strategy = await self._strategy_repo.get_with_relations(strategy["id"])
         if not full_strategy:
             logger.error(f"Could not load strategy relations: {strategy_id}")
             return
@@ -269,22 +290,37 @@ class StrategyWebSocketMonitor:
         # Create runtime state
         state = StrategyRuntimeState(
             strategy_id=strategy_id,
-            strategy_name=strategy.name,
-            symbols=full_strategy.get_symbols_list(),
-            timeframe=full_strategy.timeframe,
-            bot_id=str(full_strategy.bot_id) if full_strategy.bot_id else None
+            strategy_name=strategy["name"],
+            symbols=(full_strategy.get("symbols") if isinstance(full_strategy.get("symbols"), list) else json.loads(full_strategy.get("symbols") or "[]")),
+            timeframe=full_strategy["timeframe"],
+            bot_id=str(full_strategy["bot_id"]) if full_strategy.get("bot_id") else None
         )
 
         # Load indicator configs
-        for indicator in full_strategy.indicators:
-            ind_type = indicator.indicator_type.value if hasattr(indicator.indicator_type, 'value') else str(indicator.indicator_type)
+        for indicator in full_strategy.get("indicators", []):
+            ind_type = indicator["indicator_type"]
             if ind_type in self.SUPPORTED_INDICATORS:
-                state.indicator_configs[ind_type] = indicator.parameters or {}
+                params = indicator.get("parameters", {})
+                # Handle case where parameters is a JSON string (from asyncpg)
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except json.JSONDecodeError:
+                        params = {}
+                state.indicator_configs[ind_type] = params or {}
 
         # Load conditions
-        for condition in full_strategy.conditions:
-            state.conditions[condition.condition_type] = condition.get_conditions_list()
-            state.condition_operators[condition.condition_type] = condition.logic_operator
+        for condition in full_strategy.get("conditions", []):
+            cond_type = condition["condition_type"]
+            cond_list = condition.get("conditions", [])
+            # Handle case where conditions is a JSON string (from asyncpg)
+            if isinstance(cond_list, str):
+                try:
+                    cond_list = json.loads(cond_list)
+                except json.JSONDecodeError:
+                    cond_list = []
+            state.conditions[cond_type] = cond_list
+            state.condition_operators[cond_type] = condition.get("logic_operator", "AND")
 
         # Store state
         self._strategies[strategy_id] = state
@@ -299,7 +335,7 @@ class StrategyWebSocketMonitor:
             state.stream_ids.append(stream_id)
 
         logger.info(
-            f"Strategy activated for WebSocket monitoring: {strategy.name}",
+            f"Strategy activated for WebSocket monitoring: {strategy.get('name', 'unknown')}",
             symbols=state.symbols,
             timeframe=state.timeframe,
             indicators=list(state.indicator_configs.keys())
@@ -364,6 +400,7 @@ class StrategyWebSocketMonitor:
 
                 # Only evaluate on candle close (most important moment)
                 if kline.is_closed:
+                    print(f"🕯️ [StrategyWSMonitor] Candle closed: {symbol} {timeframe} @ {float(kline.close):.2f}")
                     logger.debug(
                         f"Candle closed - evaluating strategy",
                         strategy=state.strategy_name,
@@ -373,6 +410,13 @@ class StrategyWebSocketMonitor:
 
                     # Calculate indicators using IndicatorAlertMonitor methods
                     await self._calculate_indicators(state, symbol)
+
+                    # Debug: Show indicator values
+                    ind_values = state.latest_indicators.get(symbol, {})
+                    if ind_values:
+                        print(f"📊 [StrategyWSMonitor] {symbol} indicators: {ind_values}")
+                    else:
+                        print(f"⚠️ [StrategyWSMonitor] {symbol} no indicator values calculated!")
 
                     # Evaluate conditions
                     await self._evaluate_conditions(state, symbol)
@@ -418,9 +462,11 @@ class StrategyWebSocketMonitor:
                 "limit": state.max_candles
             }
 
+            print(f"📊 [StrategyWSMonitor] Loading historical candles: {symbol} {state.timeframe}")
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params) as resp:
                     if resp.status != 200:
+                        print(f"❌ [StrategyWSMonitor] Failed to fetch historical klines: {resp.status}")
                         logger.error(f"Failed to fetch historical klines: {resp.status}")
                         return
                     klines = await resp.json()
@@ -443,6 +489,7 @@ class StrategyWebSocketMonitor:
             # Calculate initial indicators
             await self._calculate_indicators(state, symbol)
 
+            print(f"✅ [StrategyWSMonitor] Loaded {len(candles)} candles for {symbol}")
             logger.info(
                 f"Loaded {len(candles)} historical candles",
                 symbol=symbol,
@@ -450,6 +497,7 @@ class StrategyWebSocketMonitor:
             )
 
         except Exception as e:
+            print(f"❌ [StrategyWSMonitor] Error loading candles for {symbol}: {e}")
             logger.error(f"Error loading historical candles: {e}", symbol=symbol)
 
     async def _calculate_indicators(self, state: StrategyRuntimeState, symbol: str) -> None:
@@ -866,6 +914,8 @@ class StrategyWebSocketMonitor:
                 signal_type = SignalType.LONG if condition_type == ConditionType.ENTRY_LONG else SignalType.SHORT
                 action = "buy" if signal_type == SignalType.LONG else "sell"
 
+                print(f"🚀 [StrategyWSMonitor] GENERATING SIGNAL: {action.upper()} {symbol} @ {current_close}")
+
                 await self._generate_signal(
                     state=state,
                     symbol=symbol,
@@ -876,6 +926,7 @@ class StrategyWebSocketMonitor:
                 )
 
                 state.last_signal_time[symbol] = datetime.utcnow()
+                print(f"✅ [StrategyWSMonitor] Signal sent for {symbol}!")
                 break
 
     def _evaluate_condition_set(
@@ -896,18 +947,20 @@ class StrategyWebSocketMonitor:
             right_val = self._get_context_value(right_key, context)
 
             if left_val is None or right_val is None:
+                print(f"⚠️ [StrategyWSMonitor] Condition skip: {left_key}={left_val} {op} {right_key}={right_val}")
                 continue
 
             result = self._compare(left_val, op, right_val)
+            print(f"🔍 [StrategyWSMonitor] Condition: {left_key}={left_val:.4f} {op} {right_key}={right_val:.4f} => {result}")
             results.append(result)
 
         if not results:
+            print(f"⚠️ [StrategyWSMonitor] No valid conditions evaluated (all skipped)")
             return False
 
-        if operator == LogicOperator.AND:
-            return all(results)
-        else:
-            return any(results)
+        final_result = all(results) if operator == LogicOperator.AND else any(results)
+        print(f"✅ [StrategyWSMonitor] Condition set result: {results} with {operator} => {final_result}")
+        return final_result
 
     def _get_context_value(self, key: str, context: Dict[str, float]) -> Optional[float]:
         """Get value from context, handling nested keys"""
@@ -999,18 +1052,14 @@ class StrategyWebSocketMonitor:
         )
 
         # Record in database
-        from infrastructure.database.models.strategy import StrategySignal
-
-        signal = StrategySignal(
+        # Create signal via SQL repository
+        created_signal = await self._signal_repo.create(
             strategy_id=state.strategy_id,
             symbol=symbol,
-            signal_type=signal_type,
-            entry_price=entry_price,
-            indicator_values=indicator_values,
-            status=SignalStatus.PENDING
+            signal_type=signal_type.value,
+            entry_price=float(entry_price),
+            indicator_values=indicator_values
         )
-
-        created_signal = await self._signal_repo.create(signal)
 
         # Forward to bot_broadcast_service
         if state.bot_id:
@@ -1021,7 +1070,7 @@ class StrategyWebSocketMonitor:
                     action=action,
                     source_ip="strategy_websocket_monitor",
                     payload={
-                        "strategy_signal_id": str(created_signal.id),
+                        "strategy_signal_id": str(created_signal["id"]),
                         "strategy_id": state.strategy_id,
                         "strategy_name": state.strategy_name,
                         "indicator_values": indicator_values,
@@ -1029,23 +1078,31 @@ class StrategyWebSocketMonitor:
                     }
                 )
 
-                if result.get("success"):
-                    if result.get("signal_id"):
-                        await self._signal_repo.update(
-                            created_signal.id,
-                            status=SignalStatus.EXECUTED,
-                            bot_signal_id=result.get("signal_id")
+                if result.get("success") and result.get("signal_id"):
+                    # Check if at least one execution was successful
+                    successful_executions = result.get("successful", 0)
+                    if successful_executions > 0:
+                        await self._signal_repo.mark_executed(
+                            created_signal["id"],
+                            result.get("signal_id", "")
                         )
-                    logger.info(
-                        f"Signal forwarded to bot via WebSocket monitor",
-                        bot_id=state.bot_id,
-                        result=result
-                    )
+                        logger.info(
+                            f"Signal executed successfully via WebSocket monitor",
+                            bot_id=state.bot_id,
+                            successful=successful_executions,
+                            failed=result.get("failed", 0)
+                        )
+                    else:
+                        # Broadcast completed but all executions failed
+                        await self._signal_repo.mark_failed(created_signal["id"])
+                        logger.warning(
+                            f"Signal broadcast completed but all executions failed",
+                            bot_id=state.bot_id,
+                            total_subscribers=result.get("total_subscribers", 0),
+                            failed=result.get("failed", 0)
+                        )
                 else:
-                    await self._signal_repo.update(
-                        created_signal.id,
-                        status=SignalStatus.FAILED
-                    )
+                    await self._signal_repo.mark_failed(created_signal["id"])
                     logger.warning(
                         f"Signal broadcast failed",
                         bot_id=state.bot_id,
@@ -1053,10 +1110,7 @@ class StrategyWebSocketMonitor:
                     )
 
             except Exception as e:
-                await self._signal_repo.update(
-                    created_signal.id,
-                    status=SignalStatus.FAILED
-                )
+                await self._signal_repo.mark_failed(created_signal["id"])
                 logger.error(f"Error broadcasting signal: {e}")
         else:
             logger.warning(
@@ -1085,7 +1139,7 @@ class StrategyWebSocketMonitor:
             "strategies": [
                 {
                     "id": s.strategy_id,
-                    "name": s.strategy_name,
+                    "name": s.strategy["name"],
                     "symbols": s.symbols,
                     "timeframe": s.timeframe,
                     "indicators": list(s.indicator_configs.keys()),

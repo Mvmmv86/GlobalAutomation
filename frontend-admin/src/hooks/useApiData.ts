@@ -7,11 +7,12 @@ import { dashboardService } from '@/services/dashboardService'
 import { apiClient } from '@/lib/api'
 
 // Exchange Accounts hooks
+// 🚀 PERFORMANCE: Increased cache time since exchange accounts rarely change
 export const useExchangeAccounts = () => {
   return useQuery({
     queryKey: ['exchange-accounts'],
     queryFn: exchangeAccountService.getExchangeAccounts,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 30 * 60 * 1000, // 30 minutes - accounts rarely change
     refetchOnWindowFocus: false, // Evita refetch ao focar na janela
     refetchOnReconnect: false, // Evita refetch ao reconectar
     refetchInterval: false, // Desabilita refetch automático
@@ -116,16 +117,18 @@ export const usePositions = (params?: {
   operationType?: string
   limit?: number
 }) => {
-  // Configurar polling mais rápido para posições abertas
+  // 🚀 PERFORMANCE: Reduced polling frequency for open positions
+  // Open positions: 15s stale, 30s refetch (was 3s/5s - way too aggressive)
+  // Closed positions: 60s stale, no polling
   const isOpenPositions = params?.status === 'open'
 
   return useQuery({
     queryKey: ['positions', params],
     queryFn: () => positionService.getPositions(params),
-    staleTime: isOpenPositions ? 3 * 1000 : 30 * 1000, // 3s para abertas, 30s para outras
-    refetchInterval: isOpenPositions ? 5 * 1000 : undefined, // 5s polling para abertas
-    // refetchIntervalInBackground removido
-    enabled: !!params?.exchangeAccountId || params?.status === 'closed', // Só funciona com conta selecionada ou fechadas
+    staleTime: isOpenPositions ? 15 * 1000 : 60 * 1000, // 15s for open, 60s for closed
+    refetchInterval: isOpenPositions ? 30 * 1000 : undefined, // 30s polling for open only
+    refetchIntervalInBackground: false, // Don't poll when tab is inactive
+    enabled: !!params?.exchangeAccountId || params?.status === 'closed',
   })
 }
 
@@ -144,8 +147,8 @@ export const useSpotBalances = (exchangeAccountId?: string) => {
     queryKey: ['spot-balances', exchangeAccountId],
     queryFn: () => dashboardService.getSpotBalances(exchangeAccountId!),
     staleTime: 10 * 1000, // 10 seconds
-    // refetchInterval removido para performance // Refetch every 30s
-    enabled: !!exchangeAccountId, // Only fetch when account is selected
+    // 🚀 PERFORMANCE: Only fetch when a specific account is selected (not 'all')
+    enabled: !!exchangeAccountId && exchangeAccountId !== 'all',
   })
 }
 

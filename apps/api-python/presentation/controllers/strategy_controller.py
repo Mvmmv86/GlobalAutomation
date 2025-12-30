@@ -102,6 +102,17 @@ class BacktestRequest(BaseModel):
     include_slippage: bool = True
 
 
+class StrategySyncPayload(BaseModel):
+    """Model for atomic sync of strategy with all indicators and conditions"""
+    name: Optional[str] = Field(None, min_length=3, max_length=100)
+    description: Optional[str] = None
+    symbols: Optional[List[str]] = None
+    timeframe: Optional[str] = Field(None, pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
+    bot_id: Optional[str] = None
+    indicators: List[IndicatorCreate] = Field(default_factory=list)
+    conditions: List[ConditionCreate] = Field(default_factory=list)
+
+
 # ============================================================================
 # Strategy CRUD Endpoints
 # ============================================================================
@@ -303,6 +314,169 @@ async def delete_strategy(strategy_id: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{strategy_id}/sync")
+async def sync_strategy(strategy_id: str, payload: StrategySyncPayload):
+    """
+    Atomic sync of strategy with all indicators and conditions.
+
+    This endpoint replaces the entire strategy configuration in a single atomic operation:
+    1. Updates basic info (name, description, symbols, timeframe, bot_id)
+    2. Deletes ALL existing indicators
+    3. Deletes ALL existing conditions
+    4. Creates new indicators from payload
+    5. Creates new conditions from payload
+
+    All operations happen in a single transaction to prevent duplicates.
+    """
+    from infrastructure.database.connection_transaction_mode import transaction_db
+    import uuid
+    import json
+
+    try:
+        # Verify strategy exists
+        strategy_row = await transaction_db.fetchrow(
+            "SELECT id, name FROM strategies WHERE id = $1",
+            strategy_id
+        )
+
+        if not strategy_row:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # Build update fields for basic info
+        update_fields = []
+        update_values = []
+        param_idx = 1
+
+        if payload.name is not None:
+            update_fields.append(f"name = ${param_idx}")
+            update_values.append(payload.name)
+            param_idx += 1
+
+        if payload.description is not None:
+            update_fields.append(f"description = ${param_idx}")
+            update_values.append(payload.description)
+            param_idx += 1
+
+        if payload.symbols is not None:
+            update_fields.append(f"symbols = ${param_idx}")
+            # Convert list to JSON string for PostgreSQL
+            update_values.append(json.dumps(payload.symbols))
+            param_idx += 1
+
+        if payload.timeframe is not None:
+            update_fields.append(f"timeframe = ${param_idx}")
+            update_values.append(payload.timeframe)
+            param_idx += 1
+
+        if payload.bot_id is not None:
+            update_fields.append(f"bot_id = ${param_idx}")
+            update_values.append(payload.bot_id if payload.bot_id else None)
+            param_idx += 1
+
+        # Add updated_at
+        update_fields.append("updated_at = NOW()")
+
+        # 1. Update basic info
+        if update_fields:
+            update_values.append(strategy_id)
+            await transaction_db.execute(
+                f"UPDATE strategies SET {', '.join(update_fields)} WHERE id = ${param_idx}",
+                *update_values
+            )
+
+        # 2. Delete ALL existing indicators atomically
+        deleted_indicators = await transaction_db.fetchval(
+            "DELETE FROM strategy_indicators WHERE strategy_id = $1 RETURNING id",
+            strategy_id
+        )
+        logger.info(f"Deleted existing indicators for strategy {strategy_id}")
+
+        # 3. Delete ALL existing conditions atomically
+        deleted_conditions = await transaction_db.fetchval(
+            "DELETE FROM strategy_conditions WHERE strategy_id = $1 RETURNING id",
+            strategy_id
+        )
+        logger.info(f"Deleted existing conditions for strategy {strategy_id}")
+
+        # 4. Create new indicators
+        created_indicators = []
+        for idx, ind in enumerate(payload.indicators):
+            ind_id = str(uuid.uuid4())
+            order_idx = ind.order_index if ind.order_index else idx
+            # Convert parameters dict to JSON string
+            params_json = json.dumps(ind.parameters) if ind.parameters else "{}"
+            await transaction_db.execute(
+                """
+                INSERT INTO strategy_indicators (id, strategy_id, indicator_type, parameters, order_index, created_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                """,
+                ind_id,
+                strategy_id,
+                ind.indicator_type,
+                params_json,
+                order_idx
+            )
+            created_indicators.append({
+                "id": ind_id,
+                "indicator_type": ind.indicator_type,
+                "parameters": ind.parameters,
+                "order_index": order_idx
+            })
+
+        # 5. Create new conditions
+        created_conditions = []
+        for idx, cond in enumerate(payload.conditions):
+            cond_id = str(uuid.uuid4())
+            order_idx = cond.order_index if cond.order_index else idx
+            # Convert conditions list to JSON string
+            conditions_json = json.dumps(cond.conditions) if cond.conditions else "[]"
+            await transaction_db.execute(
+                """
+                INSERT INTO strategy_conditions (id, strategy_id, condition_type, conditions, logic_operator, order_index, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                """,
+                cond_id,
+                strategy_id,
+                cond.condition_type,
+                conditions_json,
+                cond.logic_operator,
+                order_idx
+            )
+            created_conditions.append({
+                "id": cond_id,
+                "condition_type": cond.condition_type,
+                "conditions": cond.conditions,
+                "logic_operator": cond.logic_operator,
+                "order_index": order_idx
+            })
+
+        logger.info(
+            f"Strategy synced successfully",
+            strategy_id=strategy_id,
+            indicators=len(created_indicators),
+            conditions=len(created_conditions)
+        )
+
+        return {
+            "success": True,
+            "message": "Strategy synced successfully",
+            "data": {
+                "id": strategy_id,
+                "name": payload.name or strategy_row["name"],
+                "symbols": payload.symbols,
+                "timeframe": payload.timeframe,
+                "indicators": created_indicators,
+                "conditions": created_conditions
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error syncing strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

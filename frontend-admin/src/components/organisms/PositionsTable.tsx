@@ -1,4 +1,10 @@
-import React, { useState } from 'react'
+/**
+ * PositionsTable Component
+ *
+ * 🚀 PERFORMANCE: PositionRow is now memoized and extracted outside
+ * the main component to prevent recreation on every render
+ */
+import React, { useState, memo, useCallback } from 'react'
 import { MoreVertical, TrendingUp, TrendingDown, X, Edit3, DollarSign, Percent } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
@@ -27,6 +33,120 @@ interface Position {
   fees: number
 }
 
+// 🚀 PERFORMANCE: Memoized PositionRow component
+// Extracted outside main component to prevent recreation on every render
+interface PositionRowProps {
+  position: Position
+  onClose: (id: string) => void
+  onEdit: (position: Position) => void
+}
+
+const PositionRow = memo(function PositionRow({ position, onClose, onEdit }: PositionRowProps) {
+  const pnlColor = position.unrealizedPnl >= 0 ? 'text-success' : 'text-destructive'
+  const sideColor = position.side === 'long' ? 'text-success' : 'text-destructive'
+  const SideIcon = position.side === 'long' ? TrendingUp : TrendingDown
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-7 gap-4 p-4 border-b last:border-b-0 hover:bg-muted/50 transition-colors">
+      {/* Symbol & Side */}
+      <div className="flex items-center space-x-3">
+        <div className={cn("p-2 rounded-full", position.side === 'long' ? 'bg-success/10' : 'bg-destructive/10')}>
+          <SideIcon className={cn("h-4 w-4", sideColor)} />
+        </div>
+        <div>
+          <div className="font-semibold">{position.symbol}</div>
+          <div className="flex items-center space-x-2">
+            <Badge variant="outline" className={cn("text-xs", sideColor)}>
+              {position.side.toUpperCase()}
+            </Badge>
+            <span className="text-xs text-muted-foreground">{position.leverage}x</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Size & Entry */}
+      <div className="space-y-1">
+        <div className="text-sm font-medium">
+          {new Intl.NumberFormat('en-US', {
+            minimumFractionDigits: 8,
+            maximumFractionDigits: 8
+          }).format(position.size)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Entry: {position.entryPrice.toFixed(2)}
+        </div>
+      </div>
+
+      {/* Mark Price */}
+      <div>
+        <PriceDisplay
+          price={position.markPrice}
+          previousPrice={position.entryPrice}
+          size="sm"
+          showChange={false}
+        />
+      </div>
+
+      {/* PnL */}
+      <div className="space-y-1">
+        <div className={cn("font-medium", pnlColor)}>
+          {position.unrealizedPnl >= 0 ? '+' : ''}{position.unrealizedPnl.toFixed(2)} USDT
+        </div>
+        <div className={cn("text-sm", pnlColor)}>
+          ({position.percentage >= 0 ? '+' : ''}{position.percentage.toFixed(2)}%)
+        </div>
+      </div>
+
+      {/* Margin */}
+      <div className="space-y-1">
+        <div className="text-sm">
+          {position.margin.toFixed(2)} USDT
+        </div>
+        {position.liquidationPrice && (
+          <div className="text-xs text-muted-foreground">
+            Liq: {position.liquidationPrice.toFixed(2)}
+          </div>
+        )}
+      </div>
+
+      {/* Exchange & Time */}
+      <div className="space-y-1">
+        <Badge variant="secondary" className="text-xs">
+          {position.exchange.toUpperCase()}
+        </Badge>
+        <div className="text-xs text-muted-foreground">
+          {formatDate(position.openedAt)}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center justify-end space-x-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => onEdit(position)}
+        >
+          <Edit3 className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+          onClick={() => onClose(position.id)}
+        >
+          <X className="h-4 w-4" />
+        </Button>
+
+        <Button variant="ghost" size="icon" className="h-8 w-8">
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  )
+})
+
 interface PositionsTableProps {
   positions: Position[]
   onClosePosition: (positionId: string) => void
@@ -47,7 +167,14 @@ const PositionsTable: React.FC<PositionsTableProps> = ({
   const activePositions = positions.filter(p => p.status === 'open')
   const totalUnrealizedPnl = activePositions.reduce((sum, p) => sum + p.unrealizedPnl, 0)
 
-  const handleModifyPosition = () => {
+  // 🚀 PERFORMANCE: useCallback to prevent recreating handler on each render
+  const handleEditPosition = useCallback((position: Position) => {
+    setSelectedPosition(position)
+    setStopLoss('')
+    setTakeProfit('')
+  }, [])
+
+  const handleModifyPosition = useCallback(() => {
     if (!selectedPosition) return
 
     onModifyPosition(selectedPosition.id, {
@@ -58,173 +185,7 @@ const PositionsTable: React.FC<PositionsTableProps> = ({
     setSelectedPosition(null)
     setStopLoss('')
     setTakeProfit('')
-  }
-
-  const PositionRow: React.FC<{ position: Position }> = ({ position }) => {
-    const pnlColor = position.unrealizedPnl >= 0 ? 'text-success' : 'text-destructive'
-    const sideColor = position.side === 'long' ? 'text-success' : 'text-destructive'
-    const SideIcon = position.side === 'long' ? TrendingUp : TrendingDown
-
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-7 gap-4 p-4 border-b last:border-b-0 hover:bg-muted/50 transition-colors">
-        {/* Symbol & Side */}
-        <div className="flex items-center space-x-3">
-          <div className={cn("p-2 rounded-full", position.side === 'long' ? 'bg-success/10' : 'bg-destructive/10')}>
-            <SideIcon className={cn("h-4 w-4", sideColor)} />
-          </div>
-          <div>
-            <div className="font-semibold">{position.symbol}</div>
-            <div className="flex items-center space-x-2">
-              <Badge variant="outline" className={cn("text-xs", sideColor)}>
-                {position.side.toUpperCase()}
-              </Badge>
-              <span className="text-xs text-muted-foreground">{position.leverage}x</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Size & Entry */}
-        <div className="space-y-1">
-          <div className="text-sm font-medium">
-            {new Intl.NumberFormat('en-US', { 
-              minimumFractionDigits: 8,
-              maximumFractionDigits: 8 
-            }).format(position.size)}
-          </div>
-          <div className="text-xs text-muted-foreground">
-            Entry: {position.entryPrice.toFixed(2)}
-          </div>
-        </div>
-
-        {/* Mark Price */}
-        <div>
-          <PriceDisplay 
-            price={position.markPrice}
-            previousPrice={position.entryPrice}
-            size="sm"
-            showChange={false}
-          />
-        </div>
-
-        {/* PnL */}
-        <div className="space-y-1">
-          <div className={cn("font-medium", pnlColor)}>
-            {position.unrealizedPnl >= 0 ? '+' : ''}{position.unrealizedPnl.toFixed(2)} USDT
-          </div>
-          <div className={cn("text-sm", pnlColor)}>
-            ({position.percentage >= 0 ? '+' : ''}{position.percentage.toFixed(2)}%)
-          </div>
-        </div>
-
-        {/* Margin */}
-        <div className="space-y-1">
-          <div className="text-sm">
-            {position.margin.toFixed(2)} USDT
-          </div>
-          {position.liquidationPrice && (
-            <div className="text-xs text-muted-foreground">
-              Liq: {position.liquidationPrice.toFixed(2)}
-            </div>
-          )}
-        </div>
-
-        {/* Exchange & Time */}
-        <div className="space-y-1">
-          <Badge variant="secondary" className="text-xs">
-            {position.exchange.toUpperCase()}
-          </Badge>
-          <div className="text-xs text-muted-foreground">
-            {formatDate(position.openedAt)}
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center justify-end space-x-1">
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => {
-                  setSelectedPosition(position)
-                  setStopLoss('')
-                  setTakeProfit('')
-                }}
-              >
-                <Edit3 className="h-4 w-4" />
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Modify Position - {position.symbol}</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-                  <div>
-                    <span className="text-sm text-muted-foreground">Size:</span>
-                    <div className="font-medium">{position.size}</div>
-                  </div>
-                  <div>
-                    <span className="text-sm text-muted-foreground">Side:</span>
-                    <div className={cn("font-medium", sideColor)}>{position.side.toUpperCase()}</div>
-                  </div>
-                  <div>
-                    <span className="text-sm text-muted-foreground">Entry Price:</span>
-                    <div className="font-medium">{position.entryPrice.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <span className="text-sm text-muted-foreground">Mark Price:</span>
-                    <div className="font-medium">{position.markPrice.toFixed(2)}</div>
-                  </div>
-                </div>
-
-                <FormField
-                  label="Stop Loss"
-                  type="number"
-                  placeholder="Stop loss price"
-                  value={stopLoss}
-                  onChange={(e) => setStopLoss(e.target.value)}
-                  hint="Optional stop loss price"
-                />
-
-                <FormField
-                  label="Take Profit"
-                  type="number"
-                  placeholder="Take profit price"
-                  value={takeProfit}
-                  onChange={(e) => setTakeProfit(e.target.value)}
-                  hint="Optional take profit price"
-                />
-
-                <div className="flex justify-end space-x-2">
-                  <Button variant="outline" onClick={() => setSelectedPosition(null)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={handleModifyPosition}>
-                    Update Position
-                  </Button>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
-
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-            onClick={() => onClosePosition(position.id)}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <MoreVertical className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-    )
-  }
+  }, [selectedPosition, stopLoss, takeProfit, onModifyPosition])
 
   return (
     <Card className={cn("w-full", className)}>
@@ -263,7 +224,12 @@ const PositionsTable: React.FC<PositionsTableProps> = ({
         ) : (
           <div className="divide-y">
             {activePositions.map((position) => (
-              <PositionRow key={position.id} position={position} />
+              <PositionRow
+                key={position.id}
+                position={position}
+                onClose={onClosePosition}
+                onEdit={handleEditPosition}
+              />
             ))}
           </div>
         )}
@@ -300,6 +266,66 @@ const PositionsTable: React.FC<PositionsTableProps> = ({
           </div>
         )}
       </CardContent>
+
+      {/* Edit Position Dialog */}
+      <Dialog open={!!selectedPosition} onOpenChange={(open) => !open && setSelectedPosition(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Modify Position - {selectedPosition?.symbol}</DialogTitle>
+          </DialogHeader>
+          {selectedPosition && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
+                <div>
+                  <span className="text-sm text-muted-foreground">Size:</span>
+                  <div className="font-medium">{selectedPosition.size}</div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Side:</span>
+                  <div className={cn("font-medium", selectedPosition.side === 'long' ? 'text-success' : 'text-destructive')}>
+                    {selectedPosition.side.toUpperCase()}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Entry Price:</span>
+                  <div className="font-medium">{selectedPosition.entryPrice.toFixed(2)}</div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Mark Price:</span>
+                  <div className="font-medium">{selectedPosition.markPrice.toFixed(2)}</div>
+                </div>
+              </div>
+
+              <FormField
+                label="Stop Loss"
+                type="number"
+                placeholder="Stop loss price"
+                value={stopLoss}
+                onChange={(e) => setStopLoss(e.target.value)}
+                hint="Optional stop loss price"
+              />
+
+              <FormField
+                label="Take Profit"
+                type="number"
+                placeholder="Take profit price"
+                value={takeProfit}
+                onChange={(e) => setTakeProfit(e.target.value)}
+                hint="Optional take profit price"
+              />
+
+              <div className="flex justify-end space-x-2">
+                <Button variant="outline" onClick={() => setSelectedPosition(null)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleModifyPosition}>
+                  Update Position
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

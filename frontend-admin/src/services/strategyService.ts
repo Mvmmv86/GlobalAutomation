@@ -200,6 +200,16 @@ export interface AddConditionData {
   order_index?: number
 }
 
+export interface SyncStrategyData {
+  name?: string
+  description?: string
+  symbols?: string[]
+  timeframe?: string
+  bot_id?: string | null
+  indicators: AddIndicatorData[]
+  conditions: AddConditionData[]
+}
+
 // Available indicator types
 export const INDICATOR_TYPES = [
   { value: 'nadaraya_watson', label: 'Nadaraya-Watson Envelope', params: { bandwidth: 8, mult: 3.0 } },
@@ -372,6 +382,20 @@ class StrategyService {
     }
 
     throw new Error(response.data?.message || 'Failed to update strategy')
+  }
+
+  /**
+   * Sync a strategy atomically - updates basic info, replaces all indicators and conditions
+   * This is a single atomic operation that prevents duplicates
+   */
+  async syncStrategy(strategyId: string, data: SyncStrategyData): Promise<StrategyWithRelations> {
+    const response = await apiClient.instance.put(`/strategies/${strategyId}/sync`, data)
+
+    if (response.data?.success && response.data?.data) {
+      return parseStrategyFields(response.data.data)
+    }
+
+    throw new Error(response.data?.message || 'Failed to sync strategy')
   }
 
   /**

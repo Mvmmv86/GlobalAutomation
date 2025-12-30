@@ -1,8 +1,11 @@
 /**
  * AdminDashboard Page
  * Main dashboard with KPIs and statistics for admin portal
+ *
+ * 🚀 PERFORMANCE: Removed useState + useQuery anti-pattern
+ * Now uses query data directly to avoid unnecessary re-renders
  */
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Users,
@@ -17,7 +20,7 @@ import {
 } from 'lucide-react'
 import { Card } from '@/components/atoms/Card'
 import { Badge } from '@/components/atoms/Badge'
-import { adminService, DashboardStats } from '@/services/adminService'
+import { adminService } from '@/services/adminService'
 import { useAuth } from '@/contexts/AuthContext'
 
 interface KPICardProps {
@@ -62,7 +65,6 @@ function KPICard({ title, value, icon, trend, color = 'blue' }: KPICardProps) {
 
 export function AdminDashboard() {
   const { user } = useAuth()
-  const [stats, setStats] = useState<DashboardStats | null>(null)
 
   // Set admin user ID when component mounts
   useEffect(() => {
@@ -71,18 +73,14 @@ export function AdminDashboard() {
     }
   }, [user?.id])
 
-  const { data, isLoading, error } = useQuery({
+  // 🚀 PERFORMANCE: Use data directly from query instead of copying to useState
+  // This eliminates an extra render cycle that was caused by useEffect + setState
+  const { data: stats, isLoading, error } = useQuery({
     queryKey: ['adminDashboardStats'],
     queryFn: () => adminService.getDashboardStats(),
-    // refetchInterval desabilitado para performance // Refresh every 30 seconds
+    staleTime: 60 * 1000, // 1 minute - data doesn't change frequently
     enabled: !!user?.id,
   })
-
-  useEffect(() => {
-    if (data) {
-      setStats(data)
-    }
-  }, [data])
 
   if (isLoading) {
     return (

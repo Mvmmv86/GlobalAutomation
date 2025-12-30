@@ -30,53 +30,33 @@ export function EditStrategyModal({ strategyId, isOpen, onClose, onSuccess }: Ed
     enabled: isOpen && !!strategyId,
   })
 
-  // Update strategy mutation
+  // Update strategy mutation - using atomic sync endpoint
   const updateMutation = useMutation({
     mutationFn: async (config: VisualStrategyConfig) => {
-      // Update basic strategy info
-      await strategyService.updateStrategy(strategyId, {
+      // Single atomic call that:
+      // 1. Updates basic info
+      // 2. Deletes ALL old indicators
+      // 3. Deletes ALL old conditions
+      // 4. Creates new indicators
+      // 5. Creates new conditions
+      return await strategyService.syncStrategy(strategyId, {
         name: config.name,
         description: config.description,
         symbols: config.symbols,
         timeframe: config.timeframe,
-        bot_id: config.bot_id || undefined,
+        bot_id: config.bot_id || null,
+        indicators: config.indicators.map((ind, idx) => ({
+          indicator_type: ind.type,
+          parameters: ind.parameters,
+          order_index: ind.order_index ?? idx,
+        })),
+        conditions: config.conditions.map((cond, idx) => ({
+          condition_type: cond.condition_type,
+          conditions: cond.conditions,
+          logic_operator: cond.logic_operator,
+          order_index: cond.order_index ?? idx,
+        })),
       })
-
-      // Get current strategy to compare indicators and conditions
-      const currentStrategy = await strategyService.getStrategy(strategyId)
-
-      if (currentStrategy) {
-        // Remove old indicators
-        for (const ind of currentStrategy.indicators || []) {
-          await strategyService.removeIndicator(strategyId, ind.id)
-        }
-
-        // Remove old conditions
-        for (const cond of currentStrategy.conditions || []) {
-          await strategyService.removeCondition(strategyId, cond.id)
-        }
-      }
-
-      // Add new indicators
-      for (const indicator of config.indicators) {
-        await strategyService.addIndicator(strategyId, {
-          indicator_type: indicator.type,
-          parameters: indicator.parameters,
-          order_index: indicator.order_index,
-        })
-      }
-
-      // Add new conditions
-      for (const condition of config.conditions) {
-        await strategyService.addCondition(strategyId, {
-          condition_type: condition.condition_type,
-          conditions: condition.conditions,
-          logic_operator: condition.logic_operator,
-          order_index: condition.order_index,
-        })
-      }
-
-      return strategy
     },
     onSuccess: () => {
       toast.success('Estrategia atualizada com sucesso!')

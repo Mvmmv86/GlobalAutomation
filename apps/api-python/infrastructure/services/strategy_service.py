@@ -163,7 +163,7 @@ class StrategyService:
         updates.pop("id", None)
         updates.pop("created_at", None)
 
-        updated = await self._strategy_repo.update(strategy_id, **updates)
+        updated = await self._strategy_repo.update(strategy_id, updates)
 
         if updated:
             logger.info(f"Strategy updated: {strategy_id}", updates=list(updates.keys()))
@@ -181,7 +181,7 @@ class StrategyService:
             True if deleted
         """
         # Deactivate first
-        await self._strategy_repo.update(strategy_id, is_active=False)
+        await self._strategy_repo.update(strategy_id, {"is_active": False})
 
         # Then delete
         deleted = await self._strategy_repo.delete(strategy_id)
@@ -217,7 +217,7 @@ class StrategyService:
             raise ValueError("Strategy must have at least one indicator configured")
 
         # Activate
-        updated = await self._strategy_repo.update(strategy_id, is_active=True)
+        updated = await self._strategy_repo.update(strategy_id, {"is_active": True})
 
         logger.info(f"Strategy activated: {strategy_id}")
 
@@ -233,7 +233,7 @@ class StrategyService:
         Returns:
             Updated Strategy
         """
-        updated = await self._strategy_repo.update(strategy_id, is_active=False)
+        updated = await self._strategy_repo.update(strategy_id, {"is_active": False})
 
         logger.info(f"Strategy deactivated: {strategy_id}")
 
@@ -283,7 +283,7 @@ class StrategyService:
         **updates
     ) -> Optional[StrategyIndicator]:
         """Update an indicator's parameters"""
-        return await self._indicator_repo.update(indicator_id, **updates)
+        return await self._indicator_repo.update(indicator_id, updates)
 
     async def remove_indicator(self, indicator_id: str) -> bool:
         """Remove an indicator from a strategy"""
@@ -396,7 +396,7 @@ class StrategyService:
         if not bot:
             raise ValueError(f"Bot {bot_id} not found")
 
-        updated = await self._strategy_repo.update(strategy_id, bot_id=bot_id)
+        updated = await self._strategy_repo.update(strategy_id, {"bot_id": bot_id})
 
         logger.info(
             f"Strategy linked to bot",
@@ -417,7 +417,7 @@ class StrategyService:
         Returns:
             Updated Strategy
         """
-        updated = await self._strategy_repo.update(strategy_id, bot_id=None)
+        updated = await self._strategy_repo.update(strategy_id, {"bot_id": None})
 
         logger.info(f"Strategy unlinked from bot", strategy_id=strategy_id)
 
@@ -442,8 +442,7 @@ class StrategyService:
         # Update strategy with YAML
         updated = await self._strategy_repo.update(
             strategy_id,
-            config_type=ConfigType.YAML,
-            config_yaml=yaml_content
+            {"config_type": ConfigType.YAML, "config_yaml": yaml_content}
         )
 
         logger.info(f"YAML config applied", strategy_id=strategy_id)
@@ -468,9 +467,9 @@ class StrategyService:
 
         # Update symbols and timeframe if provided
         if "symbols" in config:
-            await self._strategy_repo.update(strategy_id, symbols=config["symbols"])
+            await self._strategy_repo.update(strategy_id, {"symbols": config["symbols"]})
         if "timeframe" in config:
-            await self._strategy_repo.update(strategy_id, timeframe=config["timeframe"])
+            await self._strategy_repo.update(strategy_id, {"timeframe": config["timeframe"]})
 
         # Create indicators
         indicators_config = config.get("indicators", [])

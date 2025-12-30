@@ -90,12 +90,19 @@ class SyncScheduler:
 
     async def _sync_loop(self):
         """Loop principal de sincronização"""
+        sync_counter = 0  # Counter to run some tasks less frequently
         while self.is_running:
             try:
                 await self._sync_all_accounts()
 
                 # Monitor SL/TP orders for bot subscriptions
                 await self._monitor_bot_sltp_orders()
+
+                # 🔄 Sync bot position counters every 2 minutes (every 4 loops)
+                sync_counter += 1
+                if sync_counter >= 4:
+                    await self._sync_bot_position_counters()
+                    sync_counter = 0
 
                 # 📅 Check and reset daily loss counters at midnight UTC
                 await self._check_daily_reset()
@@ -271,6 +278,30 @@ class SyncScheduler:
 
         except Exception as e:
             logger.error(f"❌ Error in bot SL/TP monitoring: {e}")
+
+    async def _sync_bot_position_counters(self):
+        """
+        Sync bot position counters with actual open positions.
+        Closes ghost trades and corrects subscription counters.
+        """
+        try:
+            from infrastructure.services.bot_trade_tracker_service import BotTradeTrackerService
+
+            tracker = BotTradeTrackerService(transaction_db)
+            result = await tracker.sync_position_counters()
+
+            if result.get("success"):
+                updated = result.get("updated_count", 0)
+                ghosts = result.get("ghost_trades_closed", 0)
+                if updated > 0 or ghosts > 0:
+                    logger.info(
+                        f"🔄 Position counter sync: {updated} corrections, {ghosts} ghost trades closed"
+                    )
+            else:
+                logger.warning(f"⚠️ Position counter sync failed: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"❌ Error syncing bot position counters: {e}")
 
     async def _check_daily_reset(self):
         """
@@ -503,37 +534,40 @@ class SyncScheduler:
                 ORDER BY created_at DESC LIMIT 1
             """)
 
-            # 2. Buscar estratégias ativas e importantes
+            # 2. Buscar estratégias ativas
             strategies = await transaction_db.fetch("""
                 SELECT
-                    s.id, s.name, s.symbol, s.direction, s.timeframe,
-                    s.is_important, s.is_active,
+                    s.id, s.name, s.symbols, s.timeframe, s.is_active,
                     COUNT(DISTINCT ss.id) as total_signals,
-                    SUM(CASE WHEN ss.result = 'win' THEN 1 ELSE 0 END) as wins,
-                    SUM(CASE WHEN ss.result = 'loss' THEN 1 ELSE 0 END) as losses
+                    SUM(CASE WHEN ss.status = 'executed' THEN 1 ELSE 0 END) as executed,
+                    SUM(CASE WHEN ss.status = 'failed' THEN 1 ELSE 0 END) as failed
                 FROM strategies s
                 LEFT JOIN strategy_signals ss ON ss.strategy_id = s.id
                     AND ss.created_at > NOW() - INTERVAL '7 days'
                 WHERE s.is_active = true
                 GROUP BY s.id
-                ORDER BY s.is_important DESC, wins DESC
+                ORDER BY executed DESC
                 LIMIT 20
             """)
 
-            # 3. Buscar performance dos bots ativos
-            bots_performance = await transaction_db.fetch("""
-                SELECT
-                    b.id, b.name, b.symbol, b.exchange,
-                    COUNT(DISTINCT bs.id) as subscribers,
-                    AVG(bs.total_pnl_usd) as avg_pnl,
-                    AVG(bs.win_count::float / NULLIF(bs.win_count + bs.loss_count, 0) * 100) as avg_win_rate
-                FROM bots b
-                JOIN bot_subscriptions bs ON bs.bot_id = b.id
-                WHERE b.is_active = true AND bs.status = 'active'
-                GROUP BY b.id
-                ORDER BY avg_pnl DESC
-                LIMIT 10
-            """)
+            # 3. Buscar performance dos bots ativos (com fallback se tabela não existir)
+            try:
+                bots_performance = await transaction_db.fetch("""
+                    SELECT
+                        b.id, b.name,
+                        COUNT(DISTINCT bs.id) as subscribers,
+                        AVG(bs.total_pnl_usd) as avg_pnl,
+                        AVG(bs.win_count::float / NULLIF(bs.win_count + bs.loss_count, 0) * 100) as avg_win_rate
+                    FROM bots b
+                    JOIN bot_subscriptions bs ON bs.bot_id = b.id
+                    WHERE b.is_active = true AND bs.status = 'active'
+                    GROUP BY b.id, b.name
+                    ORDER BY avg_pnl DESC
+                    LIMIT 10
+                """)
+            except Exception as bot_err:
+                logger.warning(f"Could not fetch bot performance: {bot_err}")
+                bots_performance = []
 
             # 4. Preparar contexto para a IA
             news_context = ""
@@ -552,18 +586,17 @@ class SyncScheduler:
                 ])
 
             strategies_context = "\n".join([
-                f"- {s['name']} ({s['symbol']}, {s['direction']}): {s['wins'] or 0}W/{s['losses'] or 0}L nos últimos 7 dias"
-                + (" ⭐ IMPORTANTE" if s['is_important'] else "")
+                f"- {s['name']} ({s['symbols']}, {s['timeframe']}): {s['total_signals'] or 0} sinais, {s['executed'] or 0} executados nos últimos 7 dias"
                 for s in strategies
             ])
 
             bots_context = "\n".join([
-                f"- {b['name']} ({b['symbol']}): {b['subscribers']} assinantes, PnL médio ${float(b['avg_pnl'] or 0):.2f}, Win rate {float(b['avg_win_rate'] or 0):.1f}%"
+                f"- {b['name']}: {b['subscribers']} assinantes, PnL médio ${float(b['avg_pnl'] or 0):.2f}, Win rate {float(b['avg_win_rate'] or 0):.1f}%"
                 for b in bots_performance
             ])
 
             # 5. Gerar análise com a IA
-            ai_service = TradingAIService()
+            ai_service = TradingAIService(db_pool=transaction_db)
 
             prompt = f"""Como analista de trading institucional, gere um RESUMO DIÁRIO DO MERCADO CRYPTO.
 
@@ -614,10 +647,11 @@ Seja direto e prático. Foque em insights ACIONÁVEIS baseados nas estratégias 
 
             response = await ai_service.chat(
                 message=prompt,
-                context_type="market"
+                context={"type": "market"}
             )
 
-            report_content = response.get('response', 'Erro ao gerar relatório')
+            # chat() returns string directly, not dict
+            report_content = response if isinstance(response, str) else str(response)
 
             # 6. Salvar o alerta para aparecer no chat
             report_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')

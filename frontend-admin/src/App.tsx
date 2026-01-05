@@ -24,7 +24,7 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/dashboard-admin">
+      <BrowserRouter>
         <ThemeProvider defaultTheme="dark">
           <AuthProvider>
             <ChatProvider>

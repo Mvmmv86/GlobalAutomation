@@ -5,8 +5,13 @@ class ApiClient {
   public instance: AxiosInstance
 
   constructor() {
+    // Em produção usa VITE_API_URL, em dev usa proxy do Vite
+    const baseURL = import.meta.env.VITE_API_URL
+      ? `${import.meta.env.VITE_API_URL}/api/v1`
+      : '/api/v1'
+
     this.instance = axios.create({
-      baseURL: '/api/v1', // Usar proxy do Vite
+      baseURL,
       timeout: 300000, // 5 minutes - needed for long backtests
       headers: {
         'Content-Type': 'application/json',
@@ -58,8 +63,12 @@ class ApiClient {
       throw new Error('No refresh token')
     }
 
+    const refreshURL = import.meta.env.VITE_API_URL
+      ? `${import.meta.env.VITE_API_URL}/api/v1/auth/refresh`
+      : '/api/v1/auth/refresh'
+
     const response = await axios.post(
-      '/api/v1/auth/refresh',
+      refreshURL,
       { refreshToken }
     )
 

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info, ChevronDown, ChevronUp, CheckCircle, XCircle, Download, FileSpreadsheet } from 'lucide-react'
+import { X, TrendingUp, Activity, DollarSign, Target, Calendar, Loader2, Filter, Share2, Info, ChevronDown, ChevronUp, CheckCircle, XCircle, Download, FileSpreadsheet, Settings } from 'lucide-react'
 import { BotSubscription, botsService, SubscriptionPerformance, ExchangeSubscription } from '@/services/botsService'
 import { BotPnLChart } from './BotPnLChart'
 import { BotWinRateChart } from './BotWinRateChart'
 import { SharePnLModal } from './SharePnLModal'
+import { SubscriptionSymbolConfigsModal } from './SubscriptionSymbolConfigsModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { Badge } from '../atoms/Badge'
 
@@ -74,6 +75,7 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   const [isLoading, setIsLoading] = useState(false)
   const [selectedDays, setSelectedDays] = useState(30)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
+  const [isSymbolConfigsModalOpen, setIsSymbolConfigsModalOpen] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   // Multi-exchange tab selection: 'TOTAL' or exchange subscription_id
   const [selectedExchangeTab, setSelectedExchangeTab] = useState<string>('TOTAL')
@@ -130,22 +132,134 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
   useEffect(() => {
     if (isOpen && subscription && user?.id) {
       setIsLoading(true)
-      const subscriptionId = getActiveSubscriptionId()
-      if (!subscriptionId) {
-        setIsLoading(false)
-        return
-      }
 
-      botsService.getSubscriptionPerformance(subscriptionId, user.id, selectedDays)
-        .then(data => {
-          setPerformance(data)
-        })
-        .catch(err => {
-          console.error('Error fetching performance:', err)
-        })
-        .finally(() => {
+      // If TOTAL tab with multiple exchanges, fetch all and aggregate
+      if (selectedExchangeTab === 'TOTAL' && hasMultipleExchanges && exchanges.length > 0) {
+        // Fetch performance for ALL exchanges in parallel
+        const fetchPromises = exchanges.map(ex =>
+          botsService.getSubscriptionPerformance(ex.subscription_id, user.id, selectedDays)
+            .catch(err => {
+              console.error(`Error fetching performance for ${ex.exchange}:`, err)
+              return null
+            })
+        )
+
+        Promise.all(fetchPromises)
+          .then(results => {
+            // Filter out null results
+            const validResults = results.filter(r => r !== null) as SubscriptionPerformance[]
+
+            if (validResults.length === 0) {
+              setPerformance(null)
+              return
+            }
+
+            // Aggregate all results
+            const aggregated: SubscriptionPerformance = {
+              subscription_id: 'TOTAL',
+              bot_name: subscription.bot_name,
+              days_filter: selectedDays,
+              filtered_summary: {
+                total_pnl_usd: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_pnl_usd || 0), 0),
+                win_rate: 0, // Will calculate below
+                total_wins: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_wins || 0), 0),
+                total_losses: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_losses || 0), 0),
+                total_trades: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_trades || 0), 0),
+                closed_trades: validResults.reduce((sum, r) => sum + (r.filtered_summary?.closed_trades || 0), 0),
+                open_trades: validResults.reduce((sum, r) => sum + (r.filtered_summary?.open_trades || 0), 0),
+                total_signals: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_signals || 0), 0),
+                total_orders_executed: validResults.reduce((sum, r) => sum + (r.filtered_summary?.total_orders_executed || 0), 0),
+              },
+              all_time_summary: {
+                total_pnl_usd: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_pnl_usd || 0), 0),
+                win_rate: 0,
+                total_wins: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_wins || 0), 0),
+                total_losses: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_losses || 0), 0),
+                total_trades: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_trades || 0), 0),
+                total_signals: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_signals || 0), 0),
+                total_orders_executed: validResults.reduce((sum, r) => sum + (r.all_time_summary?.total_orders_executed || 0), 0),
+              },
+              current_state: {
+                current_positions: validResults.reduce((sum, r) => sum + (r.current_state?.current_positions || 0), 0),
+                max_concurrent_positions: validResults.reduce((sum, r) => sum + (r.current_state?.max_concurrent_positions || 0), 0),
+                today_loss_usd: validResults.reduce((sum, r) => sum + (r.current_state?.today_loss_usd || 0), 0),
+                max_daily_loss_usd: validResults.reduce((sum, r) => sum + (r.current_state?.max_daily_loss_usd || 0), 0),
+              },
+              pnl_history: [] // Combine histories below
+            }
+
+            // Calculate win rate from aggregated values
+            const totalClosed = aggregated.filtered_summary.total_wins + aggregated.filtered_summary.total_losses
+            aggregated.filtered_summary.win_rate = totalClosed > 0
+              ? (aggregated.filtered_summary.total_wins / totalClosed) * 100
+              : 0
+
+            // Combine and sort P&L histories (merge by date)
+            const historyMap = new Map<string, { daily_pnl: number; cumulative_pnl: number; trades_count: number }>()
+            validResults.forEach(r => {
+              (r.pnl_history || []).forEach(h => {
+                const existing = historyMap.get(h.date) || { daily_pnl: 0, cumulative_pnl: 0, trades_count: 0 }
+                historyMap.set(h.date, {
+                  daily_pnl: existing.daily_pnl + h.daily_pnl,
+                  cumulative_pnl: 0, // Will recalculate
+                  trades_count: existing.trades_count + (h as any).trades_count || 0
+                })
+              })
+            })
+
+            // Sort by date and recalculate cumulative
+            const sortedDates = Array.from(historyMap.keys()).sort()
+            let cumulative = 0
+            aggregated.pnl_history = sortedDates.map(date => {
+              const h = historyMap.get(date)!
+              cumulative += h.daily_pnl
+              return {
+                date,
+                daily_pnl: h.daily_pnl,
+                cumulative_pnl: cumulative,
+                daily_wins: 0,
+                daily_losses: 0,
+                cumulative_wins: 0,
+                cumulative_losses: 0,
+                win_rate: 0
+              }
+            })
+
+            // Also aggregate trades_list from all results
+            const allTrades: any[] = []
+            validResults.forEach(r => {
+              const trades = (r as any).trades_list || []
+              trades.forEach((t: any) => allTrades.push(t))
+            })
+            // Sort by datetime and re-index
+            allTrades.sort((a, b) => a.datetime.localeCompare(b.datetime))
+            allTrades.forEach((t, idx) => t.index = idx + 1);
+            (aggregated as any).trades_list = allTrades
+
+            setPerformance(aggregated)
+          })
+          .finally(() => {
+            setIsLoading(false)
+          })
+      } else {
+        // Single exchange or specific exchange selected
+        const subscriptionId = getActiveSubscriptionId()
+        if (!subscriptionId) {
           setIsLoading(false)
-        })
+          return
+        }
+
+        botsService.getSubscriptionPerformance(subscriptionId, user.id, selectedDays)
+          .then(data => {
+            setPerformance(data)
+          })
+          .catch(err => {
+            console.error('Error fetching performance:', err)
+          })
+          .finally(() => {
+            setIsLoading(false)
+          })
+      }
     }
   }, [isOpen, subscription, user?.id, selectedDays, selectedExchangeTab])
 
@@ -331,6 +445,14 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
                 ))}
               </select>
             </div>
+            {/* Symbol Configs Button */}
+            <button
+              onClick={() => setIsSymbolConfigsModalOpen(true)}
+              className="flex items-center gap-2 bg-purple-500/10 text-purple-400 border border-purple-500/30 rounded-lg px-3 py-2 hover:bg-purple-500/20 transition-colors"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="text-sm font-medium">Ativos</span>
+            </button>
             {/* Share Button */}
             <button
               onClick={() => setIsShareModalOpen(true)}
@@ -787,6 +909,13 @@ export const BotDetailsModal: React.FC<BotDetailsModalProps> = ({
         winRate={Number(getWinRate())}
         totalTrades={getWinCount() + getLossCount()}
         period={getPeriodLabel()}
+      />
+
+      {/* Symbol Configs Modal */}
+      <SubscriptionSymbolConfigsModal
+        isOpen={isSymbolConfigsModalOpen}
+        onClose={() => setIsSymbolConfigsModalOpen(false)}
+        subscription={subscription}
       />
     </div>
   )

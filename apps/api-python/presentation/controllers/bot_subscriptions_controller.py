@@ -162,8 +162,8 @@ async def fetch_pnl_from_exchange(
             connector = BinanceConnector(api_key=api_key, api_secret=api_secret, testnet=is_testnet)
 
             try:
-                # Binance uses get_futures_income
-                income_result = await connector.get_futures_income(
+                # Binance uses get_futures_income_history
+                income_result = await connector.get_futures_income_history(
                     income_type="REALIZED_PNL",
                     start_time=start_time,
                     end_time=end_time,
@@ -171,7 +171,7 @@ async def fetch_pnl_from_exchange(
                 )
 
                 if income_result.get("success"):
-                    income_history = income_result.get("income", [])
+                    income_history = income_result.get("income_history", [])
 
                     total_pnl = 0.0
                     pnl_by_symbol = {}
@@ -342,6 +342,7 @@ async def get_available_bots():
                 id, name, description, market_type,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct,
+                default_max_positions,
                 total_subscribers, total_signals_sent,
                 avg_win_rate, avg_pnl_pct,
                 created_at
@@ -357,6 +358,56 @@ async def get_available_bots():
 
     except Exception as e:
         logger.error("Error getting available bots", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/bot/{bot_id}/symbol-configs")
+async def get_bot_symbol_configs_public(bot_id: str):
+    """
+    Get symbol configs for a bot (public endpoint for clients to see available symbols).
+    Returns the configs set by admin so clients can see/customize them during subscription.
+    """
+    try:
+        # Verify bot exists and is active
+        bot = await transaction_db.fetchrow("""
+            SELECT id, name, status, default_leverage, default_margin_usd,
+                   default_stop_loss_pct, default_take_profit_pct, default_max_positions
+            FROM bots WHERE id = $1
+        """, bot_id)
+
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        # Get symbol configs (set by admin)
+        configs = await transaction_db.fetch("""
+            SELECT
+                symbol, leverage, margin_usd, stop_loss_pct, take_profit_pct,
+                max_positions, is_active, created_at, updated_at
+            FROM bot_symbol_configs
+            WHERE bot_id = $1
+            ORDER BY symbol
+        """, bot_id)
+
+        return {
+            "success": True,
+            "data": {
+                "bot_id": bot_id,
+                "bot_name": bot["name"],
+                "configs": [dict(cfg) for cfg in configs],
+                "bot_defaults": {
+                    "default_leverage": bot["default_leverage"],
+                    "default_margin_usd": bot["default_margin_usd"],
+                    "default_stop_loss_pct": bot["default_stop_loss_pct"],
+                    "default_take_profit_pct": bot["default_take_profit_pct"],
+                    "default_max_positions": bot["default_max_positions"]
+                }
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting bot symbol configs", bot_id=bot_id, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1742,4 +1793,468 @@ async def reset_daily_loss_counters():
             error=str(e),
             exc_info=True
         )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SUBSCRIPTION SYMBOL CONFIGS - Per-symbol trading configuration for clients
+# ============================================================================
+
+class SubscriptionSymbolConfigCreate(BaseModel):
+    """Model for creating/updating a subscription symbol config"""
+    symbol: str = Field(..., min_length=3, max_length=20)
+    exchange_account_id: Optional[str] = Field(None, description="Exchange account UUID (required for per-exchange configs)")
+    leverage: Optional[int] = Field(None, ge=1, le=125)
+    margin_usd: Optional[float] = Field(None, ge=5.0)
+    stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
+    take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
+    use_bot_default: bool = Field(default=True, description="If True, use bot's symbol config; if False, use custom values")
+    is_active: bool = Field(default=True, description="If False, client won't trade this symbol")
+
+
+class SubscriptionSymbolConfigBatchUpdate(BaseModel):
+    """Model for batch updating subscription symbol configs"""
+    configs: List[SubscriptionSymbolConfigCreate]
+
+
+@router.get("/{subscription_id}/symbol-configs")
+async def get_subscription_symbol_configs(
+    subscription_id: str,
+    user_id: str = Query(..., description="User ID for verification"),
+    exchange_account_id: Optional[str] = Query(None, description="Filter by exchange account (optional)")
+):
+    """
+    Get all symbol configs for a subscription.
+    Returns:
+    - Client's custom configs (subscription_symbol_configs) - per exchange
+    - Bot's default configs (bot_symbol_configs)
+    - Strategy symbols that don't have configs yet
+    - Exchange accounts linked to this subscription
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT bs.id, bs.bot_id, bs.exchange_account_id, b.name as bot_name
+            FROM bot_subscriptions bs
+            INNER JOIN bots b ON b.id = bs.bot_id
+            WHERE bs.id = $1 AND bs.user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        bot_id = subscription["bot_id"]
+
+        # Get all exchange accounts linked to this subscription (via config_group or direct)
+        exchange_accounts = await transaction_db.fetch("""
+            SELECT DISTINCT ea.id, ea.name as account_name, ea.exchange
+            FROM bot_subscriptions bs
+            INNER JOIN exchange_accounts ea ON ea.id = bs.exchange_account_id
+            WHERE bs.id = $1
+               OR bs.config_group_id = (SELECT config_group_id FROM bot_subscriptions WHERE id = $1 AND config_group_id IS NOT NULL)
+            ORDER BY ea.exchange, ea.name
+        """, subscription_id)
+
+        # If exchange_account_id provided, filter; otherwise use subscription's exchange
+        target_exchange_id = exchange_account_id or str(subscription["exchange_account_id"])
+
+        # Get client's custom configs for this exchange
+        client_configs = await transaction_db.fetch("""
+            SELECT id, subscription_id, exchange_account_id, symbol, leverage, margin_usd,
+                   stop_loss_pct, take_profit_pct, use_bot_default, is_active,
+                   created_at, updated_at
+            FROM subscription_symbol_configs
+            WHERE subscription_id = $1 AND exchange_account_id = $2
+            ORDER BY symbol
+        """, subscription_id, target_exchange_id)
+
+        # Get bot's default symbol configs
+        bot_configs = await transaction_db.fetch("""
+            SELECT id, bot_id, symbol, leverage, margin_usd, stop_loss_pct,
+                   take_profit_pct, max_positions, is_active,
+                   created_at, updated_at
+            FROM bot_symbol_configs
+            WHERE bot_id = $1
+            ORDER BY symbol
+        """, bot_id)
+
+        # Get bot global defaults
+        bot_defaults = await transaction_db.fetchrow("""
+            SELECT default_leverage, default_margin_usd, default_stop_loss_pct,
+                   default_take_profit_pct, default_max_positions
+            FROM bots
+            WHERE id = $1
+        """, bot_id)
+
+        # Get symbols from linked strategy
+        strategy = await transaction_db.fetchrow("""
+            SELECT symbols FROM strategies WHERE bot_id = $1
+        """, bot_id)
+
+        strategy_symbols = []
+        if strategy and strategy["symbols"]:
+            import json
+            if isinstance(strategy["symbols"], list):
+                strategy_symbols = strategy["symbols"]
+            else:
+                strategy_symbols = json.loads(strategy["symbols"])
+
+        # Build combined view
+        client_configs_map = {c["symbol"]: dict(c) for c in client_configs}
+        bot_configs_map = {c["symbol"]: dict(c) for c in bot_configs}
+
+        combined_symbols = []
+        for symbol in strategy_symbols:
+            symbol_upper = symbol.upper()
+            client_config = client_configs_map.get(symbol_upper)
+            bot_config = bot_configs_map.get(symbol_upper)
+
+            # Determine effective config
+            if client_config and not client_config["use_bot_default"]:
+                # Client has custom config
+                effective = {
+                    "leverage": client_config["leverage"],
+                    "margin_usd": float(client_config["margin_usd"]) if client_config["margin_usd"] else None,
+                    "stop_loss_pct": float(client_config["stop_loss_pct"]) if client_config["stop_loss_pct"] else None,
+                    "take_profit_pct": float(client_config["take_profit_pct"]) if client_config["take_profit_pct"] else None,
+                    "source": "custom"
+                }
+            elif bot_config:
+                # Use bot's symbol-specific config
+                effective = {
+                    "leverage": bot_config["leverage"],
+                    "margin_usd": float(bot_config["margin_usd"]),
+                    "stop_loss_pct": float(bot_config["stop_loss_pct"]),
+                    "take_profit_pct": float(bot_config["take_profit_pct"]),
+                    "source": "bot_symbol"
+                }
+            else:
+                # Use bot's global defaults
+                effective = {
+                    "leverage": bot_defaults["default_leverage"] if bot_defaults else 10,
+                    "margin_usd": float(bot_defaults["default_margin_usd"]) if bot_defaults and bot_defaults["default_margin_usd"] else 20.0,
+                    "stop_loss_pct": float(bot_defaults["default_stop_loss_pct"]) if bot_defaults and bot_defaults["default_stop_loss_pct"] else 3.0,
+                    "take_profit_pct": float(bot_defaults["default_take_profit_pct"]) if bot_defaults and bot_defaults["default_take_profit_pct"] else 5.0,
+                    "source": "bot_default"
+                }
+
+            combined_symbols.append({
+                "symbol": symbol_upper,
+                "client_config": client_config,
+                "bot_config": bot_config,
+                "effective_config": effective,
+                "is_active": client_config["is_active"] if client_config else True,
+                "use_bot_default": client_config["use_bot_default"] if client_config else True
+            })
+
+        return {
+            "success": True,
+            "data": {
+                "subscription_id": subscription_id,
+                "bot_id": str(bot_id),
+                "bot_name": subscription["bot_name"],
+                "symbols": combined_symbols,
+                "bot_global_defaults": dict(bot_defaults) if bot_defaults else None,
+                "total_symbols": len(strategy_symbols),
+                "configured_symbols": len(client_configs),
+                "current_exchange_id": target_exchange_id,
+                "exchanges": [
+                    {
+                        "id": str(ea["id"]),
+                        "name": ea["account_name"],
+                        "exchange": ea["exchange"]
+                    }
+                    for ea in exchange_accounts
+                ]
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting subscription symbol configs",
+                    subscription_id=subscription_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{subscription_id}/symbol-configs")
+async def create_or_update_subscription_symbol_configs(
+    subscription_id: str,
+    data: SubscriptionSymbolConfigBatchUpdate,
+    user_id: str = Query(..., description="User ID for verification"),
+    exchange_account_id: Optional[str] = Query(None, description="Default exchange account for configs without explicit exchange_account_id")
+):
+    """
+    Create or update symbol configs for a subscription (batch operation).
+    Uses UPSERT to handle both create and update.
+    Supports per-exchange configurations.
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT id, exchange_account_id FROM bot_subscriptions
+            WHERE id = $1 AND user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Default exchange_account_id from subscription if not provided
+        default_exchange_id = exchange_account_id or str(subscription["exchange_account_id"])
+
+        created_count = 0
+        updated_count = 0
+
+        for config in data.configs:
+            # Use config's exchange_account_id or default
+            target_exchange_id = config.exchange_account_id or default_exchange_id
+
+            # Check if config exists for this subscription + exchange + symbol
+            existing = await transaction_db.fetchval("""
+                SELECT id FROM subscription_symbol_configs
+                WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+            """, subscription_id, target_exchange_id, config.symbol.upper())
+
+            if existing:
+                # Update
+                await transaction_db.execute("""
+                    UPDATE subscription_symbol_configs
+                    SET leverage = $4, margin_usd = $5, stop_loss_pct = $6,
+                        take_profit_pct = $7, use_bot_default = $8, is_active = $9,
+                        updated_at = NOW()
+                    WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+                """, subscription_id, target_exchange_id, config.symbol.upper(),
+                    config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.use_bot_default,
+                    config.is_active)
+                updated_count += 1
+            else:
+                # Create
+                await transaction_db.execute("""
+                    INSERT INTO subscription_symbol_configs
+                    (subscription_id, exchange_account_id, symbol, leverage, margin_usd, stop_loss_pct,
+                     take_profit_pct, use_bot_default, is_active)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                """, subscription_id, target_exchange_id, config.symbol.upper(),
+                    config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.use_bot_default,
+                    config.is_active)
+                created_count += 1
+
+        logger.info("Subscription symbol configs saved",
+                   subscription_id=subscription_id, exchange_account_id=default_exchange_id,
+                   created=created_count, updated=updated_count)
+
+        return {
+            "success": True,
+            "message": f"Criado {created_count}, atualizado {updated_count} configuracoes de simbolos",
+            "data": {"created": created_count, "updated": updated_count}
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error saving subscription symbol configs",
+                    subscription_id=subscription_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{subscription_id}/symbol-configs/{symbol}")
+async def delete_subscription_symbol_config(
+    subscription_id: str,
+    symbol: str,
+    user_id: str = Query(..., description="User ID for verification"),
+    exchange_account_id: Optional[str] = Query(None, description="Exchange account to delete config for")
+):
+    """Delete a specific symbol config from a subscription (reverts to bot default)"""
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT id, exchange_account_id FROM bot_subscriptions
+            WHERE id = $1 AND user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Default to subscription's exchange if not specified
+        target_exchange_id = exchange_account_id or str(subscription["exchange_account_id"])
+
+        result = await transaction_db.execute("""
+            DELETE FROM subscription_symbol_configs
+            WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+        """, subscription_id, target_exchange_id, symbol.upper())
+
+        if "DELETE 0" in result:
+            raise HTTPException(status_code=404, detail="Symbol config not found")
+
+        logger.info("Subscription symbol config deleted",
+                   subscription_id=subscription_id, exchange_account_id=target_exchange_id, symbol=symbol)
+
+        return {"success": True, "message": f"Configuracao do simbolo {symbol} removida (usando padrao do bot)"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error deleting subscription symbol config",
+                    subscription_id=subscription_id, symbol=symbol, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{subscription_id}/symbol-configs/sync-from-bot")
+async def sync_symbol_configs_from_bot(
+    subscription_id: str,
+    user_id: str = Query(..., description="User ID for verification"),
+    exchange_account_id: Optional[str] = Query(None, description="Exchange account to sync for (optional, syncs for all if not specified)")
+):
+    """
+    Sync symbols from bot to subscription_symbol_configs.
+    Creates configs for symbols that don't have one yet, with use_bot_default=True.
+    Supports per-exchange sync.
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT bs.id, bs.bot_id, bs.exchange_account_id FROM bot_subscriptions bs
+            WHERE bs.id = $1 AND bs.user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        bot_id = subscription["bot_id"]
+
+        # Determine which exchanges to sync
+        if exchange_account_id:
+            exchange_ids = [exchange_account_id]
+        else:
+            # Get all exchanges for this subscription (via config_group or direct)
+            exchanges = await transaction_db.fetch("""
+                SELECT DISTINCT bs.exchange_account_id
+                FROM bot_subscriptions bs
+                WHERE bs.id = $1
+                   OR bs.config_group_id = (SELECT config_group_id FROM bot_subscriptions WHERE id = $1 AND config_group_id IS NOT NULL)
+            """, subscription_id)
+            exchange_ids = [str(e["exchange_account_id"]) for e in exchanges]
+
+        # Get symbols from strategy
+        strategy = await transaction_db.fetchrow("""
+            SELECT symbols FROM strategies WHERE bot_id = $1
+        """, bot_id)
+
+        if not strategy or not strategy["symbols"]:
+            return {
+                "success": True,
+                "message": "Nenhuma estrategia vinculada a este bot ou sem simbolos definidos",
+                "data": {"created": 0}
+            }
+
+        import json
+        if isinstance(strategy["symbols"], list):
+            strategy_symbols = strategy["symbols"]
+        else:
+            strategy_symbols = json.loads(strategy["symbols"])
+
+        # Create configs for new symbols for each exchange
+        created_count = 0
+        for exch_id in exchange_ids:
+            # Get existing configs for this exchange
+            existing = await transaction_db.fetch("""
+                SELECT symbol FROM subscription_symbol_configs
+                WHERE subscription_id = $1 AND exchange_account_id = $2
+            """, subscription_id, exch_id)
+            existing_symbols = {e["symbol"] for e in existing}
+
+            for symbol in strategy_symbols:
+                symbol_upper = symbol.upper()
+                if symbol_upper not in existing_symbols:
+                    await transaction_db.execute("""
+                        INSERT INTO subscription_symbol_configs
+                        (subscription_id, exchange_account_id, symbol, use_bot_default, is_active)
+                        VALUES ($1, $2, $3, TRUE, TRUE)
+                    """, subscription_id, exch_id, symbol_upper)
+                    created_count += 1
+
+        logger.info("Subscription symbol configs synced from bot",
+                   subscription_id=subscription_id, exchanges=len(exchange_ids), created=created_count)
+
+        return {
+            "success": True,
+            "message": f"Sincronizado {created_count} novos simbolos da estrategia para {len(exchange_ids)} exchange(s)",
+            "data": {
+                "created": created_count,
+                "total_strategy_symbols": len(strategy_symbols),
+                "symbols": strategy_symbols,
+                "exchanges_synced": len(exchange_ids)
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error syncing subscription symbols from bot",
+                    subscription_id=subscription_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{subscription_id}/symbol-configs/toggle-symbol")
+async def toggle_subscription_symbol(
+    subscription_id: str,
+    symbol: str = Query(..., description="Symbol to toggle (e.g., BTCUSDT)"),
+    is_active: bool = Query(..., description="Whether to activate or deactivate"),
+    user_id: str = Query(..., description="User ID for verification"),
+    exchange_account_id: Optional[str] = Query(None, description="Exchange account to toggle for")
+):
+    """
+    Quick toggle to enable/disable trading for a specific symbol.
+    Creates config if it doesn't exist.
+    Supports per-exchange toggle.
+    """
+    try:
+        # Verify subscription exists and belongs to user
+        subscription = await transaction_db.fetchrow("""
+            SELECT id, exchange_account_id FROM bot_subscriptions
+            WHERE id = $1 AND user_id = $2
+        """, subscription_id, user_id)
+
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        symbol_upper = symbol.upper()
+        target_exchange_id = exchange_account_id or str(subscription["exchange_account_id"])
+
+        # Check if config exists for this exchange
+        existing = await transaction_db.fetchval("""
+            SELECT id FROM subscription_symbol_configs
+            WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+        """, subscription_id, target_exchange_id, symbol_upper)
+
+        if existing:
+            # Update
+            await transaction_db.execute("""
+                UPDATE subscription_symbol_configs
+                SET is_active = $4, updated_at = NOW()
+                WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+            """, subscription_id, target_exchange_id, symbol_upper, is_active)
+        else:
+            # Create
+            await transaction_db.execute("""
+                INSERT INTO subscription_symbol_configs
+                (subscription_id, exchange_account_id, symbol, use_bot_default, is_active)
+                VALUES ($1, $2, $3, TRUE, $4)
+            """, subscription_id, target_exchange_id, symbol_upper, is_active)
+
+        status = "ativado" if is_active else "desativado"
+        logger.info(f"Symbol {symbol_upper} {status} for subscription {subscription_id} exchange {target_exchange_id}")
+
+        return {
+            "success": True,
+            "message": f"Simbolo {symbol_upper} {status} com sucesso"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error toggling subscription symbol",
+                    subscription_id=subscription_id, symbol=symbol, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

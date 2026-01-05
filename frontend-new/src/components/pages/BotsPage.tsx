@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info, XCircle } from 'lucide-react'
+import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info, XCircle, Sliders } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
@@ -8,6 +8,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { botsService, Bot as BotType, BotSubscription, CreateMultiExchangeSubscriptionData } from '@/services/botsService'
 import { SubscribeBotModal } from '../molecules/SubscribeBotModal'
 import { BotDetailsModal } from '../molecules/BotDetailsModal'
+import { SubscriptionSymbolConfigsModal } from '../molecules/SubscriptionSymbolConfigsModal'
 import { useExchangeAccounts } from '@/hooks/useExchangeAccounts'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -18,6 +19,8 @@ const BotsPage: React.FC = () => {
   const [selectedSubscription, setSelectedSubscription] = useState<BotSubscription | null>(null)
   const [isSubscribeModalOpen, setIsSubscribeModalOpen] = useState(false)
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false)
+  const [isSymbolConfigsModalOpen, setIsSymbolConfigsModalOpen] = useState(false)
+  const [subscriptionForSymbolConfigs, setSubscriptionForSymbolConfigs] = useState<BotSubscription | null>(null)
 
   const userId = user?.id || ''
 

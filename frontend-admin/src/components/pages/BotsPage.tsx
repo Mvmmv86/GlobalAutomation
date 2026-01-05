@@ -14,6 +14,8 @@ import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { CreateBotModal } from '@/components/molecules/CreateBotModal'
 import { EditBotModal } from '@/components/molecules/EditBotModal'
+import { BotSymbolConfigsModal } from '@/components/molecules/BotSymbolConfigsModal'
+import { Settings } from 'lucide-react'
 import { useNgrokUrl } from '@/hooks/useNgrokUrl'
 import { toast } from 'sonner'
 
@@ -23,7 +25,9 @@ export function BotsPage() {
   const [selectedStatus, setSelectedStatus] = useState<string>('all')
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [isSymbolConfigsModalOpen, setIsSymbolConfigsModalOpen] = useState(false)
   const [botToEdit, setBotToEdit] = useState<Bot | null>(null)
+  const [botForSymbolConfigs, setBotForSymbolConfigs] = useState<Bot | null>(null)
   const [botToDelete, setBotToDelete] = useState<Bot | null>(null)
   const [deleteMode, setDeleteMode] = useState<'archive' | 'permanent'>('archive')
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
@@ -103,6 +107,11 @@ export function BotsPage() {
   const handleEditBot = (bot: Bot) => {
     setBotToEdit(bot)
     setIsEditModalOpen(true)
+  }
+
+  const handleSymbolConfigs = (bot: Bot) => {
+    setBotForSymbolConfigs(bot)
+    setIsSymbolConfigsModalOpen(true)
   }
 
   const handleToggleStatus = (bot: Bot) => {
@@ -368,48 +377,62 @@ export function BotsPage() {
                 </div>
               </div>
 
-              <div className="flex gap-2 mt-4">
+              <div className="flex flex-col gap-2 mt-4">
+                {/* Symbol Configs Button */}
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleToggleStatus(bot)}
-                  className="flex-shrink-0 px-3 border-[#3a3f4b] text-white hover:bg-[#2a2e39]"
-                  disabled={toggleStatusMutation.isPending}
+                  onClick={() => handleSymbolConfigs(bot)}
+                  className="w-full border-purple-600 text-purple-400 hover:bg-purple-900/30"
                 >
-                  {bot.status === 'active' ? (
-                    <Pause className="w-4 h-4" />
-                  ) : (
-                    <Play className="w-4 h-4" />
-                  )}
+                  <Settings className="w-4 h-4 mr-2" />
+                  Config por Simbolo
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleEditBot(bot)}
-                  className="flex-1 border-[#3a3f4b] text-white hover:bg-[#2a2e39]"
-                >
-                  <Edit className="w-4 h-4 mr-1" />
-                  Editar
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleArchiveBot(bot)}
-                  className="text-orange-300 border-orange-400 hover:text-orange-200 hover:border-orange-300 hover:bg-orange-500/20"
-                  title="Arquivar bot (pode ser reativado)"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handlePermanentDeleteBot(bot)}
-                  className="text-red-300 border-red-400 hover:text-red-200 hover:border-red-300 hover:bg-red-500/20"
-                  title="Excluir permanentemente"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Excluir
-                </Button>
+
+                {/* Other Actions Row */}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleToggleStatus(bot)}
+                    className="flex-shrink-0 px-3 border-[#3a3f4b] text-white hover:bg-[#2a2e39]"
+                    disabled={toggleStatusMutation.isPending}
+                  >
+                    {bot.status === 'active' ? (
+                      <Pause className="w-4 h-4" />
+                    ) : (
+                      <Play className="w-4 h-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleEditBot(bot)}
+                    className="flex-1 border-[#3a3f4b] text-white hover:bg-[#2a2e39]"
+                  >
+                    <Edit className="w-4 h-4 mr-1" />
+                    Editar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleArchiveBot(bot)}
+                    className="text-orange-300 border-orange-400 hover:text-orange-200 hover:border-orange-300 hover:bg-orange-500/20"
+                    title="Arquivar bot (pode ser reativado)"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handlePermanentDeleteBot(bot)}
+                    className="text-red-300 border-red-400 hover:text-red-200 hover:border-red-300 hover:bg-red-500/20"
+                    title="Excluir permanentemente"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Excluir
+                  </Button>
+                </div>
               </div>
             </Card>
             )
@@ -440,6 +463,16 @@ export function BotsPage() {
           setBotToEdit(null)
         }}
         bot={botToEdit}
+      />
+
+      {/* Symbol Configs Modal */}
+      <BotSymbolConfigsModal
+        isOpen={isSymbolConfigsModalOpen}
+        onClose={() => {
+          setIsSymbolConfigsModalOpen(false)
+          setBotForSymbolConfigs(null)
+        }}
+        bot={botForSymbolConfigs}
       />
 
       {/* Delete Confirmation Modal */}

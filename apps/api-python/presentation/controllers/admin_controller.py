@@ -1347,3 +1347,319 @@ async def sync_bot_positions(
     except Exception as e:
         logger.error("Error syncing bot positions", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Bot Symbol Configs - Per-symbol trading configuration
+# ============================================================================
+
+class SymbolConfigCreate(BaseModel):
+    """Model for creating/updating a symbol config"""
+    symbol: str = Field(..., min_length=3, max_length=20)
+    leverage: int = Field(default=10, ge=1, le=125)
+    margin_usd: float = Field(default=20.0, ge=5.0)
+    stop_loss_pct: float = Field(default=3.0, ge=0.1, le=50.0)
+    take_profit_pct: float = Field(default=5.0, ge=0.1, le=100.0)
+    max_positions: int = Field(default=3, ge=1, le=20)
+    is_active: bool = Field(default=True)
+
+
+class SymbolConfigBatchUpdate(BaseModel):
+    """Model for batch updating symbol configs"""
+    configs: List[SymbolConfigCreate]
+
+
+@router.get("/bots/{bot_id}/symbol-configs")
+async def get_bot_symbol_configs(
+    bot_id: UUID,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Get all symbol configs for a bot.
+    Also returns symbols from linked strategy that don't have configs yet.
+    """
+    try:
+        # Get existing configs
+        configs = await transaction_db.fetch("""
+            SELECT id, bot_id, symbol, leverage, margin_usd, stop_loss_pct,
+                   take_profit_pct, max_positions, is_active, created_at, updated_at
+            FROM bot_symbol_configs
+            WHERE bot_id = $1
+            ORDER BY symbol
+        """, bot_id)
+
+        # Get bot default config
+        bot = await transaction_db.fetchrow("""
+            SELECT default_leverage, default_margin_usd, default_stop_loss_pct,
+                   default_take_profit_pct, default_max_positions
+            FROM bots
+            WHERE id = $1
+        """, bot_id)
+
+        # Get symbols from linked strategy (if any)
+        strategy = await transaction_db.fetchrow("""
+            SELECT symbols FROM strategies WHERE bot_id = $1
+        """, bot_id)
+
+        strategy_symbols = []
+        if strategy and strategy["symbols"]:
+            import json
+            if isinstance(strategy["symbols"], list):
+                strategy_symbols = strategy["symbols"]
+            else:
+                strategy_symbols = json.loads(strategy["symbols"])
+
+        # Find symbols without config
+        configured_symbols = {c["symbol"] for c in configs}
+        unconfigured_symbols = [s for s in strategy_symbols if s not in configured_symbols]
+
+        return {
+            "success": True,
+            "data": {
+                "configs": [dict(c) for c in configs],
+                "bot_defaults": dict(bot) if bot else None,
+                "strategy_symbols": strategy_symbols,
+                "unconfigured_symbols": unconfigured_symbols
+            }
+        }
+
+    except Exception as e:
+        logger.error("Error getting bot symbol configs", bot_id=str(bot_id), error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bots/{bot_id}/symbol-configs")
+async def create_or_update_bot_symbol_configs(
+    bot_id: UUID,
+    data: SymbolConfigBatchUpdate,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Create or update symbol configs for a bot (batch operation).
+    Uses UPSERT to handle both create and update.
+    """
+    try:
+        # Verify bot exists
+        bot = await transaction_db.fetchrow("SELECT id FROM bots WHERE id = $1", bot_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        created_count = 0
+        updated_count = 0
+
+        for config in data.configs:
+            # Check if config exists
+            existing = await transaction_db.fetchval("""
+                SELECT id FROM bot_symbol_configs
+                WHERE bot_id = $1 AND symbol = $2
+            """, bot_id, config.symbol.upper())
+
+            if existing:
+                # Update
+                await transaction_db.execute("""
+                    UPDATE bot_symbol_configs
+                    SET leverage = $3, margin_usd = $4, stop_loss_pct = $5,
+                        take_profit_pct = $6, max_positions = $7, is_active = $8,
+                        updated_at = NOW()
+                    WHERE bot_id = $1 AND symbol = $2
+                """, bot_id, config.symbol.upper(), config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.max_positions,
+                    config.is_active)
+                updated_count += 1
+            else:
+                # Create
+                await transaction_db.execute("""
+                    INSERT INTO bot_symbol_configs
+                    (bot_id, symbol, leverage, margin_usd, stop_loss_pct,
+                     take_profit_pct, max_positions, is_active)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, bot_id, config.symbol.upper(), config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.max_positions,
+                    config.is_active)
+                created_count += 1
+
+        return {
+            "success": True,
+            "message": f"Created {created_count}, updated {updated_count} symbol configs",
+            "data": {"created": created_count, "updated": updated_count}
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error saving bot symbol configs", bot_id=str(bot_id), error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/bots/{bot_id}/symbol-configs/{symbol}")
+async def delete_bot_symbol_config(
+    bot_id: UUID,
+    symbol: str,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """Delete a specific symbol config from a bot"""
+    try:
+        result = await transaction_db.execute("""
+            DELETE FROM bot_symbol_configs
+            WHERE bot_id = $1 AND symbol = $2
+        """, bot_id, symbol.upper())
+
+        if "DELETE 0" in result:
+            raise HTTPException(status_code=404, detail="Symbol config not found")
+
+        return {"success": True, "message": f"Symbol config {symbol} deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error deleting bot symbol config", bot_id=str(bot_id), symbol=symbol, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bots/{bot_id}/sync-strategy-symbols")
+async def sync_strategy_symbols(
+    bot_id: UUID,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Sync symbols from linked strategy to bot_symbol_configs.
+    Creates configs for symbols that don't have one yet, using bot defaults.
+    """
+    try:
+        # Get bot defaults
+        bot = await transaction_db.fetchrow("""
+            SELECT default_leverage, default_margin_usd, default_stop_loss_pct,
+                   default_take_profit_pct, default_max_positions
+            FROM bots
+            WHERE id = $1
+        """, bot_id)
+
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        # Get symbols from strategy
+        strategy = await transaction_db.fetchrow("""
+            SELECT symbols FROM strategies WHERE bot_id = $1
+        """, bot_id)
+
+        if not strategy or not strategy["symbols"]:
+            return {
+                "success": True,
+                "message": "No strategy linked to this bot or no symbols defined",
+                "data": {"created": 0}
+            }
+
+        import json
+        if isinstance(strategy["symbols"], list):
+            strategy_symbols = strategy["symbols"]
+        else:
+            strategy_symbols = json.loads(strategy["symbols"])
+
+        # Get existing configs
+        existing = await transaction_db.fetch("""
+            SELECT symbol FROM bot_symbol_configs WHERE bot_id = $1
+        """, bot_id)
+        existing_symbols = {e["symbol"] for e in existing}
+
+        # Create configs for new symbols
+        created_count = 0
+        for symbol in strategy_symbols:
+            symbol_upper = symbol.upper()
+            if symbol_upper not in existing_symbols:
+                await transaction_db.execute("""
+                    INSERT INTO bot_symbol_configs
+                    (bot_id, symbol, leverage, margin_usd, stop_loss_pct,
+                     take_profit_pct, max_positions, is_active)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+                """, bot_id, symbol_upper,
+                    bot["default_leverage"] or 10,
+                    bot["default_margin_usd"] or 20.0,
+                    bot["default_stop_loss_pct"] or 3.0,
+                    bot["default_take_profit_pct"] or 5.0,
+                    bot["default_max_positions"] or 3)
+                created_count += 1
+
+        return {
+            "success": True,
+            "message": f"Synced {created_count} new symbols from strategy",
+            "data": {
+                "created": created_count,
+                "total_strategy_symbols": len(strategy_symbols),
+                "symbols": strategy_symbols
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error syncing strategy symbols", bot_id=str(bot_id), error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bots/{bot_id}/symbol-configs/apply-to-all")
+async def apply_config_to_all_symbols(
+    bot_id: UUID,
+    config: SymbolConfigCreate,
+    admin_user_id: str = Depends(verify_admin)
+):
+    """
+    Apply the same config to all symbols of a bot.
+    Updates existing configs and creates new ones for unconfigured symbols.
+    """
+    try:
+        # Get strategy symbols
+        strategy = await transaction_db.fetchrow("""
+            SELECT symbols FROM strategies WHERE bot_id = $1
+        """, bot_id)
+
+        if not strategy or not strategy["symbols"]:
+            raise HTTPException(status_code=400, detail="No strategy linked to this bot")
+
+        import json
+        if isinstance(strategy["symbols"], list):
+            strategy_symbols = strategy["symbols"]
+        else:
+            strategy_symbols = json.loads(strategy["symbols"])
+
+        updated_count = 0
+        for symbol in strategy_symbols:
+            symbol_upper = symbol.upper()
+
+            # Check if exists
+            existing = await transaction_db.fetchval("""
+                SELECT id FROM bot_symbol_configs WHERE bot_id = $1 AND symbol = $2
+            """, bot_id, symbol_upper)
+
+            if existing:
+                await transaction_db.execute("""
+                    UPDATE bot_symbol_configs
+                    SET leverage = $3, margin_usd = $4, stop_loss_pct = $5,
+                        take_profit_pct = $6, max_positions = $7, is_active = $8,
+                        updated_at = NOW()
+                    WHERE bot_id = $1 AND symbol = $2
+                """, bot_id, symbol_upper, config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.max_positions,
+                    config.is_active)
+            else:
+                await transaction_db.execute("""
+                    INSERT INTO bot_symbol_configs
+                    (bot_id, symbol, leverage, margin_usd, stop_loss_pct,
+                     take_profit_pct, max_positions, is_active)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, bot_id, symbol_upper, config.leverage, config.margin_usd,
+                    config.stop_loss_pct, config.take_profit_pct, config.max_positions,
+                    config.is_active)
+
+            updated_count += 1
+
+        return {
+            "success": True,
+            "message": f"Applied config to {updated_count} symbols",
+            "data": {"updated": updated_count}
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error applying config to all symbols", bot_id=str(bot_id), error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

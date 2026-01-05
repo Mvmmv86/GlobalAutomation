@@ -84,6 +84,10 @@ export interface BotSubscription {
   created_at?: string | null
   win_count?: number  // deprecated, use total_win_count
   loss_count?: number  // deprecated, use total_loss_count
+  // Risk management fields (aggregated from exchanges)
+  current_positions?: number
+  max_concurrent_positions?: number
+  custom_margin_usd?: number | null
 }
 
 export interface BotSignalExecution {
@@ -373,6 +377,194 @@ class BotsService {
       console.error('Error fetching subscription performance:', error)
       return null
     }
+  }
+}
+
+// ============================================================================
+// Subscription Symbol Configs Types (Per-symbol trading configuration)
+// ============================================================================
+
+export interface SubscriptionSymbolConfig {
+  id: string
+  subscription_id: string
+  exchange_account_id: string
+  symbol: string
+  leverage: number | null
+  margin_usd: number | null
+  stop_loss_pct: number | null
+  take_profit_pct: number | null
+  use_bot_default: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ExchangeInfo {
+  id: string
+  name: string
+  exchange: string
+}
+
+export interface BotSymbolConfig {
+  symbol: string
+  leverage: number
+  margin_usd: number
+  stop_loss_pct: number
+  take_profit_pct: number
+  max_positions: number
+  is_active: boolean
+}
+
+export interface EffectiveConfig {
+  leverage: number | null
+  margin_usd: number | null
+  stop_loss_pct: number | null
+  take_profit_pct: number | null
+  source: 'custom' | 'bot_symbol' | 'bot_default'
+}
+
+export interface SymbolConfigView {
+  symbol: string
+  client_config: SubscriptionSymbolConfig | null
+  bot_config: BotSymbolConfig | null
+  effective_config: EffectiveConfig
+  is_active: boolean
+  use_bot_default: boolean
+}
+
+export interface SubscriptionSymbolConfigsResponse {
+  subscription_id: string
+  bot_id: string
+  bot_name: string
+  symbols: SymbolConfigView[]
+  bot_global_defaults: {
+    default_leverage: number
+    default_margin_usd: number
+    default_stop_loss_pct: number
+    default_take_profit_pct: number
+    default_max_positions: number
+  } | null
+  total_symbols: number
+  configured_symbols: number
+  current_exchange_id: string
+  exchanges: ExchangeInfo[]
+}
+
+export interface SubscriptionSymbolConfigCreate {
+  symbol: string
+  exchange_account_id?: string
+  leverage?: number | null
+  margin_usd?: number | null
+  stop_loss_pct?: number | null
+  take_profit_pct?: number | null
+  use_bot_default: boolean
+  is_active: boolean
+}
+
+// Add methods for subscription symbol configs
+BotsService.prototype.getSubscriptionSymbolConfigs = async function(
+  subscriptionId: string,
+  userId: string,
+  exchangeAccountId?: string
+): Promise<SubscriptionSymbolConfigsResponse> {
+  const params: Record<string, string> = { user_id: userId }
+  if (exchangeAccountId) params.exchange_account_id = exchangeAccountId
+
+  const response = await apiClient.getAxiosInstance().get(
+    `/bot-subscriptions/${subscriptionId}/symbol-configs`,
+    { params }
+  )
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to fetch symbol configs')
+}
+
+BotsService.prototype.saveSubscriptionSymbolConfigs = async function(
+  subscriptionId: string,
+  userId: string,
+  configs: SubscriptionSymbolConfigCreate[],
+  exchangeAccountId?: string
+): Promise<{ created: number; updated: number }> {
+  const params: Record<string, string> = { user_id: userId }
+  if (exchangeAccountId) params.exchange_account_id = exchangeAccountId
+
+  const response = await apiClient.getAxiosInstance().post(
+    `/bot-subscriptions/${subscriptionId}/symbol-configs`,
+    { configs },
+    { params }
+  )
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to save symbol configs')
+}
+
+BotsService.prototype.deleteSubscriptionSymbolConfig = async function(
+  subscriptionId: string,
+  userId: string,
+  symbol: string,
+  exchangeAccountId?: string
+): Promise<void> {
+  const params: Record<string, string> = { user_id: userId }
+  if (exchangeAccountId) params.exchange_account_id = exchangeAccountId
+
+  await apiClient.getAxiosInstance().delete(
+    `/bot-subscriptions/${subscriptionId}/symbol-configs/${symbol}`,
+    { params }
+  )
+}
+
+BotsService.prototype.syncSubscriptionSymbolsFromBot = async function(
+  subscriptionId: string,
+  userId: string,
+  exchangeAccountId?: string
+): Promise<{ created: number; total_strategy_symbols: number; symbols: string[]; exchanges_synced: number }> {
+  const params: Record<string, string> = { user_id: userId }
+  if (exchangeAccountId) params.exchange_account_id = exchangeAccountId
+
+  const response = await apiClient.getAxiosInstance().post(
+    `/bot-subscriptions/${subscriptionId}/symbol-configs/sync-from-bot`,
+    null,
+    { params }
+  )
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to sync symbols from bot')
+}
+
+BotsService.prototype.toggleSubscriptionSymbol = async function(
+  subscriptionId: string,
+  userId: string,
+  symbol: string,
+  isActive: boolean,
+  exchangeAccountId?: string
+): Promise<void> {
+  const params: Record<string, string | boolean> = { user_id: userId, symbol, is_active: isActive }
+  if (exchangeAccountId) params.exchange_account_id = exchangeAccountId
+
+  await apiClient.getAxiosInstance().post(
+    `/bot-subscriptions/${subscriptionId}/symbol-configs/toggle-symbol`,
+    null,
+    { params }
+  )
+}
+
+// Type declarations for new methods
+declare module '@/services/botsService' {
+  interface BotsService {
+    getSubscriptionSymbolConfigs(subscriptionId: string, userId: string, exchangeAccountId?: string): Promise<SubscriptionSymbolConfigsResponse>
+    saveSubscriptionSymbolConfigs(subscriptionId: string, userId: string, configs: SubscriptionSymbolConfigCreate[], exchangeAccountId?: string): Promise<{ created: number; updated: number }>
+    deleteSubscriptionSymbolConfig(subscriptionId: string, userId: string, symbol: string, exchangeAccountId?: string): Promise<void>
+    syncSubscriptionSymbolsFromBot(subscriptionId: string, userId: string, exchangeAccountId?: string): Promise<{ created: number; total_strategy_symbols: number; symbols: string[]; exchanges_synced: number }>
+    toggleSubscriptionSymbol(subscriptionId: string, userId: string, symbol: string, isActive: boolean, exchangeAccountId?: string): Promise<void>
   }
 }
 

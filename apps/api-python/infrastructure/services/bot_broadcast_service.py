@@ -234,6 +234,7 @@ class BotBroadcastService:
         subscriptions = await self.db.fetch("""
             SELECT
                 bs.id as subscription_id,
+                bs.bot_id,
                 bs.user_id,
                 bs.custom_leverage,
                 bs.custom_margin_usd,
@@ -306,8 +307,32 @@ class BotBroadcastService:
                 )
                 return {"success": False, "skipped": True, "reason": risk_check["reason"]}
 
-            # 2. Get effective configuration (custom or default)
-            config = self._get_effective_config(subscription)
+            # 2. Get effective configuration (with per-symbol support)
+            config = await self._get_effective_config(subscription, ticker)
+
+            # Check if symbol is disabled (client or bot turned it off)
+            if config is None:
+                logger.info(
+                    "Execution skipped - symbol disabled",
+                    user_id=str(user_id),
+                    ticker=ticker
+                )
+                await self._record_execution(
+                    signal_id, subscription_id, user_id,
+                    subscription["exchange_account_id"],
+                    "skipped", None, None, None,
+                    f"Symbol {ticker} is disabled", None
+                )
+                return {"success": False, "skipped": True, "reason": f"Symbol {ticker} is disabled"}
+
+            logger.info(
+                "Using config",
+                user_id=str(user_id),
+                ticker=ticker,
+                config_source=config.get("config_source", "unknown"),
+                leverage=config["leverage"],
+                margin_usd=config["margin_usd"]
+            )
 
             # 3. Get exchange connector
             exchange = subscription["exchange"].lower()
@@ -609,13 +634,76 @@ class BotBroadcastService:
 
         return {"allowed": True}
 
-    def _get_effective_config(self, subscription: Dict) -> Dict:
-        """Get effective configuration (custom overrides default)"""
+    async def _get_effective_config(self, subscription: Dict, ticker: str) -> Dict:
+        """
+        Get effective configuration with per-symbol and per-exchange support.
+
+        Priority order:
+        1. Client's custom symbol config for this exchange (if use_bot_default=False)
+        2. Bot's symbol-specific config (from bot_symbol_configs)
+        3. Client's subscription-level custom config
+        4. Bot's global default config
+
+        Also checks if client has disabled this symbol (is_active=False)
+        """
+        subscription_id = subscription["subscription_id"]
+        bot_id = subscription["bot_id"]
+        exchange_account_id = subscription["exchange_account_id"]
+        symbol = ticker.upper()
+
+        # 1. Check if client has a symbol-specific config FOR THIS EXCHANGE
+        client_symbol_config = await self.db.fetchrow("""
+            SELECT leverage, margin_usd, stop_loss_pct, take_profit_pct,
+                   use_bot_default, is_active
+            FROM subscription_symbol_configs
+            WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+        """, subscription_id, exchange_account_id, symbol)
+
+        # If client disabled this symbol, return None to skip execution
+        if client_symbol_config and not client_symbol_config["is_active"]:
+            return None  # Signal to skip this symbol
+
+        # 2. Get bot's symbol-specific config
+        bot_symbol_config = await self.db.fetchrow("""
+            SELECT leverage, margin_usd, stop_loss_pct, take_profit_pct, is_active
+            FROM bot_symbol_configs
+            WHERE bot_id = $1 AND symbol = $2
+        """, bot_id, symbol)
+
+        # If bot disabled this symbol (admin turned off), skip
+        if bot_symbol_config and not bot_symbol_config["is_active"]:
+            return None
+
+        # Determine which config to use
+        # Priority: client custom > bot symbol > client subscription > bot global
+
+        if client_symbol_config and not client_symbol_config["use_bot_default"]:
+            # Client has custom config for this symbol
+            return {
+                "leverage": client_symbol_config["leverage"] or subscription["custom_leverage"] or subscription["default_leverage"],
+                "margin_usd": float(client_symbol_config["margin_usd"]) if client_symbol_config["margin_usd"] else (subscription["custom_margin_usd"] or subscription["default_margin_usd"]),
+                "stop_loss_pct": float(client_symbol_config["stop_loss_pct"]) if client_symbol_config["stop_loss_pct"] else (subscription["custom_stop_loss_pct"] or subscription["default_stop_loss_pct"]),
+                "take_profit_pct": float(client_symbol_config["take_profit_pct"]) if client_symbol_config["take_profit_pct"] else (subscription["custom_take_profit_pct"] or subscription["default_take_profit_pct"]),
+                "config_source": "client_symbol"
+            }
+
+        if bot_symbol_config:
+            # Use bot's symbol-specific config
+            return {
+                "leverage": bot_symbol_config["leverage"],
+                "margin_usd": float(bot_symbol_config["margin_usd"]),
+                "stop_loss_pct": float(bot_symbol_config["stop_loss_pct"]),
+                "take_profit_pct": float(bot_symbol_config["take_profit_pct"]),
+                "config_source": "bot_symbol"
+            }
+
+        # Fallback: use subscription-level or bot global defaults
         return {
             "leverage": subscription["custom_leverage"] or subscription["default_leverage"],
             "margin_usd": subscription["custom_margin_usd"] or subscription["default_margin_usd"],
             "stop_loss_pct": subscription["custom_stop_loss_pct"] or subscription["default_stop_loss_pct"],
             "take_profit_pct": subscription["custom_take_profit_pct"] or subscription["default_take_profit_pct"],
+            "config_source": "subscription_or_bot_default"
         }
 
     def _calculate_sl_tp_prices(

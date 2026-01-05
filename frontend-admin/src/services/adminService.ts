@@ -508,4 +508,113 @@ export interface WebhooksAdminData {
   }>
 }
 
+// ============================================================================
+// Bot Symbol Configs Types
+// ============================================================================
+
+export interface BotSymbolConfig {
+  id: string
+  bot_id: string
+  symbol: string
+  leverage: number
+  margin_usd: number
+  stop_loss_pct: number
+  take_profit_pct: number
+  max_positions: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface SymbolConfigCreate {
+  symbol: string
+  leverage: number
+  margin_usd: number
+  stop_loss_pct: number
+  take_profit_pct: number
+  max_positions: number
+  is_active: boolean
+}
+
+export interface BotSymbolConfigsResponse {
+  configs: BotSymbolConfig[]
+  bot_defaults: {
+    default_leverage: number
+    default_margin_usd: number
+    default_stop_loss_pct: number
+    default_take_profit_pct: number
+    default_max_positions: number
+  } | null
+  strategy_symbols: string[]
+  unconfigured_symbols: string[]
+}
+
+// Add methods to AdminService class
+AdminService.prototype.getBotSymbolConfigs = async function(botId: string): Promise<BotSymbolConfigsResponse> {
+  const response = await apiClient.instance.get(`/admin/bots/${botId}/symbol-configs`, {
+    params: { admin_user_id: this.getAdminUserId() }
+  })
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to fetch symbol configs')
+}
+
+AdminService.prototype.saveBotSymbolConfigs = async function(botId: string, configs: SymbolConfigCreate[]): Promise<{ created: number; updated: number }> {
+  const response = await apiClient.instance.post(`/admin/bots/${botId}/symbol-configs`, {
+    configs
+  }, {
+    params: { admin_user_id: this.getAdminUserId() }
+  })
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to save symbol configs')
+}
+
+AdminService.prototype.deleteBotSymbolConfig = async function(botId: string, symbol: string): Promise<void> {
+  await apiClient.instance.delete(`/admin/bots/${botId}/symbol-configs/${symbol}`, {
+    params: { admin_user_id: this.getAdminUserId() }
+  })
+}
+
+AdminService.prototype.syncBotSymbolsFromStrategy = async function(botId: string): Promise<{ created: number; total_strategy_symbols: number; symbols: string[] }> {
+  const response = await apiClient.instance.post(`/admin/bots/${botId}/sync-strategy-symbols`, null, {
+    params: { admin_user_id: this.getAdminUserId() }
+  })
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to sync symbols from strategy')
+}
+
+AdminService.prototype.applyConfigToAllSymbols = async function(botId: string, config: SymbolConfigCreate): Promise<{ updated: number }> {
+  const response = await apiClient.instance.post(`/admin/bots/${botId}/symbol-configs/apply-to-all`, config, {
+    params: { admin_user_id: this.getAdminUserId() }
+  })
+
+  if (response.data?.success && response.data?.data) {
+    return response.data.data
+  }
+
+  throw new Error('Failed to apply config to all symbols')
+}
+
+// Type declarations for new methods
+declare module '@/services/adminService' {
+  interface AdminService {
+    getBotSymbolConfigs(botId: string): Promise<BotSymbolConfigsResponse>
+    saveBotSymbolConfigs(botId: string, configs: SymbolConfigCreate[]): Promise<{ created: number; updated: number }>
+    deleteBotSymbolConfig(botId: string, symbol: string): Promise<void>
+    syncBotSymbolsFromStrategy(botId: string): Promise<{ created: number; total_strategy_symbols: number; symbols: string[] }>
+    applyConfigToAllSymbols(botId: string, config: SymbolConfigCreate): Promise<{ updated: number }>
+  }
+}
+
 export const adminService = new AdminService()

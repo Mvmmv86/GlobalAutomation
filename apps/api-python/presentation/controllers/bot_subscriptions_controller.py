@@ -666,14 +666,6 @@ async def subscribe_to_bot_multi_exchange(
     Subscribe to a bot with multiple exchange accounts (max 3)
     Creates subscriptions for each exchange, linked by config_group_id
     """
-    # DEBUG: Log what we receive from frontend
-    logger.info(f"[DEBUG] Received subscription_data: bot_id={subscription_data.bot_id}")
-    logger.info(f"[DEBUG] custom_leverage={subscription_data.custom_leverage}")
-    logger.info(f"[DEBUG] custom_margin_usd={subscription_data.custom_margin_usd}")
-    logger.info(f"[DEBUG] custom_stop_loss_pct={subscription_data.custom_stop_loss_pct}")
-    logger.info(f"[DEBUG] custom_take_profit_pct={subscription_data.custom_take_profit_pct}")
-    logger.info(f"[DEBUG] use_same_config={subscription_data.use_same_config}")
-
     try:
         # Verify bot exists and is active
         bot = await transaction_db.fetchrow("""

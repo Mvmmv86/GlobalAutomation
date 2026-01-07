@@ -30,12 +30,24 @@ interface SymbolConfigRow {
   hasChanges: boolean
 }
 
+// Lista de simbolos populares para sugestao rapida
+const POPULAR_SYMBOLS = [
+  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+  'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT',
+  'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'NEARUSDT', 'ARBUSDT',
+  'OPUSDT', 'APTUSDT', 'SUIUSDT', 'INJUSDT', 'AAVEUSDT',
+  'UNIUSDT', 'FILUSDT', 'LDOUSDT', 'MKRUSDT', 'RUNEUSDT',
+  'WIFUSDT', 'PEPEUSDT', 'SHIBUSDT', 'BONKUSDT', 'FLOKIUSDT'
+]
+
 export function BotSymbolConfigsModal({ isOpen, onClose, bot }: BotSymbolConfigsModalProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [configs, setConfigs] = useState<SymbolConfigRow[]>([])
   const [strategySymbols, setStrategySymbols] = useState<string[]>([])
   const [unconfiguredSymbols, setUnconfiguredSymbols] = useState<string[]>([])
+  const [manualSymbolInput, setManualSymbolInput] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const [botDefaults, setBotDefaults] = useState<{
     default_leverage: number
     default_margin_usd: number
@@ -132,13 +144,20 @@ export function BotSymbolConfigsModal({ isOpen, onClose, bot }: BotSymbolConfigs
   }
 
   const handleAddSymbol = (symbol: string) => {
-    if (configs.find(c => c.symbol === symbol)) {
+    const symbolUpper = symbol.toUpperCase().trim()
+
+    if (!symbolUpper) {
+      toast.error('Digite um simbolo valido')
+      return
+    }
+
+    if (configs.find(c => c.symbol === symbolUpper)) {
       toast.error('Simbolo ja configurado')
       return
     }
 
     const newConfig: SymbolConfigRow = {
-      symbol: symbol.toUpperCase(),
+      symbol: symbolUpper,
       leverage: templateConfig.leverage,
       margin_usd: templateConfig.margin_usd,
       stop_loss_pct: templateConfig.stop_loss_pct,
@@ -150,8 +169,24 @@ export function BotSymbolConfigsModal({ isOpen, onClose, bot }: BotSymbolConfigs
     }
 
     setConfigs([...configs, newConfig])
-    setUnconfiguredSymbols(unconfiguredSymbols.filter(s => s !== symbol))
+    setUnconfiguredSymbols(unconfiguredSymbols.filter(s => s !== symbolUpper))
+    setManualSymbolInput('')
+    setShowSuggestions(false)
+    toast.success(`Simbolo ${symbolUpper} adicionado`)
   }
+
+  const handleManualSymbolSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (manualSymbolInput.trim()) {
+      handleAddSymbol(manualSymbolInput)
+    }
+  }
+
+  // Filtrar sugestoes baseado no input
+  const filteredSuggestions = POPULAR_SYMBOLS.filter(s =>
+    s.toLowerCase().includes(manualSymbolInput.toLowerCase()) &&
+    !configs.find(c => c.symbol === s)
+  ).slice(0, 10)
 
   const handleUpdateConfig = (symbol: string, field: keyof SymbolConfigRow, value: any) => {
     setConfigs(configs.map(c => {
@@ -344,6 +379,70 @@ export function BotSymbolConfigsModal({ isOpen, onClose, bot }: BotSymbolConfigs
                 </div>
               </div>
 
+              {/* Adicionar Simbolo Manualmente */}
+              <div className="bg-green-900/20 border border-green-800/50 p-4 rounded-lg">
+                <h3 className="text-green-400 font-semibold mb-3 flex items-center gap-2">
+                  <Plus className="w-4 h-4" />
+                  Adicionar Simbolo Manualmente
+                </h3>
+                <form onSubmit={handleManualSymbolSubmit} className="flex gap-3">
+                  <div className="relative flex-1">
+                    <Input
+                      type="text"
+                      placeholder="Digite o simbolo (ex: BTCUSDT, ETHUSDT)"
+                      value={manualSymbolInput}
+                      onChange={(e) => {
+                        setManualSymbolInput(e.target.value.toUpperCase())
+                        setShowSuggestions(true)
+                      }}
+                      onFocus={() => setShowSuggestions(true)}
+                      onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                      className="bg-gray-800 border-gray-700 text-white h-10"
+                    />
+                    {/* Dropdown de sugestoes */}
+                    {showSuggestions && manualSymbolInput && filteredSuggestions.length > 0 && (
+                      <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                        {filteredSuggestions.map(symbol => (
+                          <button
+                            key={symbol}
+                            type="button"
+                            onClick={() => handleAddSymbol(symbol)}
+                            className="w-full px-3 py-2 text-left text-white hover:bg-gray-700 flex items-center justify-between"
+                          >
+                            <span className="font-mono">{symbol}</span>
+                            <Plus className="w-4 h-4 text-green-400" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={!manualSymbolInput.trim()}
+                    className="bg-green-600 hover:bg-green-700 px-6"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Adicionar
+                  </Button>
+                </form>
+                {/* Simbolos populares para adicao rapida */}
+                <div className="mt-4">
+                  <p className="text-gray-400 text-xs mb-2">Simbolos populares (clique para adicionar):</p>
+                  <div className="flex flex-wrap gap-2">
+                    {POPULAR_SYMBOLS.filter(s => !configs.find(c => c.symbol === s)).slice(0, 15).map(symbol => (
+                      <button
+                        key={symbol}
+                        type="button"
+                        onClick={() => handleAddSymbol(symbol)}
+                        className="px-2 py-1 bg-gray-800 hover:bg-green-800/50 text-gray-300 hover:text-green-300 rounded text-xs font-mono transition-colors"
+                      >
+                        {symbol}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* Unconfigured Symbols */}
               {unconfiguredSymbols.length > 0 && (
                 <div className="bg-yellow-900/20 border border-yellow-800/50 p-4 rounded-lg">
@@ -475,7 +574,10 @@ export function BotSymbolConfigsModal({ isOpen, onClose, bot }: BotSymbolConfigs
                   <Settings className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p>Nenhuma configuracao por simbolo</p>
                   <p className="text-sm mt-1">
-                    Clique em "Sincronizar da Estrategia" para importar os simbolos
+                    Use o campo acima para adicionar simbolos manualmente
+                  </p>
+                  <p className="text-xs mt-1 text-gray-500">
+                    ou "Sincronizar da Estrategia" se o bot estiver vinculado a uma estrategia
                   </p>
                 </div>
               )}

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 import structlog
+import secrets
 
 from infrastructure.database.connection_transaction_mode import transaction_db
 
@@ -409,14 +410,16 @@ async def create_bot(
                 detail="Webhook path already in use"
             )
 
-        # Create bot
+        # Create bot - generate master_secret for webhook authentication
+        master_secret = secrets.token_urlsafe(32)
+
         bot_id = await transaction_db.fetchval("""
             INSERT INTO bots (
                 name, description, market_type, status,
-                trading_symbol, allowed_directions, master_webhook_path,
+                trading_symbol, allowed_directions, master_webhook_path, master_secret,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct, default_max_positions
-            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11)
+            ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id
         """,
             bot_data.name,
@@ -425,6 +428,7 @@ async def create_bot(
             bot_data.trading_symbol.upper() if bot_data.trading_symbol else None,
             bot_data.allowed_directions,
             bot_data.master_webhook_path,
+            master_secret,
             bot_data.default_leverage,
             bot_data.default_margin_usd,
             bot_data.default_stop_loss_pct,

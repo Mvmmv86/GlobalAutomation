@@ -85,7 +85,7 @@ async def list_bots(
         query = """
             SELECT
                 id, name, description, market_type, status,
-                master_webhook_path,
+                trading_symbol, master_webhook_path,
                 default_leverage, default_margin_usd,
                 default_stop_loss_pct, default_take_profit_pct,
                 default_max_positions,

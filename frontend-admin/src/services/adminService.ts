@@ -89,6 +89,7 @@ export interface Bot {
   market_type: 'spot' | 'futures'
   status: 'active' | 'paused' | 'archived'
   master_webhook_path: string
+  trading_symbol?: string | null  // Ativo fixo para bots TradingView (webhook externo)
   default_leverage: number
   default_margin_usd: number
   default_stop_loss_pct: number
@@ -108,6 +109,7 @@ export interface BotCreateData {
   market_type: 'spot' | 'futures'
   allowed_directions?: 'buy_only' | 'sell_only' | 'both'
   status?: 'active' | 'paused' | 'archived'
+  trading_symbol?: string | null  // Ativo fixo para bots TradingView (ex: BTCUSDT, ETHUSDT)
   master_webhook_path: string
   master_secret?: string  // Optional now - authentication via webhook_path
   default_leverage: number

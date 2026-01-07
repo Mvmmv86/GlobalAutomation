@@ -1,9 +1,13 @@
 /**
  * CreateBotModal Component
  * Modal for creating new bots with all configuration parameters
+ *
+ * IMPORTANTE: Existem dois tipos de bots:
+ * 1. Bot TradingView (webhook externo): tem trading_symbol definido, opera APENAS esse ativo
+ * 2. Bot de Estratégia Interna: NÃO tem trading_symbol, pode operar múltiplos ativos
  */
 import { useState, useMemo } from 'react'
-import { X, Copy, Check } from 'lucide-react'
+import { X, Copy, Check, Webhook, Layers } from 'lucide-react'
 import { Card } from '@/components/atoms/Card'
 import { Button } from '@/components/atoms/Button'
 import { Input } from '@/components/atoms/Input'
@@ -11,6 +15,14 @@ import { Label } from '@/components/atoms/Label'
 import { adminService, BotCreateData } from '@/services/adminService'
 import { toast } from 'sonner'
 import { useNgrokUrl } from '@/hooks/useNgrokUrl'
+
+// Lista de símbolos populares para sugestão
+const POPULAR_SYMBOLS = [
+  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+  'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT',
+  'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'NEARUSDT', 'ARBUSDT',
+  'OPUSDT', 'APTUSDT', 'SUIUSDT', 'INJUSDT', 'AAVEUSDT'
+]
 
 interface CreateBotModalProps {
   isOpen: boolean
@@ -23,12 +35,16 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
   const [copied, setCopied] = useState(false)
   const { data: ngrokUrl } = useNgrokUrl()
 
+  // Tipo de bot: 'tradingview' (ativo específico) ou 'strategy' (múltiplos ativos)
+  const [botType, setBotType] = useState<'tradingview' | 'strategy'>('tradingview')
+
   const [formData, setFormData] = useState<BotCreateData>({
     name: '',
     description: '',
     market_type: 'futures',
     allowed_directions: 'both',
     status: 'active',
+    trading_symbol: '',  // Ativo específico para bots TradingView
     master_webhook_path: '',
     master_secret: '',
     default_leverage: 10,
@@ -143,11 +159,28 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
     }
     console.log('✅ Webhook path length OK:', formData.master_webhook_path.trim().length)
 
+    // Validar trading_symbol para bots TradingView
+    if (botType === 'tradingview' && !formData.trading_symbol?.trim()) {
+      console.log('❌ Trading symbol validation failed (TradingView bot without symbol)')
+      toast.error('Para bots TradingView, o ativo é obrigatório (ex: BTCUSDT)')
+      return
+    }
+    console.log('✅ Trading symbol OK:', formData.trading_symbol || '(strategy bot)')
+
     console.log('✅✅✅ STEP 3: ALL VALIDATION PASSED!')
     setIsSubmitting(true)
     try {
+      // Preparar dados para envio - só envia trading_symbol se for bot TradingView
+      const dataToSend: BotCreateData = {
+        ...formData,
+        trading_symbol: botType === 'tradingview' && formData.trading_symbol?.trim()
+          ? formData.trading_symbol.trim().toUpperCase()
+          : undefined
+      }
       console.log('📡 STEP 4: Calling adminService.createBot...')
-      const result = await adminService.createBot(formData)
+      console.log('📡 Bot type:', botType)
+      console.log('📡 Data to send:', dataToSend)
+      const result = await adminService.createBot(dataToSend)
       console.log('✅ STEP 5: Bot created successfully!', result)
 
       // Show success with webhook URL
@@ -173,12 +206,14 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
   }
 
   const resetForm = () => {
+    setBotType('tradingview')
     setFormData({
       name: '',
       description: '',
       market_type: 'futures',
       allowed_directions: 'both',
       status: 'active',
+      trading_symbol: '',
       master_webhook_path: '',
       master_secret: '',
       default_leverage: 10,
@@ -294,6 +329,116 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
                 Define quais sinais o bot aceita. 'Ambos' = opera Long e Short
               </p>
             </div>
+          </div>
+
+          {/* Tipo de Bot */}
+          <div className="space-y-4 pt-6 border-t border-gray-800">
+            <h3 className="text-lg font-semibold text-white">Tipo de Bot</h3>
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Bot TradingView */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBotType('tradingview')
+                  // Limpar trading_symbol se mudar para strategy
+                }}
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  botType === 'tradingview'
+                    ? 'border-orange-500 bg-orange-500/10'
+                    : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <Webhook className={`w-5 h-5 ${botType === 'tradingview' ? 'text-orange-400' : 'text-gray-400'}`} />
+                  <span className={`font-semibold ${botType === 'tradingview' ? 'text-orange-400' : 'text-gray-300'}`}>
+                    Bot TradingView
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Recebe sinais do TradingView para <strong>UM ativo específico</strong>.
+                  Ex: Bot apenas para BTCUSDT
+                </p>
+              </button>
+
+              {/* Bot Estratégia Interna */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBotType('strategy')
+                  setFormData({ ...formData, trading_symbol: '' })
+                }}
+                className={`p-4 rounded-lg border-2 transition-all text-left ${
+                  botType === 'strategy'
+                    ? 'border-purple-500 bg-purple-500/10'
+                    : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <Layers className={`w-5 h-5 ${botType === 'strategy' ? 'text-purple-400' : 'text-gray-400'}`} />
+                  <span className={`font-semibold ${botType === 'strategy' ? 'text-purple-400' : 'text-gray-300'}`}>
+                    Bot Estratégia Interna
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Conectado a uma estratégia interna com <strong>múltiplos ativos</strong>.
+                  Configuração de ativos feita depois
+                </p>
+              </button>
+            </div>
+
+            {/* Campo de Ativo Específico (só para TradingView) */}
+            {botType === 'tradingview' && (
+              <div className="mt-4 p-4 bg-orange-900/20 border border-orange-800/50 rounded-lg">
+                <Label htmlFor="trading_symbol" className="text-orange-300 font-medium">
+                  Ativo do TradingView *
+                </Label>
+                <div className="mt-2">
+                  <Input
+                    id="trading_symbol"
+                    type="text"
+                    value={formData.trading_symbol || ''}
+                    onChange={(e) => setFormData({ ...formData, trading_symbol: e.target.value.toUpperCase() })}
+                    placeholder="Ex: BTCUSDT, ETHUSDT, AAVEUSDT"
+                    className="bg-gray-800 border-gray-700 text-white placeholder-gray-500 font-mono"
+                  />
+                </div>
+                <p className="text-xs text-orange-300/70 mt-2">
+                  Este bot só vai operar sinais deste ativo específico
+                </p>
+
+                {/* Sugestões de símbolos populares */}
+                <div className="mt-3">
+                  <p className="text-xs text-gray-400 mb-2">Símbolos populares (clique para selecionar):</p>
+                  <div className="flex flex-wrap gap-1">
+                    {POPULAR_SYMBOLS.slice(0, 12).map(symbol => (
+                      <button
+                        key={symbol}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, trading_symbol: symbol })}
+                        className={`px-2 py-1 text-xs rounded transition-colors ${
+                          formData.trading_symbol === symbol
+                            ? 'bg-orange-600 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        {symbol}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Info para Bot Estratégia */}
+            {botType === 'strategy' && (
+              <div className="mt-4 p-4 bg-purple-900/20 border border-purple-800/50 rounded-lg">
+                <p className="text-purple-300 text-sm">
+                  <Layers className="w-4 h-4 inline mr-2" />
+                  Após criar o bot, você poderá configurar os ativos na seção "Config por Símbolo".
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Webhook Configuration */}
@@ -439,11 +584,36 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
           </div>
 
           {/* Summary */}
-          <div className="p-4 bg-blue-900 rounded-lg border border-blue-700">
-            <h4 className="font-semibold text-blue-100 mb-2">Resumo da Configuração</h4>
-            <div className="grid grid-cols-2 gap-2 text-sm text-blue-200">
+          <div className={`p-4 rounded-lg border ${
+            botType === 'tradingview'
+              ? 'bg-orange-900/30 border-orange-700'
+              : 'bg-purple-900/30 border-purple-700'
+          }`}>
+            <h4 className={`font-semibold mb-2 ${
+              botType === 'tradingview' ? 'text-orange-100' : 'text-purple-100'
+            }`}>Resumo da Configuração</h4>
+            <div className={`grid grid-cols-2 gap-2 text-sm ${
+              botType === 'tradingview' ? 'text-orange-200' : 'text-purple-200'
+            }`}>
+              <div className="col-span-2 pb-2 border-b border-gray-700/50">
+                <span className="font-medium">Tipo de Bot:</span>{' '}
+                {botType === 'tradingview' ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Webhook className="w-3 h-3" /> TradingView
+                    {formData.trading_symbol && (
+                      <span className="ml-1 px-2 py-0.5 bg-orange-600/50 rounded text-xs font-mono">
+                        {formData.trading_symbol}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <Layers className="w-3 h-3" /> Estratégia Interna (Múltiplos Ativos)
+                  </span>
+                )}
+              </div>
               <div>
-                <span className="font-medium">Tipo:</span> {formData.market_type.toUpperCase()}
+                <span className="font-medium">Mercado:</span> {formData.market_type.toUpperCase()}
               </div>
               <div>
                 <span className="font-medium">Alavancagem:</span> {formData.default_leverage}x

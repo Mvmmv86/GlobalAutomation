@@ -1,9 +1,19 @@
 import React, { useState, useEffect } from 'react'
-import { X, TrendingUp, Shield, DollarSign, Settings, Check, ChevronDown, ChevronUp, ToggleLeft, ToggleRight, RefreshCw, Layers } from 'lucide-react'
+import { X, TrendingUp, Shield, DollarSign, Settings, Check, ChevronDown, ChevronUp, ToggleLeft, ToggleRight, RefreshCw, Layers, Webhook } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../atoms/Dialog'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { Bot, CreateMultiExchangeSubscriptionData, ExchangeConfig, botsService, BotSymbolConfig } from '@/services/botsService'
+
+/**
+ * SubscribeBotModal - Modal para cliente ativar bot
+ *
+ * IMPORTANTE: Existem dois tipos de bots:
+ * 1. Bots TradingView (webhook externo): tem trading_symbol definido, opera APENAS esse ativo
+ *    - Interface simplificada: mostra só o ativo fixo com campos de configuração editáveis
+ * 2. Bots de Estratégia Interna: NÃO tem trading_symbol, pode operar múltiplos ativos
+ *    - Interface completa: mostra lista de ativos configurados pelo admin
+ */
 
 // Symbol config for client customization
 interface SymbolConfigLocal {
@@ -317,13 +327,36 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
   const currentConfig = getCurrentConfig()
   const currentCustomSettings = getCurrentCustomSettings()
 
+  // Detectar se é um bot TradingView (tem trading_symbol definido)
+  const isTradingViewBot = Boolean(bot.trading_symbol)
+
+  // Para bots TradingView, buscar ou criar config do ativo fixo
+  const getTradingViewConfig = () => {
+    if (!isTradingViewBot || !bot.trading_symbol) return null
+    const existing = symbolConfigs.find(c => c.symbol === bot.trading_symbol)
+    if (existing) return existing
+    // Return default config based on bot defaults
+    return {
+      symbol: bot.trading_symbol,
+      is_active: true,
+      use_bot_default: false, // Cliente pode personalizar
+      custom_leverage: bot.default_leverage || 10,
+      custom_margin_usd: bot.default_margin_usd || 20,
+      custom_stop_loss_pct: bot.default_stop_loss_pct || 3,
+      custom_take_profit_pct: bot.default_take_profit_pct || 5,
+      bot_config: undefined
+    }
+  }
+
+  const tradingViewConfig = getTradingViewConfig()
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle className="flex items-center gap-2">
-              <Settings className="w-5 h-5" />
+              {isTradingViewBot ? <Webhook className="w-5 h-5 text-orange-500" /> : <Settings className="w-5 h-5" />}
               Configurar Bot: {bot.name}
             </DialogTitle>
             <button
@@ -337,13 +370,24 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
           <p className="text-sm text-muted-foreground mt-2">
             {bot.description}
           </p>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
             <Badge variant={bot.market_type === 'futures' ? 'default' : 'secondary'}>
               {bot.market_type === 'futures' ? 'FUTURES' : 'SPOT'}
             </Badge>
             <Badge variant="outline">
               {bot.total_subscribers} assinantes
             </Badge>
+            {isTradingViewBot && (
+              <>
+                <Badge variant="outline" className="bg-orange-500/10 text-orange-500 border-orange-500/30">
+                  <Webhook className="w-3 h-3 mr-1" />
+                  TradingView
+                </Badge>
+                <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/30 font-mono">
+                  {bot.trading_symbol}
+                </Badge>
+              </>
+            )}
           </div>
         </DialogHeader>
 
@@ -531,8 +575,145 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
             </div>
           )}
 
-          {/* Per-Symbol Configuration (Pastinhas) */}
-          {symbolConfigs.length > 0 && (
+          {/* TradingView Bot Config - Interface Simplificada */}
+          {isTradingViewBot && tradingViewConfig && (
+            <div className="border rounded-lg p-4 space-y-4 border-orange-500/30 bg-orange-500/5">
+              <div className="flex items-center justify-between">
+                <h3 className="font-medium flex items-center gap-2">
+                  <Webhook className="w-4 h-4 text-orange-500" />
+                  Configuracao de Trading - {bot.trading_symbol}
+                </h3>
+                <Badge variant="outline" className="bg-orange-500/10 text-orange-500 border-orange-500/30 text-xs">
+                  Bot TradingView
+                </Badge>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Este bot recebe sinais do TradingView para o ativo <strong>{bot.trading_symbol}</strong>.
+                Configure abaixo os parametros de trading.
+              </p>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Alavancagem</label>
+                  <input
+                    type="number"
+                    value={tradingViewConfig.custom_leverage || bot.default_leverage || 10}
+                    onChange={(e) => {
+                      const value = Number(e.target.value)
+                      if (symbolConfigs.find(c => c.symbol === bot.trading_symbol)) {
+                        updateSymbolConfig(bot.trading_symbol!, 'custom_leverage', value)
+                      } else {
+                        // Add new config
+                        setSymbolConfigs([{
+                          symbol: bot.trading_symbol!,
+                          is_active: true,
+                          use_bot_default: false,
+                          custom_leverage: value,
+                          custom_margin_usd: bot.default_margin_usd || 20,
+                          custom_stop_loss_pct: bot.default_stop_loss_pct || 3,
+                          custom_take_profit_pct: bot.default_take_profit_pct || 5
+                        }])
+                      }
+                    }}
+                    min={1}
+                    max={125}
+                    className="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <p className="text-xs text-muted-foreground">1x a 125x</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Margem (USD)</label>
+                  <input
+                    type="number"
+                    value={tradingViewConfig.custom_margin_usd || bot.default_margin_usd || 20}
+                    onChange={(e) => {
+                      const value = Number(e.target.value)
+                      if (symbolConfigs.find(c => c.symbol === bot.trading_symbol)) {
+                        updateSymbolConfig(bot.trading_symbol!, 'custom_margin_usd', value)
+                      } else {
+                        setSymbolConfigs([{
+                          symbol: bot.trading_symbol!,
+                          is_active: true,
+                          use_bot_default: false,
+                          custom_leverage: bot.default_leverage || 10,
+                          custom_margin_usd: value,
+                          custom_stop_loss_pct: bot.default_stop_loss_pct || 3,
+                          custom_take_profit_pct: bot.default_take_profit_pct || 5
+                        }])
+                      }
+                    }}
+                    min={5}
+                    step={0.01}
+                    className="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <p className="text-xs text-muted-foreground">Minimo $5</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Stop Loss (%)</label>
+                  <input
+                    type="number"
+                    value={tradingViewConfig.custom_stop_loss_pct || bot.default_stop_loss_pct || 3}
+                    onChange={(e) => {
+                      const value = Number(e.target.value)
+                      if (symbolConfigs.find(c => c.symbol === bot.trading_symbol)) {
+                        updateSymbolConfig(bot.trading_symbol!, 'custom_stop_loss_pct', value)
+                      } else {
+                        setSymbolConfigs([{
+                          symbol: bot.trading_symbol!,
+                          is_active: true,
+                          use_bot_default: false,
+                          custom_leverage: bot.default_leverage || 10,
+                          custom_margin_usd: bot.default_margin_usd || 20,
+                          custom_stop_loss_pct: value,
+                          custom_take_profit_pct: bot.default_take_profit_pct || 5
+                        }])
+                      }
+                    }}
+                    min={0.1}
+                    max={50}
+                    step={0.1}
+                    className="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <p className="text-xs text-muted-foreground">0.1% a 50%</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Take Profit (%)</label>
+                  <input
+                    type="number"
+                    value={tradingViewConfig.custom_take_profit_pct || bot.default_take_profit_pct || 5}
+                    onChange={(e) => {
+                      const value = Number(e.target.value)
+                      if (symbolConfigs.find(c => c.symbol === bot.trading_symbol)) {
+                        updateSymbolConfig(bot.trading_symbol!, 'custom_take_profit_pct', value)
+                      } else {
+                        setSymbolConfigs([{
+                          symbol: bot.trading_symbol!,
+                          is_active: true,
+                          use_bot_default: false,
+                          custom_leverage: bot.default_leverage || 10,
+                          custom_margin_usd: bot.default_margin_usd || 20,
+                          custom_stop_loss_pct: bot.default_stop_loss_pct || 3,
+                          custom_take_profit_pct: value
+                        }])
+                      }
+                    }}
+                    min={0.1}
+                    max={100}
+                    step={0.1}
+                    className="w-full px-3 py-2 border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <p className="text-xs text-muted-foreground">0.1% a 100%</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Per-Symbol Configuration (Pastinhas) - Only for Strategy Bots */}
+          {!isTradingViewBot && symbolConfigs.length > 0 && (
             <div className="border rounded-lg p-4 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium flex items-center gap-2">
@@ -744,8 +925,8 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
             </div>
           )}
 
-          {/* No symbols message */}
-          {!isLoadingSymbols && symbolConfigs.length === 0 && (
+          {/* No symbols message - Only for Strategy Bots */}
+          {!isTradingViewBot && !isLoadingSymbols && symbolConfigs.length === 0 && (
             <div className="border rounded-lg p-4 bg-secondary/20">
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Layers className="w-4 h-4" />

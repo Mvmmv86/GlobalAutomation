@@ -15,6 +15,7 @@ export interface Bot {
   market_type: 'spot' | 'futures'
   status: 'active' | 'paused' | 'archived'
   master_webhook_path: string
+  trading_symbol?: string | null  // Ativo específico para bots TradingView (webhook)
   default_leverage: number
   default_margin_usd: number
   default_stop_loss_pct: number

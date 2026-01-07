@@ -1,16 +1,113 @@
-import React, { useState } from 'react'
-import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info, XCircle, Sliders } from 'lucide-react'
+import React, { useState, useEffect, useMemo } from 'react'
+import { Bot, Activity, Pause, Play, Settings, TrendingUp, Info, XCircle, Sliders, Layers } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../atoms/Card'
 import { Button } from '../atoms/Button'
 import { Badge } from '../atoms/Badge'
 import { LoadingSpinner } from '../atoms/LoadingSpinner'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { botsService, Bot as BotType, BotSubscription, CreateMultiExchangeSubscriptionData } from '@/services/botsService'
+import { botsService, Bot as BotType, BotSubscription, CreateMultiExchangeSubscriptionData, BotSymbolConfig } from '@/services/botsService'
 import { SubscribeBotModal } from '../molecules/SubscribeBotModal'
 import { BotDetailsModal } from '../molecules/BotDetailsModal'
 import { SubscriptionSymbolConfigsModal } from '../molecules/SubscriptionSymbolConfigsModal'
 import { useExchangeAccounts } from '@/hooks/useExchangeAccounts'
 import { useAuth } from '@/contexts/AuthContext'
+
+// Interface for symbol configs cache
+interface BotSymbolConfigsCache {
+  [botId: string]: BotSymbolConfig[]
+}
+
+// Helper component to display symbol configs summary
+const SymbolConfigsSummary: React.FC<{ configs: BotSymbolConfig[], botDefaults: BotType }> = ({ configs, botDefaults }) => {
+  if (!configs || configs.length === 0) {
+    // No per-symbol configs, show bot defaults
+    return (
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <p className="text-muted-foreground">Alavancagem</p>
+          <p className="font-medium text-gray-900 dark:text-white">{botDefaults.default_leverage}x</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Margem</p>
+          <p className="font-medium text-gray-900 dark:text-white">${botDefaults.default_margin_usd}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Stop Loss</p>
+          <p className="font-medium text-red-600">{botDefaults.default_stop_loss_pct}%</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Take Profit</p>
+          <p className="font-medium text-green-600">{botDefaults.default_take_profit_pct}%</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Get active configs
+  const activeConfigs = configs.filter(c => c.is_active)
+  if (activeConfigs.length === 0) {
+    return (
+      <div className="text-center text-muted-foreground text-xs py-2">
+        Nenhum ativo configurado
+      </div>
+    )
+  }
+
+  // Check if all configs have same values
+  const firstConfig = activeConfigs[0]
+  const allSameMargin = activeConfigs.every(c => c.margin_usd === firstConfig.margin_usd)
+  const allSameLeverage = activeConfigs.every(c => c.leverage === firstConfig.leverage)
+  const allSameSL = activeConfigs.every(c => c.stop_loss_pct === firstConfig.stop_loss_pct)
+  const allSameTP = activeConfigs.every(c => c.take_profit_pct === firstConfig.take_profit_pct)
+
+  // Calculate min/max for ranges
+  const margins = activeConfigs.map(c => Number(c.margin_usd))
+  const leverages = activeConfigs.map(c => c.leverage)
+  const stopLosses = activeConfigs.map(c => Number(c.stop_loss_pct))
+  const takeProfits = activeConfigs.map(c => Number(c.take_profit_pct))
+
+  const formatRange = (values: number[], prefix = '', suffix = '') => {
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    if (min === max) return `${prefix}${min}${suffix}`
+    return `${prefix}${min}-${max}${suffix}`
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1 text-xs text-blue-500 mb-2">
+        <Layers className="w-3 h-3" />
+        <span>{activeConfigs.length} ativos configurados</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <p className="text-muted-foreground">Alavancagem</p>
+          <p className="font-medium text-gray-900 dark:text-white">
+            {allSameLeverage ? `${firstConfig.leverage}x` : formatRange(leverages, '', 'x')}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Margem</p>
+          <p className="font-medium text-gray-900 dark:text-white">
+            {allSameMargin ? `$${firstConfig.margin_usd}` : formatRange(margins, '$')}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Stop Loss</p>
+          <p className="font-medium text-red-600">
+            {allSameSL ? `${firstConfig.stop_loss_pct}%` : formatRange(stopLosses, '', '%')}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Take Profit</p>
+          <p className="font-medium text-green-600">
+            {allSameTP ? `${firstConfig.take_profit_pct}%` : formatRange(takeProfits, '', '%')}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const BotsPage: React.FC = () => {
   const queryClient = useQueryClient()
@@ -21,6 +118,7 @@ const BotsPage: React.FC = () => {
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false)
   const [isSymbolConfigsModalOpen, setIsSymbolConfigsModalOpen] = useState(false)
   const [subscriptionForSymbolConfigs, setSubscriptionForSymbolConfigs] = useState<BotSubscription | null>(null)
+  const [botSymbolConfigs, setBotSymbolConfigs] = useState<BotSymbolConfigsCache>({})
 
   const userId = user?.id || ''
 
@@ -28,6 +126,36 @@ const BotsPage: React.FC = () => {
     queryKey: ['bots-available'],
     queryFn: () => botsService.getAvailableBots()
   })
+
+  // Fetch symbol configs for all available bots
+  useEffect(() => {
+    const fetchAllSymbolConfigs = async () => {
+      if (!availableBots || availableBots.length === 0) return
+
+      const apiUrl = import.meta.env.VITE_API_URL || ''
+      const newConfigs: BotSymbolConfigsCache = {}
+
+      await Promise.all(
+        availableBots.map(async (bot) => {
+          try {
+            const response = await fetch(`${apiUrl}/api/v1/bot-subscriptions/bot/${bot.id}/symbol-configs`)
+            if (response.ok) {
+              const data = await response.json()
+              if (data.success && data.data?.configs) {
+                newConfigs[bot.id] = data.data.configs
+              }
+            }
+          } catch (error) {
+            console.error(`Error fetching symbol configs for bot ${bot.id}:`, error)
+          }
+        })
+      )
+
+      setBotSymbolConfigs(newConfigs)
+    }
+
+    fetchAllSymbolConfigs()
+  }, [availableBots])
 
   const { data: mySubscriptions = [], isLoading: loadingSubscriptions } = useQuery({
     queryKey: ['bot-subscriptions', userId],
@@ -199,6 +327,15 @@ const BotsPage: React.FC = () => {
                       <p className="font-medium text-sm mb-2 text-gray-900 dark:text-white">
                         {isSubscribed ? 'Suas Configurações:' : 'Configurações Padrão:'}
                       </p>
+
+                      {/* Mostrar ativo específico se for bot TradingView */}
+                      {bot.trading_symbol && (
+                        <div className="flex items-center gap-1 text-xs text-blue-500 mb-2">
+                          <Layers className="w-3 h-3" />
+                          <span>Ativo: <strong>{bot.trading_symbol}</strong></span>
+                        </div>
+                      )}
+
                       {/* Se inscrito com múltiplas exchanges, mostrar cada uma */}
                       {isSubscribed && subscription?.exchanges && subscription.exchanges.length > 1 ? (
                         <div className="space-y-3">
@@ -226,8 +363,11 @@ const BotsPage: React.FC = () => {
                             </div>
                           ))}
                         </div>
+                      ) : botSymbolConfigs[bot.id] && botSymbolConfigs[bot.id].length > 0 ? (
+                        /* Bot com configuração por símbolo (estratégia interna) */
+                        <SymbolConfigsSummary configs={botSymbolConfigs[bot.id]} botDefaults={bot} />
                       ) : (
-                        /* Single exchange ou não inscrito - mostrar formato padrão */
+                        /* Bot TradingView ou sem configs - mostrar valores padrão do bot */
                         <div className="grid grid-cols-2 gap-2">
                           <div>
                             <p className="text-muted-foreground">Alavancagem</p>

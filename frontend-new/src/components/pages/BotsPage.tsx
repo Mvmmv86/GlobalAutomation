@@ -159,7 +159,10 @@ const BotsPage: React.FC = () => {
 
   const { data: mySubscriptions = [], isLoading: loadingSubscriptions } = useQuery({
     queryKey: ['bot-subscriptions', userId],
-    queryFn: () => botsService.getMySubscriptions(userId)
+    queryFn: () => botsService.getMySubscriptions(userId),
+    staleTime: 0, // Always fetch fresh data
+    gcTime: 30 * 1000, // 30 seconds cache
+    refetchOnWindowFocus: true
   })
 
   const { data: exchangeAccounts = [] } = useExchangeAccounts()

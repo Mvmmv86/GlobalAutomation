@@ -218,17 +218,25 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
 
     let dataToSubmit: CreateMultiExchangeSubscriptionData
 
-    // Note: custom_leverage/margin/sl/tp are now configured per-symbol (bot_symbol_configs)
-    // We still send the subscription data with risk management settings
+    // Get custom config values from tradingViewConfig (for TradingView bots) or sharedConfig
+    const isTradingViewBot = Boolean(bot?.trading_symbol)
+    const tvConfig = isTradingViewBot ? symbolConfigs.find(c => c.symbol === bot?.trading_symbol) : null
+
+    // For TradingView bots, use the symbol config values; for strategy bots, use defaults
+    const customLeverage = tvConfig?.custom_leverage || (isTradingViewBot ? bot?.default_leverage : undefined)
+    const customMargin = tvConfig?.custom_margin_usd || (isTradingViewBot ? bot?.default_margin_usd : undefined)
+    const customSL = tvConfig?.custom_stop_loss_pct || (isTradingViewBot ? bot?.default_stop_loss_pct : undefined)
+    const customTP = tvConfig?.custom_take_profit_pct || (isTradingViewBot ? bot?.default_take_profit_pct : undefined)
+
     if (useSameConfig) {
       dataToSubmit = {
         bot_id: bot?.id || '',
         exchange_account_ids: selectedExchanges,
         use_same_config: true,
-        custom_leverage: undefined, // Now uses per-symbol config from admin
-        custom_margin_usd: undefined, // Now uses per-symbol config from admin
-        custom_stop_loss_pct: undefined, // Now uses per-symbol config from admin
-        custom_take_profit_pct: undefined, // Now uses per-symbol config from admin
+        custom_leverage: customLeverage,
+        custom_margin_usd: customMargin,
+        custom_stop_loss_pct: customSL,
+        custom_take_profit_pct: customTP,
         max_daily_loss_usd: sharedConfig.max_daily_loss_usd,
         max_concurrent_positions: sharedConfig.max_concurrent_positions
       }
@@ -238,10 +246,10 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
         const config = individualConfigs[exId] || getDefaultExchangeConfig(exId, bot?.default_max_positions)
         return {
           exchange_account_id: exId,
-          custom_leverage: undefined, // Now uses per-symbol config from admin
-          custom_margin_usd: undefined, // Now uses per-symbol config from admin
-          custom_stop_loss_pct: undefined, // Now uses per-symbol config from admin
-          custom_take_profit_pct: undefined, // Now uses per-symbol config from admin
+          custom_leverage: customLeverage,
+          custom_margin_usd: customMargin,
+          custom_stop_loss_pct: customSL,
+          custom_take_profit_pct: customTP,
           max_daily_loss_usd: config.max_daily_loss_usd,
           max_concurrent_positions: config.max_concurrent_positions
         }

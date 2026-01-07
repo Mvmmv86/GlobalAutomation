@@ -222,11 +222,22 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
     const isTradingViewBot = Boolean(bot?.trading_symbol)
     const tvConfig = isTradingViewBot ? symbolConfigs.find(c => c.symbol === bot?.trading_symbol) : null
 
+    console.log('🔍 DEBUG handleSubmit:')
+    console.log('  - isTradingViewBot:', isTradingViewBot)
+    console.log('  - bot?.trading_symbol:', bot?.trading_symbol)
+    console.log('  - symbolConfigs:', symbolConfigs)
+    console.log('  - tvConfig:', tvConfig)
+
     // For TradingView bots, use the symbol config values; for strategy bots, use defaults
     const customLeverage = tvConfig?.custom_leverage || (isTradingViewBot ? bot?.default_leverage : undefined)
     const customMargin = tvConfig?.custom_margin_usd || (isTradingViewBot ? bot?.default_margin_usd : undefined)
     const customSL = tvConfig?.custom_stop_loss_pct || (isTradingViewBot ? bot?.default_stop_loss_pct : undefined)
     const customTP = tvConfig?.custom_take_profit_pct || (isTradingViewBot ? bot?.default_take_profit_pct : undefined)
+
+    console.log('  - customLeverage:', customLeverage)
+    console.log('  - customMargin:', customMargin)
+    console.log('  - customSL:', customSL)
+    console.log('  - customTP:', customTP)
 
     if (useSameConfig) {
       dataToSubmit = {
@@ -263,6 +274,8 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
         individual_configs: configs
       }
     }
+
+    console.log('📤 DATA TO SUBMIT:', JSON.stringify(dataToSubmit, null, 2))
 
     try {
       await onSubmit(dataToSubmit)

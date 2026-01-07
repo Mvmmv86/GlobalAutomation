@@ -218,15 +218,15 @@ export const SubscribeBotModal: React.FC<SubscribeBotModalProps> = ({
 
     let dataToSubmit: CreateMultiExchangeSubscriptionData
 
-    // Get custom config values from tradingViewConfig (for TradingView bots) or sharedConfig
+    // Get custom config values - always use bot defaults if not customized
     const isTradingViewBot = Boolean(bot?.trading_symbol)
     const tvConfig = isTradingViewBot ? symbolConfigs.find(c => c.symbol === bot?.trading_symbol) : null
 
-    // For TradingView bots, use the symbol config values; for strategy bots, use defaults
-    const customLeverage = tvConfig?.custom_leverage || (isTradingViewBot ? bot?.default_leverage : undefined)
-    const customMargin = tvConfig?.custom_margin_usd || (isTradingViewBot ? bot?.default_margin_usd : undefined)
-    const customSL = tvConfig?.custom_stop_loss_pct || (isTradingViewBot ? bot?.default_stop_loss_pct : undefined)
-    const customTP = tvConfig?.custom_take_profit_pct || (isTradingViewBot ? bot?.default_take_profit_pct : undefined)
+    // Always send values - use tvConfig if available, otherwise bot defaults
+    const customLeverage = tvConfig?.custom_leverage || bot?.default_leverage
+    const customMargin = tvConfig?.custom_margin_usd || bot?.default_margin_usd
+    const customSL = tvConfig?.custom_stop_loss_pct || bot?.default_stop_loss_pct
+    const customTP = tvConfig?.custom_take_profit_pct || bot?.default_take_profit_pct
 
     if (useSameConfig) {
       dataToSubmit = {

@@ -21,7 +21,8 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    base: '/dashboard-admin',
+    // Em produção, admin está em subdomínio próprio (admin.autonodeia.com), então base = '/'
+    base: '/',
 
     plugins: [
       react({

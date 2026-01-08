@@ -51,6 +51,8 @@ class SyncScheduler:
         self._indicator_alert_monitor = None
         # 📊 Track when daily report was last sent
         self._last_daily_report_date: str = None
+        # 🔄 Counter for position mode sync (every 10 loops = ~5 minutes)
+        self._position_mode_sync_counter: int = 0
 
     async def start(self):
         """Inicia o scheduler"""
@@ -109,6 +111,12 @@ class SyncScheduler:
 
                 # 📊 Check if it's time to send daily AI market report
                 await self._check_daily_report()
+
+                # 🔄 Sync BingX position modes every 10 loops (~5 minutes)
+                self._position_mode_sync_counter += 1
+                if self._position_mode_sync_counter >= 10:
+                    await self._sync_bingx_position_modes()
+                    self._position_mode_sync_counter = 0
 
                 await asyncio.sleep(30)  # Aguarda 30 segundos (otimizado para 100-500 clientes)
             except asyncio.CancelledError:
@@ -302,6 +310,76 @@ class SyncScheduler:
 
         except Exception as e:
             logger.error(f"❌ Error syncing bot position counters: {e}")
+
+    async def _sync_bingx_position_modes(self):
+        """
+        Sincroniza position_mode das contas BingX com a exchange.
+        Verifica se o cliente alterou de hedge para one-way ou vice-versa
+        e atualiza o banco de dados para manter consistência.
+        """
+        try:
+            # Buscar contas BingX ativas
+            accounts = await transaction_db.fetch("""
+                SELECT id, name, api_key, secret_key, position_mode, user_id
+                FROM exchange_accounts
+                WHERE exchange = 'bingx' AND is_active = true
+            """)
+
+            if not accounts:
+                return
+
+            updated_count = 0
+
+            for account in accounts:
+                try:
+                    account_id = account['id']
+                    current_mode = account['position_mode']
+
+                    # Criar connector para consultar a BingX
+                    connector = BingXConnector(
+                        api_key=account['api_key'],
+                        api_secret=account['secret_key'],
+                        testnet=False
+                    )
+
+                    # Consultar position mode na API da BingX
+                    result = await connector.get_position_mode()
+
+                    if result.get('success'):
+                        # dualSidePosition=true -> hedge, false -> one-way
+                        dual_side = result.get('dualSidePosition', False)
+                        # Converter string 'false'/'true' para boolean se necessário
+                        if isinstance(dual_side, str):
+                            dual_side = dual_side.lower() == 'true'
+
+                        real_mode = 'hedge' if dual_side else 'one-way'
+
+                        # Se diferente, atualiza o banco
+                        if real_mode != current_mode:
+                            await transaction_db.execute("""
+                                UPDATE exchange_accounts
+                                SET position_mode = $1, updated_at = NOW()
+                                WHERE id = $2
+                            """, real_mode, account_id)
+
+                            updated_count += 1
+                            logger.info(
+                                f"🔄 Position mode atualizado: {account['name']} ({current_mode} -> {real_mode})",
+                                account_id=str(account_id),
+                                user_id=str(account['user_id'])
+                            )
+
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Erro ao verificar position_mode da conta {account.get('name', 'unknown')}: {e}"
+                    )
+                    continue
+
+            if updated_count > 0:
+                logger.info(f"✅ Position mode sync: {updated_count} conta(s) atualizada(s)")
+
+        except Exception as e:
+            logger.error(f"❌ Error syncing BingX position modes: {e}")
 
     async def _check_daily_reset(self):
         """

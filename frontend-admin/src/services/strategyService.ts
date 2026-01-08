@@ -226,6 +226,7 @@ export const TIMEFRAMES = [
   { value: '1m', label: '1 Minuto' },
   { value: '3m', label: '3 Minutos' },
   { value: '5m', label: '5 Minutos' },
+  { value: '12m', label: '12 Minutos' },
   { value: '15m', label: '15 Minutos' },
   { value: '30m', label: '30 Minutos' },
   { value: '1h', label: '1 Hora' },

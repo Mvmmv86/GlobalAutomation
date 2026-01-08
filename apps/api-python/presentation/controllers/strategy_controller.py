@@ -48,7 +48,7 @@ class StrategyCreate(BaseModel):
     description: Optional[str] = None
     config_type: str = Field(default="visual", pattern="^(visual|yaml|pinescript)$")
     symbols: List[str] = Field(default_factory=list)
-    timeframe: str = Field(default="5m", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
+    timeframe: str = Field(default="5m", pattern="^(1m|3m|5m|12m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
     bot_id: Optional[str] = None
     config_yaml: Optional[str] = None
     pinescript_source: Optional[str] = None
@@ -59,7 +59,7 @@ class StrategyUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=100)
     description: Optional[str] = None
     symbols: Optional[List[str]] = None
-    timeframe: Optional[str] = Field(None, pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
+    timeframe: Optional[str] = Field(None, pattern="^(1m|3m|5m|12m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
     bot_id: Optional[str] = None
 
 
@@ -108,7 +108,7 @@ class StrategySyncPayload(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=100)
     description: Optional[str] = None
     symbols: Optional[List[str]] = None
-    timeframe: Optional[str] = Field(None, pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
+    timeframe: Optional[str] = Field(None, pattern="^(1m|3m|5m|12m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$")
     bot_id: Optional[str] = None
     indicators: List[IndicatorCreate] = Field(default_factory=list)
     conditions: List[ConditionCreate] = Field(default_factory=list)
@@ -1794,8 +1794,11 @@ async def get_strategy_chart_data(
         "atr": ATRCalculator,
     }
 
-    # Valid timeframes for Binance API
-    VALID_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
+    # Valid timeframes for Binance API (including custom 12m which is aggregated from 1m)
+    VALID_TIMEFRAMES = ['1m', '3m', '5m', '12m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
+
+    # Native Binance timeframes (custom timeframes like 12m need aggregation)
+    BINANCE_NATIVE_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
 
     def timeframe_to_ms(tf: str) -> int:
         """Convert timeframe string to milliseconds"""
@@ -1878,16 +1881,25 @@ async def get_strategy_chart_data(
         end_ts = int(end_date.timestamp() * 1000)
         url = "https://fapi.binance.com/fapi/v1/klines"
 
-        logger.info(f"Fetching chart candles for {symbol} {tf}, days={days}")
+        # Check if we need custom aggregation (e.g., 12m is not native to Binance)
+        is_custom_tf = tf not in BINANCE_NATIVE_TIMEFRAMES
+        fetch_tf = "1m" if is_custom_tf else tf  # Use 1m for aggregation
+        target_minutes = int(tf[:-1]) if tf.endswith('m') else 60  # Parse target minutes
+
+        logger.info(f"Fetching chart candles for {symbol} {tf}, days={days}, custom_tf={is_custom_tf}")
 
         async with aiohttp.ClientSession() as session:
             current_ts = start_ts
             batch_count = 0
+            raw_candles = []  # For aggregation
 
-            while current_ts < end_ts and batch_count < 10:  # Limit batches for chart
+            # For custom timeframes, we need more 1m candles
+            max_batches = 50 if is_custom_tf else 10
+
+            while current_ts < end_ts and batch_count < max_batches:
                 params = {
                     "symbol": symbol.upper(),
-                    "interval": tf,
+                    "interval": fetch_tf,
                     "startTime": current_ts,
                     "endTime": end_ts,
                     "limit": 1000
@@ -1904,25 +1916,67 @@ async def get_strategy_chart_data(
                         break
 
                     batch_count += 1
-                    for k in klines:
-                        # Convert UTC timestamp to São Paulo timezone
-                        utc_dt = datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc)
-                        sp_dt = utc_dt.astimezone(SAO_PAULO_TZ)
-                        candle = Candle(
-                            timestamp=sp_dt.replace(tzinfo=None),  # Remove tz for storage
-                            open=Decimal(str(k[1])),
-                            high=Decimal(str(k[2])),
-                            low=Decimal(str(k[3])),
-                            close=Decimal(str(k[4])),
-                            volume=Decimal(str(k[5]))
-                        )
-                        candles_list.append(candle)
+
+                    if is_custom_tf:
+                        # Store raw 1m candles for aggregation
+                        for k in klines:
+                            raw_candles.append({
+                                'time': k[0],
+                                'open': float(k[1]),
+                                'high': float(k[2]),
+                                'low': float(k[3]),
+                                'close': float(k[4]),
+                                'volume': float(k[5])
+                            })
+                    else:
+                        # Native timeframe - use directly
+                        for k in klines:
+                            utc_dt = datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc)
+                            sp_dt = utc_dt.astimezone(SAO_PAULO_TZ)
+                            candle = Candle(
+                                timestamp=sp_dt.replace(tzinfo=None),
+                                open=Decimal(str(k[1])),
+                                high=Decimal(str(k[2])),
+                                low=Decimal(str(k[3])),
+                                close=Decimal(str(k[4])),
+                                volume=Decimal(str(k[5]))
+                            )
+                            candles_list.append(candle)
 
                     # Move to next batch
-                    tf_ms = timeframe_to_ms(tf)
+                    tf_ms = timeframe_to_ms(fetch_tf)
                     current_ts = klines[-1][0] + tf_ms
 
                 await asyncio.sleep(0.05)  # Rate limiting
+
+        # Aggregate 1m candles into custom timeframe using the existing aggregator logic
+        if is_custom_tf and raw_candles:
+            from infrastructure.services.custom_timeframe_aggregator import CandleBuffer
+
+            buffer = CandleBuffer(target_minutes=target_minutes, symbol=symbol.upper())
+            buffer.max_history = 5000  # Allow more history for chart
+
+            # Process all 1m candles through buffer
+            for raw_candle in raw_candles:
+                buffer.add_one_minute_candle(raw_candle)
+
+            # Get all aggregated candles
+            aggregated = buffer.get_all_candles()
+            logger.info(f"Aggregated {len(raw_candles)} 1m candles into {len(aggregated)} {tf} candles")
+
+            # Convert aggregated to Candle objects
+            for agg in aggregated:
+                utc_dt = datetime.fromtimestamp(agg['time'] / 1000, tz=timezone.utc)
+                sp_dt = utc_dt.astimezone(SAO_PAULO_TZ)
+                candle = Candle(
+                    timestamp=sp_dt.replace(tzinfo=None),
+                    open=Decimal(str(agg['open'])),
+                    high=Decimal(str(agg['high'])),
+                    low=Decimal(str(agg['low'])),
+                    close=Decimal(str(agg['close'])),
+                    volume=Decimal(str(agg['volume']))
+                )
+                candles_list.append(candle)
 
         logger.info(f"Fetched {len(candles_list)} candles for chart")
 

@@ -90,9 +90,10 @@ const PERIOD_OPTIONS = [
   { value: 365, label: '1 ano' },
 ]
 
-// Timeframe options for chart
+// Timeframe options for chart (including custom timeframes like 12m)
 const TIMEFRAME_OPTIONS = [
   { value: '5m', label: '5 min' },
+  { value: '12m', label: '12 min' },
   { value: '15m', label: '15 min' },
   { value: '30m', label: '30 min' },
   { value: '1h', label: '1 hora' },

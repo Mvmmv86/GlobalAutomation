@@ -292,6 +292,19 @@ class SubscriptionCreate(BaseModel):
     max_concurrent_positions: int = Field(default=3, ge=1, le=10)
 
 
+class SymbolConfigInput(BaseModel):
+    """Model for symbol config in subscription creation (optional, for internal bots)"""
+    symbol: str = Field(..., min_length=3, max_length=20)
+    is_active: bool = Field(default=True)
+    use_bot_default: bool = Field(default=True)
+    custom_leverage: Optional[int] = Field(None, ge=1, le=125)
+    custom_margin_usd: Optional[float] = Field(None, ge=5.0)
+    custom_stop_loss_pct: Optional[float] = Field(None, ge=0.1, le=50.0)
+    custom_take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
+    max_positions: Optional[int] = Field(None, ge=1, le=20)
+    max_daily_loss_usd: Optional[float] = Field(None, ge=0)
+
+
 class MultiExchangeSubscriptionCreate(BaseModel):
     """Model for creating bot subscriptions with multiple exchanges (max 3)"""
     bot_id: str = Field(..., description="UUID of the bot to subscribe to")
@@ -306,6 +319,8 @@ class MultiExchangeSubscriptionCreate(BaseModel):
     max_concurrent_positions: int = Field(default=3, ge=1, le=10)
     # Individual configs (when use_same_config=False)
     individual_configs: Optional[List[ExchangeConfig]] = Field(None, description="Individual config per exchange")
+    # Symbol configs for internal bots (optional - if not provided, will sync from bot)
+    symbol_configs: Optional[List[SymbolConfigInput]] = Field(None, description="Per-symbol configs for internal bots")
 
 
 class SubscriptionUpdate(BaseModel):
@@ -883,6 +898,49 @@ async def subscribe_to_bot_multi_exchange(
             updated_at = NOW()
             WHERE id = $1
         """, subscription_data.bot_id)
+
+        # Create symbol configs if provided (for internal bots)
+        symbol_configs_created = 0
+        if subscription_data.symbol_configs:
+            for sub_id in created_ids:
+                for exchange_id in subscription_data.exchange_account_ids:
+                    for sym_cfg in subscription_data.symbol_configs:
+                        # Check if config already exists
+                        existing = await transaction_db.fetchval("""
+                            SELECT id FROM subscription_symbol_configs
+                            WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+                        """, sub_id, exchange_id, sym_cfg.symbol.upper())
+
+                        if existing:
+                            # Update
+                            await transaction_db.execute("""
+                                UPDATE subscription_symbol_configs
+                                SET leverage = $4, margin_usd = $5, stop_loss_pct = $6,
+                                    take_profit_pct = $7, use_bot_default = $8, is_active = $9,
+                                    max_positions = COALESCE($10, max_positions),
+                                    max_daily_loss_usd = COALESCE($11, max_daily_loss_usd),
+                                    updated_at = NOW()
+                                WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
+                            """, sub_id, exchange_id, sym_cfg.symbol.upper(),
+                                sym_cfg.custom_leverage, sym_cfg.custom_margin_usd,
+                                sym_cfg.custom_stop_loss_pct, sym_cfg.custom_take_profit_pct,
+                                sym_cfg.use_bot_default, sym_cfg.is_active,
+                                sym_cfg.max_positions, sym_cfg.max_daily_loss_usd)
+                        else:
+                            # Insert
+                            await transaction_db.execute("""
+                                INSERT INTO subscription_symbol_configs
+                                (subscription_id, exchange_account_id, symbol, leverage, margin_usd,
+                                 stop_loss_pct, take_profit_pct, use_bot_default, is_active,
+                                 max_positions, max_daily_loss_usd)
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            """, sub_id, exchange_id, sym_cfg.symbol.upper(),
+                                sym_cfg.custom_leverage, sym_cfg.custom_margin_usd,
+                                sym_cfg.custom_stop_loss_pct, sym_cfg.custom_take_profit_pct,
+                                sym_cfg.use_bot_default, sym_cfg.is_active,
+                                sym_cfg.max_positions, sym_cfg.max_daily_loss_usd)
+                            symbol_configs_created += 1
+            logger.info(f"Created {symbol_configs_created} symbol configs for subscriptions")
 
         logger.info(
             "Multi-exchange bot subscriptions created",
@@ -1811,6 +1869,12 @@ class SubscriptionSymbolConfigCreate(BaseModel):
     take_profit_pct: Optional[float] = Field(None, ge=0.1, le=100.0)
     use_bot_default: bool = Field(default=True, description="If True, use bot's symbol config; if False, use custom values")
     is_active: bool = Field(default=True, description="If False, client won't trade this symbol")
+    # Risk Management per Symbol
+    max_positions: Optional[int] = Field(None, ge=1, le=20, description="Max positions for this symbol")
+    max_daily_loss_usd: Optional[float] = Field(None, ge=0, description="Max daily loss for this symbol")
+    # Risk Management per Symbol
+    max_positions: Optional[int] = Field(None, ge=1, le=20, description="Max positions for this symbol")
+    max_daily_loss_usd: Optional[float] = Field(None, ge=0, description="Max daily loss for this symbol")
 
 
 class SubscriptionSymbolConfigBatchUpdate(BaseModel):
@@ -2022,24 +2086,26 @@ async def create_or_update_subscription_symbol_configs(
                     UPDATE subscription_symbol_configs
                     SET leverage = $4, margin_usd = $5, stop_loss_pct = $6,
                         take_profit_pct = $7, use_bot_default = $8, is_active = $9,
+                        max_positions = COALESCE($10, max_positions),
+                        max_daily_loss_usd = COALESCE($11, max_daily_loss_usd),
                         updated_at = NOW()
                     WHERE subscription_id = $1 AND exchange_account_id = $2 AND symbol = $3
                 """, subscription_id, target_exchange_id, config.symbol.upper(),
                     config.leverage, config.margin_usd,
                     config.stop_loss_pct, config.take_profit_pct, config.use_bot_default,
-                    config.is_active)
+                    config.is_active, config.max_positions, config.max_daily_loss_usd)
                 updated_count += 1
             else:
                 # Create
                 await transaction_db.execute("""
                     INSERT INTO subscription_symbol_configs
                     (subscription_id, exchange_account_id, symbol, leverage, margin_usd, stop_loss_pct,
-                     take_profit_pct, use_bot_default, is_active)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     take_profit_pct, use_bot_default, is_active, max_positions, max_daily_loss_usd)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """, subscription_id, target_exchange_id, config.symbol.upper(),
                     config.leverage, config.margin_usd,
                     config.stop_loss_pct, config.take_profit_pct, config.use_bot_default,
-                    config.is_active)
+                    config.is_active, config.max_positions, config.max_daily_loss_usd)
                 created_count += 1
 
         logger.info("Subscription symbol configs saved",

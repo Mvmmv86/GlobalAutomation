@@ -291,8 +291,8 @@ class BotBroadcastService:
         user_id = subscription["user_id"]
 
         try:
-            # 1. Risk management checks
-            risk_check = await self._check_risk_limits(subscription)
+            # 1. Risk management checks (now includes ticker for per-symbol risk limits)
+            risk_check = await self._check_risk_limits(subscription, ticker)
             if not risk_check["allowed"]:
                 logger.warning(
                     "Execution skipped due to risk limits",
@@ -435,7 +435,7 @@ class BotBroadcastService:
                 tp_price = sl_tp_prices["take_profit"]
 
                 logger.info(
-                    f"🚀 Executando ordem via execute_order_with_sl_tp ({exchange.upper()})",
+                    f" Executando ordem via execute_order_with_sl_tp ({exchange.upper()})",
                     user_id=str(user_id),
                     ticker=ticker,
                     side=action.upper(),
@@ -461,7 +461,7 @@ class BotBroadcastService:
                     sl_order_id = order_result.get("stop_loss_order_id")
                     tp_order_id = order_result.get("take_profit_order_id")
                     logger.info(
-                        f"✅ Ordem + SL/TP executados via método unificado ({exchange.upper()})",
+                        f" Ordem + SL/TP executados via método unificado ({exchange.upper()})",
                         user_id=str(user_id),
                         order_id=order_result.get("orderId"),
                         sl_order_id=sl_order_id,
@@ -597,31 +597,53 @@ class BotBroadcastService:
                 "error": str(e)
             }
 
-    async def _check_risk_limits(self, subscription: Dict) -> Dict:
-        """Check if subscription has exceeded risk limits"""
-        # Check daily loss limit
-        current_loss = subscription.get("current_daily_loss_usd", 0)
-        max_loss = subscription.get("max_daily_loss_usd", 999999)
+    async def _check_risk_limits(self, subscription: Dict, ticker: str = None) -> Dict:
+        """
+        Check if subscription has exceeded risk limits.
+
+        Verifica 7 NÍVEIS de proteção em cascata:
+        1. Bot Global Daily Loss - Para TODO o bot
+        2. Bot Symbol Daily Loss - Para esse ativo no bot
+        3. Subscription Daily Loss - Para esse cliente
+        4. Subscription Symbol Daily Loss - Para ativo/exchange do cliente
+        5. Bot Global Positions - Limite de posições do bot
+        6. Subscription Positions - Limite de posições do cliente
+        7. Subscription Symbol Positions - Limite por ativo/exchange
+
+        RETROCOMPATÍVEL: Novos checks só executam se campos existirem.
+        """
+        subscription_id = subscription["subscription_id"]
+        bot_id = subscription.get("bot_id")
+        exchange_account_id = subscription.get("exchange_account_id")
+
+        # =========================================================
+        # CHECKS EXISTENTES (NÍVEL 3 e 6 - não modificados)
+        # =========================================================
+
+        # NÍVEL 3: Subscription Daily Loss (EXISTENTE)
+        current_loss = subscription.get("current_daily_loss_usd", 0) or 0
+        max_loss = subscription.get("max_daily_loss_usd", 999999) or 999999
 
         if current_loss >= max_loss:
             return {
                 "allowed": False,
-                "reason": f"Daily loss limit reached: ${current_loss:.2f} >= ${max_loss:.2f}"
+                "reason": f"Subscription daily loss limit reached: ${current_loss:.2f} >= ${max_loss:.2f}",
+                "level": "subscription"
             }
 
-        # Check concurrent positions limit - CALCULATE IN REAL-TIME from bot_trades
-        max_positions = subscription.get("max_concurrent_positions", 999)
+        # NÍVEL 6: Subscription Positions (EXISTENTE)
+        max_positions = subscription.get("max_concurrent_positions", 999) or 999
 
         # Query real open trades count from bot_trades table
         current_positions = await self.db.fetchval("""
             SELECT COUNT(*) FROM bot_trades
             WHERE subscription_id = $1
               AND status = 'open'
-        """, subscription["subscription_id"])
+        """, subscription_id)
 
         logger.info(
             "Risk check - concurrent positions",
-            subscription_id=str(subscription["subscription_id"]),
+            subscription_id=str(subscription_id),
             current_positions=current_positions,
             max_positions=max_positions
         )
@@ -629,8 +651,162 @@ class BotBroadcastService:
         if current_positions >= max_positions:
             return {
                 "allowed": False,
-                "reason": f"Max concurrent positions reached: {current_positions}/{max_positions}"
+                "reason": f"Subscription max positions reached: {current_positions}/{max_positions}",
+                "level": "subscription"
             }
+
+        # =========================================================
+        # NOVOS CHECKS (OPCIONAIS - só executam se dados existirem)
+        # =========================================================
+
+        # Só executar novos checks se temos ticker e bot_id
+        if ticker and bot_id:
+            try:
+                # NÍVEL 1: Bot Global Daily Loss (NOVO)
+                bot_risk = await self.db.fetchrow("""
+                    SELECT global_max_daily_loss_usd, global_current_daily_loss_usd,
+                           global_max_positions
+                    FROM bots WHERE id = $1
+                """, bot_id)
+
+                if bot_risk and bot_risk.get("global_max_daily_loss_usd"):
+                    max_bot_loss = float(bot_risk["global_max_daily_loss_usd"])
+                    current_bot_loss = float(bot_risk.get("global_current_daily_loss_usd") or 0)
+
+                    if current_bot_loss >= max_bot_loss:
+                        return {
+                            "allowed": False,
+                            "reason": f"Bot global daily loss limit reached: ${current_bot_loss:.2f} >= ${max_bot_loss:.2f}",
+                            "level": "bot_global"
+                        }
+
+                # NÍVEL 2: Bot Symbol Daily Loss (NOVO)
+                bot_symbol = await self.db.fetchrow("""
+                    SELECT max_daily_loss_usd, current_daily_loss_usd,
+                           max_positions, current_positions, is_active
+                    FROM bot_symbol_configs
+                    WHERE bot_id = $1 AND symbol = $2
+                """, bot_id, ticker.upper())
+
+                if bot_symbol:
+                    # Check if symbol is disabled by admin
+                    if bot_symbol.get("is_active") == False:
+                        return {
+                            "allowed": False,
+                            "reason": f"Symbol {ticker} is disabled by admin",
+                            "level": "bot_symbol"
+                        }
+
+                    # Check bot symbol daily loss
+                    if bot_symbol.get("max_daily_loss_usd"):
+                        max_symbol_loss = float(bot_symbol["max_daily_loss_usd"])
+                        current_symbol_loss = float(bot_symbol.get("current_daily_loss_usd") or 0)
+
+                        if current_symbol_loss >= max_symbol_loss:
+                            return {
+                                "allowed": False,
+                                "reason": f"Bot symbol {ticker} daily loss limit reached: ${current_symbol_loss:.2f} >= ${max_symbol_loss:.2f}",
+                                "level": "bot_symbol"
+                            }
+
+                # NÍVEL 4: Subscription Symbol Daily Loss (NOVO)
+                if exchange_account_id:
+                    sub_symbol = await self.db.fetchrow("""
+                        SELECT max_daily_loss_usd, current_daily_loss_usd,
+                               max_positions, current_positions, is_active
+                        FROM subscription_symbol_configs
+                        WHERE subscription_id = $1
+                          AND exchange_account_id = $2
+                          AND symbol = $3
+                    """, subscription_id, exchange_account_id, ticker.upper())
+
+                    if sub_symbol:
+                        # Check if symbol is disabled by client
+                        if sub_symbol.get("is_active") == False:
+                            return {
+                                "allowed": False,
+                                "reason": f"Symbol {ticker} is disabled by client for this exchange",
+                                "level": "subscription_symbol"
+                            }
+
+                        # Check subscription symbol daily loss
+                        # Usa config do cliente se definido, senão fallback para config do admin (bot_symbol_configs)
+                        max_sub_symbol_loss = sub_symbol.get("max_daily_loss_usd")
+
+                        # Fallback para config do admin se cliente não definiu
+                        if not max_sub_symbol_loss:
+                            bot_sym_cfg_loss = await self.db.fetchrow("""
+                                SELECT max_daily_loss_usd FROM bot_symbol_configs
+                                WHERE bot_id = $1 AND symbol = $2
+                            """, bot_id, ticker.upper())
+                            if bot_sym_cfg_loss:
+                                max_sub_symbol_loss = bot_sym_cfg_loss.get("max_daily_loss_usd")
+
+                        if max_sub_symbol_loss:
+                            max_sub_symbol_loss = float(max_sub_symbol_loss)
+                            current_sub_symbol_loss = float(sub_symbol.get("current_daily_loss_usd") or 0)
+
+                            if current_sub_symbol_loss >= max_sub_symbol_loss:
+                                return {
+                                    "allowed": False,
+                                    "reason": f"Symbol {ticker} daily loss limit reached for this exchange: ${current_sub_symbol_loss:.2f} >= ${max_sub_symbol_loss:.2f}",
+                                    "level": "subscription_symbol"
+                                }
+
+                        # NÍVEL 7: Subscription Symbol Positions
+                        # Usa config do cliente se definido, senão fallback para config do admin (bot_symbol_configs)
+                        max_symbol_pos = sub_symbol.get("max_positions")
+
+                        # Fallback para config do admin se cliente não definiu
+                        if not max_symbol_pos:
+                            bot_sym_cfg = await self.db.fetchrow("""
+                                SELECT max_positions FROM bot_symbol_configs
+                                WHERE bot_id = $1 AND symbol = $2
+                            """, bot_id, ticker.upper())
+                            if bot_sym_cfg:
+                                max_symbol_pos = bot_sym_cfg.get("max_positions")
+
+                        if max_symbol_pos:
+                            symbol_positions = await self.db.fetchval("""
+                                SELECT COUNT(*) FROM bot_trades
+                                WHERE subscription_id = $1
+                                  AND symbol = $2
+                                  AND status = 'open'
+                            """, subscription_id, ticker.upper())
+
+                            if symbol_positions >= max_symbol_pos:
+                                return {
+                                    "allowed": False,
+                                    "reason": f"Symbol {ticker} max positions reached: {symbol_positions}/{max_symbol_pos}",
+                                    "level": "subscription_symbol"
+                                }
+
+                # NÍVEL 5: Bot Global Positions (NOVO)
+                if bot_risk and bot_risk.get("global_max_positions"):
+                    bot_open_positions = await self.db.fetchval("""
+                        SELECT COUNT(*) FROM bot_trades
+                        WHERE subscription_id IN (
+                            SELECT id FROM bot_subscriptions WHERE bot_id = $1 AND status = 'active'
+                        ) AND status = 'open'
+                    """, bot_id)
+
+                    max_bot_positions = bot_risk["global_max_positions"]
+                    if bot_open_positions >= max_bot_positions:
+                        return {
+                            "allowed": False,
+                            "reason": f"Bot global max positions reached: {bot_open_positions}/{max_bot_positions}",
+                            "level": "bot_global"
+                        }
+
+            except Exception as e:
+                # Se der erro nos novos checks, LOG mas NÃO bloqueia
+                # Isso garante que o sistema continua funcionando mesmo com problema
+                logger.warning(
+                    "Error in extended risk checks (continuing with execution)",
+                    error=str(e),
+                    subscription_id=str(subscription_id),
+                    ticker=ticker
+                )
 
         return {"allowed": True}
 
@@ -778,9 +954,9 @@ class BotBroadcastService:
         sl_order_id = None
         tp_order_id = None
 
-        # ✅ BINANCE: Normalizar preços de SL/TP para evitar erro de precisão
+        #  BINANCE: Normalizar preços de SL/TP para evitar erro de precisão
         # Erro -1111: "Precision is over the maximum defined for this asset"
-        print(f"🔍 DEBUG _create_sl_tp_orders: exchange={exchange}, connector_type={type(connector).__name__}, has_normalize={hasattr(connector, 'normalize_price')}")
+        print(f" DEBUG _create_sl_tp_orders: exchange={exchange}, connector_type={type(connector).__name__}, has_normalize={hasattr(connector, 'normalize_price')}")
         if exchange == "binance" and hasattr(connector, 'normalize_price'):
             try:
                 original_sl = sl_price
@@ -788,13 +964,13 @@ class BotBroadcastService:
                 sl_price = await connector.normalize_price(ticker, sl_price, is_futures=True)
                 tp_price = await connector.normalize_price(ticker, tp_price, is_futures=True)
                 logger.info(
-                    f"✅ Binance SL/TP preços normalizados: SL={original_sl}→{sl_price}, TP={original_tp}→{tp_price}",
+                    f" Binance SL/TP preços normalizados: SL={original_sl}→{sl_price}, TP={original_tp}→{tp_price}",
                     ticker=ticker
                 )
             except Exception as e:
                 import traceback
-                logger.error(f"⚠️ Erro ao normalizar preços SL/TP: {e}")
-                logger.error(f"⚠️ Traceback: {traceback.format_exc()}")
+                logger.error(f" Erro ao normalizar preços SL/TP: {e}")
+                logger.error(f" Traceback: {traceback.format_exc()}")
 
         # Try to create Stop Loss with retry
         for attempt in range(max_retries):

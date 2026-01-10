@@ -52,7 +52,7 @@ export function PineScriptMode({ strategyId, strategyName, onSave, onCancel, isS
   const [symbolInput, setSymbolInput] = useState('')
 
   // Generate webhook URL
-  const baseUrl = import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'
+  const baseUrl = import.meta.env.VITE_API_URL || 'https://api.ominiiachain.com'
   const webhookUrl = `${baseUrl}/api/v1/strategies/pinescript-webhook`
 
   function generateSecret(): string {

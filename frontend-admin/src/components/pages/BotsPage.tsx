@@ -120,7 +120,7 @@ export function BotsPage() {
   }
 
   const handleCopyWebhookUrl = (bot: Bot) => {
-    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'
+    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'https://api.ominiiachain.com'
     const url = `${baseUrl}/api/v1/bots/webhook/master/${bot.master_webhook_path}`
     navigator.clipboard.writeText(url)
     setCopiedUrl(bot.id)
@@ -358,7 +358,7 @@ export function BotsPage() {
                     <input
                       type="text"
                       readOnly
-                      value={`${ngrokUrl || import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'}/api/v1/bots/webhook/master/${bot.master_webhook_path}`}
+                      value={`${ngrokUrl || import.meta.env.VITE_API_URL || 'https://api.ominiiachain.com'}/api/v1/bots/webhook/master/${bot.master_webhook_path}`}
                       className="text-xs bg-[#131722] text-white border border-[#2a2e39] px-3 py-2 rounded flex-1 font-mono"
                     />
                     <Button

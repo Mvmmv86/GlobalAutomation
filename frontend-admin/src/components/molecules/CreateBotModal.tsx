@@ -57,7 +57,7 @@ export function CreateBotModal({ isOpen, onClose, onSuccess }: CreateBotModalPro
   // Generate webhook URL in real-time as user types
   const webhookUrl = useMemo(() => {
     if (!formData.master_webhook_path) return ''
-    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'https://globalautomation-tqu2m.ondigitalocean.app'
+    const baseUrl = ngrokUrl || import.meta.env.VITE_API_URL || 'https://api.ominiiachain.com'
     return `${baseUrl}/api/v1/bots/webhook/master/${formData.master_webhook_path}`
   }, [formData.master_webhook_path, ngrokUrl])
 
